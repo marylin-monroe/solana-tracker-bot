@@ -1,4 +1,4 @@
-// src/services/SmartMoneyDatabase.ts - БЕЗ Family Detection + НОВЫЕ МЕТОДЫ ДЛЯ АВТОЗАМЕНЫ + ИСПРАВЛЕНА FOREIGN KEY ПРОБЛЕМА
+// src/services/SmartMoneyDatabase.ts - БЕЗ Family Detection + НОВЫЕ МЕТОДЫ ДЛЯ АВТОЗАМЕНЫ + ИСПРАВЛЕНА FOREIGN KEY ПРОБЛЕМА + НОВЫЙ ПУБЛИЧНЫЙ МЕТОД
 import BetterSqlite3 from 'better-sqlite3';
 import { Logger } from '../utils/Logger';
 import { SmartMoneyWallet, TokenSwap } from '../types';
@@ -52,49 +52,37 @@ export class SmartMoneyDatabase {
 
         CREATE TABLE IF NOT EXISTS smart_money_transactions (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
-          transaction_id TEXT UNIQUE NOT NULL,
+          transaction_id TEXT NOT NULL,
           wallet_address TEXT NOT NULL,
           token_address TEXT NOT NULL,
-          token_symbol TEXT NOT NULL,
-          token_name TEXT NOT NULL,
+          token_symbol TEXT,
+          token_name TEXT,
           amount REAL NOT NULL,
           amount_usd REAL NOT NULL,
           swap_type TEXT CHECK (swap_type IN ('buy', 'sell')) NOT NULL,
           timestamp DATETIME NOT NULL,
-          dex TEXT NOT NULL,
-          wallet_category TEXT NOT NULL,
+          dex TEXT,
+          wallet_category TEXT,
           is_family_member BOOLEAN DEFAULT 0,
           family_id TEXT,
           wallet_pnl REAL,
           wallet_win_rate REAL,
           wallet_total_trades INTEGER,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-          FOREIGN KEY (wallet_address) REFERENCES smart_money_wallets(address) ON DELETE CASCADE
+          UNIQUE(transaction_id, wallet_address, token_address)
         );
-
-        /*
-        CREATE TABLE IF NOT EXISTS family_wallet_clusters (
-          id TEXT PRIMARY KEY,
-          wallets TEXT NOT NULL,
-          suspicion_score REAL NOT NULL,
-          coordination_score REAL NOT NULL,
-          detection_methods TEXT NOT NULL,
-          total_pnl REAL NOT NULL,
-          combined_volume REAL NOT NULL,
-          avg_timing_diff REAL NOT NULL,
-          common_tokens TEXT NOT NULL,
-          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        );
-        */
       `);
 
+      // Проверяем и добавляем недостающие колонки
       await this.migrateExistingData();
 
-      // Создаем индексы ПОСЛЕ миграции
+      // Создаем индексы
       this.db.exec(`
         CREATE INDEX IF NOT EXISTS idx_sm_wallets_category ON smart_money_wallets(category);
         CREATE INDEX IF NOT EXISTS idx_sm_wallets_active ON smart_money_wallets(is_active);
         CREATE INDEX IF NOT EXISTS idx_sm_wallets_performance ON smart_money_wallets(performance_score);
+        CREATE INDEX IF NOT EXISTS idx_sm_wallets_last_active ON smart_money_wallets(last_active_at);
+        
         CREATE INDEX IF NOT EXISTS idx_sm_transactions_wallet ON smart_money_transactions(wallet_address);
         CREATE INDEX IF NOT EXISTS idx_sm_transactions_timestamp ON smart_money_transactions(timestamp);
         CREATE INDEX IF NOT EXISTS idx_sm_transactions_token ON smart_money_transactions(token_address);
@@ -141,126 +129,114 @@ export class SmartMoneyDatabase {
         if (!columnNames.includes(column.name)) {
           try {
             this.db.exec(`ALTER TABLE smart_money_wallets ADD COLUMN ${column.name} ${column.type}`);
-            this.logger.info(`✅ Added column: ${column.name}`);
+            this.logger.info(`Added column: ${column.name}`);
           } catch (error) {
-            this.logger.warn(`Column ${column.name} might already exist:`, error);
+            this.logger.warn(`Could not add column ${column.name}:`, error);
           }
         }
       }
 
-      const updateExisting = this.db.prepare(`
-        UPDATE smart_money_wallets 
-        SET nickname = COALESCE(nickname, category || ' ' || substr(address, 1, 8)),
-            description = COALESCE(description, 'Автоматически добавленный ' || category || ' кошелек'),
-            min_trade_alert = COALESCE(min_trade_alert, 
-              CASE category 
-                WHEN 'trader' THEN 15000 
-                WHEN 'hunter' THEN 5000 
-                ELSE 3000 
-              END),
-            priority = COALESCE(priority, 
-              CASE WHEN performance_score > 85 THEN 'high' ELSE 'medium' END),
-            enabled = COALESCE(enabled, 1),
-            verified = COALESCE(verified, 0),
-            added_by = COALESCE(added_by, 'discovery'),
-            added_at = COALESCE(added_at, created_at, CURRENT_TIMESTAMP),
-            is_family_member = 0,
-            family_addresses = NULL,
-            coordination_score = NULL,
-            stealth_level = NULL
-        WHERE nickname IS NULL OR enabled IS NULL
-      `);
-
-      const changes = updateExisting.run();
-      this.logger.info(`✅ Updated ${changes.changes} existing records with default values`);
-
     } catch (error) {
-      this.logger.error('Error in migration:', error);
-      throw error;
+      this.logger.error('Error during data migration:', error);
     }
   }
+
+  // ============== СУЩЕСТВУЮЩИЕ МЕТОДЫ БЕЗ ИЗМЕНЕНИЙ ===============
 
   async saveSmartWallet(wallet: SmartMoneyWallet, config?: {
     nickname?: string;
     description?: string;
     minTradeAlert?: number;
     priority?: 'high' | 'medium' | 'low';
-    addedBy?: 'manual' | 'discovery' | 'placeholder';
+    enabled?: boolean;
     verified?: boolean;
+    addedBy?: 'manual' | 'discovery' | 'dragon';
   }): Promise<void> {
-    
-    this.logger.info('🐛 DEBUGGING saveSmartWallet input:');
-    this.logger.info(`🐛 wallet.address: ${typeof wallet.address} = ${wallet.address}`);
-    this.logger.info(`🐛 config: ${JSON.stringify(config)}`);
 
-    const stmt = this.db.prepare(`
-      INSERT OR REPLACE INTO smart_money_wallets (
-        address, category, nickname, description,
-        win_rate, total_pnl, total_trades, avg_trade_size, max_trade_size, min_trade_size, performance_score,
-        sharpe_ratio, max_drawdown, volume_score, early_entry_rate, avg_hold_time,
-        min_trade_alert, priority, enabled,
-        is_active, verified, last_active_at,
-        is_family_member, family_addresses, coordination_score, stealth_level,
-        added_by, added_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-    `);
+    const tableInfo = this.db.prepare("PRAGMA table_info(smart_money_wallets)").all() as any[];
+    const columnNames = tableInfo.map((col: any) => col.name);
 
-    const normalizedAddedBy = config?.addedBy === 'placeholder' ? 'discovery' : (config?.addedBy || 'manual');
-    const safeEnabled = config?.verified !== undefined ? (config.verified ? 1 : 0) : 0;
+    if (columnNames.includes('nickname') && columnNames.includes('description')) {
+      const stmt = this.db.prepare(`
+        INSERT OR REPLACE INTO smart_money_wallets (
+          address, category, nickname, description,
+          win_rate, total_pnl, total_trades, avg_trade_size, max_trade_size, min_trade_size, performance_score,
+          sharpe_ratio, max_drawdown, volume_score, early_entry_rate, avg_hold_time,
+          min_trade_alert, priority, enabled,
+          is_active, verified, last_active_at,
+          is_family_member, family_addresses, coordination_score, stealth_level,
+          added_by, added_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      `);
 
-    const params = [
-      wallet.address,                    // 1
-      wallet.category,                   // 2
-      config?.nickname || `${wallet.category.charAt(0).toUpperCase() + wallet.category.slice(1)} ${wallet.address.slice(0, 8)}`, // 3
-      config?.description || `Автоматически добавленный ${wallet.category} кошелек`, // 4
-      wallet.winRate,                    // 5
-      wallet.totalPnL,                   // 6
-      wallet.totalTrades,                // 7
-      wallet.avgTradeSize,               // 8
-      wallet.maxTradeSize,               // 9
-      wallet.minTradeSize,               // 10
-      wallet.performanceScore,           // 11
-      wallet.sharpeRatio || null,        // 12
-      wallet.maxDrawdown || null,        // 13
-      wallet.volumeScore || null,        // 14
-      wallet.earlyEntryRate || null,     // 15
-      wallet.avgHoldTime || null,        // 16
-      config?.minTradeAlert || (wallet.category === 'trader' ? 15000 : wallet.category === 'hunter' ? 5000 : 3000), // 17
-      config?.priority || (wallet.performanceScore > 85 ? 'high' : 'medium'), // 18
-      1,                                 // 19 enabled (всегда true)
-      wallet.isActive ? 1 : 0,          // 20
-      safeEnabled,                       // 21 verified
-      wallet.lastActiveAt.toISOString(), // 22
-      0,                                 // 23 is_family_member (всегда false)
-      null,                              // 24 family_addresses (всегда null) 
-      null,                              // 25 coordination_score (всегда null)
-      null,                              // 26 stealth_level (всегда null)
-      normalizedAddedBy,                 // 27
-      new Date().toISOString()           // 28
-    ];
+      stmt.run(
+        wallet.address,
+        wallet.category,
+        config?.nickname || `${wallet.category.charAt(0).toUpperCase() + wallet.category.slice(1)} ${wallet.address.slice(0, 8)}`,
+        config?.description || `High-performance ${wallet.category} кошелек`,
+        wallet.winRate,
+        wallet.totalPnL,
+        wallet.totalTrades,
+        wallet.avgTradeSize,
+        wallet.maxTradeSize,
+        wallet.minTradeSize,
+        wallet.performanceScore,
+        wallet.sharpeRatio || null,
+        wallet.maxDrawdown || null,
+        wallet.volumeScore || null,
+        wallet.earlyEntryRate || null,
+        wallet.avgHoldTime || null,
+        config?.minTradeAlert || (wallet.category === 'trader' ? 15000 : wallet.category === 'hunter' ? 5000 : 3000),
+        config?.priority || (wallet.performanceScore > 85 ? 'high' : 'medium'),
+        config?.enabled !== undefined ? (config.enabled ? 1 : 0) : 1,
+        wallet.isActive ? 1 : 0,
+        config?.verified !== undefined ? (config.verified ? 1 : 0) : 0,
+        wallet.lastActiveAt.toISOString(),
+        false, // is_family_member отключен
+        null,  // family_addresses отключен
+        0,     // coordination_score отключен
+        wallet.stealthLevel || null,
+        config?.addedBy || 'discovery',
+        new Date().toISOString()
+      );
+    } else {
+      const stmt = this.db.prepare(`
+        INSERT OR REPLACE INTO smart_money_wallets (
+          address, category, win_rate, total_pnl, total_trades, avg_trade_size, max_trade_size, min_trade_size,
+          performance_score, sharpe_ratio, max_drawdown, last_active_at, is_active,
+          is_family_member, family_addresses, coordination_score, stealth_level,
+          early_entry_rate, avg_hold_time, volume_score, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+      `);
 
-    this.logger.info('🐛 DEBUGGING SQL parameters:');
-    params.forEach((param, index) => {
-      this.logger.info(`🐛 Param ${index + 1}: ${typeof param} = ${param}`);
-    });
-
-    try {
-      stmt.run(...params);
-      this.logger.info('✅ Wallet saved successfully!');
-    } catch (error) {
-      this.logger.error('🐛 SQL Error in saveSmartWallet:', error);
-      this.logger.error('🐛 Failed parameters:', params);
-      throw error;
+      stmt.run(
+        wallet.address,
+        wallet.category,
+        wallet.winRate,
+        wallet.totalPnL,
+        wallet.totalTrades,
+        wallet.avgTradeSize,
+        wallet.maxTradeSize,
+        wallet.minTradeSize,
+        wallet.performanceScore,
+        wallet.sharpeRatio || null,
+        wallet.maxDrawdown || null,
+        wallet.lastActiveAt.toISOString(),
+        wallet.isActive ? 1 : 0,
+        false, // is_family_member отключен
+        null,  // family_addresses отключен  
+        0,     // coordination_score отключен
+        wallet.stealthLevel || null,
+        wallet.earlyEntryRate || null,
+        wallet.avgHoldTime || null,
+        wallet.volumeScore || null
+      );
     }
   }
 
   async getSmartWallet(address: string): Promise<SmartMoneyWallet | null> {
-    const row = this.db.prepare(
-      'SELECT * FROM smart_money_wallets WHERE address = ?'
-    ).get(address) as any;
-
+    const row = this.db.prepare('SELECT * FROM smart_money_wallets WHERE address = ?').get(address) as any;
     if (!row) return null;
-
     return this.mapRowToWallet(row);
   }
 
@@ -278,105 +254,9 @@ export class SmartMoneyDatabase {
     return rows.map(row => this.mapRowToWallet(row));
   }
 
-  async getWalletsBySettings(filters: {
-    category?: 'sniper' | 'hunter' | 'trader';
-    priority?: 'high' | 'medium' | 'low';
-    minPerformanceScore?: number;
-    enabled?: boolean;
-  }): Promise<SmartMoneyWallet[]> {
-    const tableInfo = this.db.prepare("PRAGMA table_info(smart_money_wallets)").all() as any[];
-    const columnNames = tableInfo.map((col: any) => col.name);
-    const hasEnabledColumn = columnNames.includes('enabled');
-    const hasPriorityColumn = columnNames.includes('priority');
-
-    let query = 'SELECT * FROM smart_money_wallets WHERE is_active = 1';
-    const params: any[] = [];
-
-    if (filters.category) {
-      query += ' AND category = ?';
-      params.push(filters.category);
-    }
-
-    if (filters.priority && hasPriorityColumn) {
-      query += ' AND priority = ?';
-      params.push(filters.priority);
-    }
-
-    if (filters.minPerformanceScore) {
-      query += ' AND performance_score >= ?';
-      params.push(filters.minPerformanceScore);
-    }
-
-    if (filters.enabled !== undefined && hasEnabledColumn) {
-      query += ' AND enabled = ?';
-      params.push(filters.enabled ? 1 : 0);
-    }
-
-    query += ' ORDER BY performance_score DESC';
-
-    const rows = this.db.prepare(query).all(...params) as any[];
-    return rows.map(row => this.mapRowToWallet(row));
-  }
-
-  async getWalletStats(): Promise<{
-    total: number;
-    active: number;
-    enabled: number;
-    byCategory: Record<string, number>;
-    byPriority: Record<string, number>;
-    familyMembers: number;
-  }> {
-    const totalRow = this.db.prepare('SELECT COUNT(*) as count FROM smart_money_wallets').get() as any;
-    const activeRow = this.db.prepare('SELECT COUNT(*) as count FROM smart_money_wallets WHERE is_active = 1').get() as any;
-    
-    const tableInfo = this.db.prepare("PRAGMA table_info(smart_money_wallets)").all() as any[];
-    const columnNames = tableInfo.map((col: any) => col.name);
-    const hasEnabledColumn = columnNames.includes('enabled');
-    const hasPriorityColumn = columnNames.includes('priority');
-
-    let enabledRow = { count: activeRow.count };
-    if (hasEnabledColumn) {
-      enabledRow = this.db.prepare('SELECT COUNT(*) as count FROM smart_money_wallets WHERE enabled = 1').get() as any;
-    }
-    
-    let categoryQuery = 'SELECT category, COUNT(*) as count FROM smart_money_wallets WHERE is_active = 1';
-    if (hasEnabledColumn) {
-      categoryQuery += ' AND enabled = 1';
-    }
-    categoryQuery += ' GROUP BY category';
-    const categoryRows = this.db.prepare(categoryQuery).all() as any[];
-
-    let priorityRows: any[] = [];
-    if (hasPriorityColumn) {
-      let priorityQuery = 'SELECT priority, COUNT(*) as count FROM smart_money_wallets WHERE is_active = 1';
-      if (hasEnabledColumn) {
-        priorityQuery += ' AND enabled = 1';
-      }
-      priorityQuery += ' GROUP BY priority';
-      priorityRows = this.db.prepare(priorityQuery).all() as any[];
-    }
-
-    // Family members всегда 0
-    const familyRow = { count: 0 };
-
-    const byCategory: Record<string, number> = {};
-    for (const row of categoryRows) {
-      byCategory[row.category] = row.count;
-    }
-
-    const byPriority: Record<string, number> = {};
-    for (const row of priorityRows) {
-      byPriority[row.priority] = row.count;
-    }
-
-    return {
-      total: totalRow.count,
-      active: activeRow.count,
-      enabled: enabledRow.count,
-      byCategory,
-      byPriority,
-      familyMembers: 0 // Всегда 0
-    };
+  async getWalletCount(): Promise<number> {
+    const row = this.db.prepare('SELECT COUNT(*) as count FROM smart_money_wallets WHERE is_active = 1').get() as any;
+    return row.count;
   }
 
   async updateWalletSettings(address: string, settings: {
@@ -478,6 +358,61 @@ export class SmartMoneyDatabase {
       daysSinceLastActivity: 0,
       swapType: row.swap_type as 'buy' | 'sell'
     }));
+  }
+
+  // 🆕 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: НОВЫЙ ПУБЛИЧНЫЙ МЕТОД ДЛЯ СОХРАНЕНИЯ ТРАНЗАКЦИЙ
+  async saveSmartMoneyTransaction(swapInfo: {
+    transactionId: string;
+    walletAddress: string;
+    tokenAddress: string;
+    tokenSymbol: string;
+    tokenName: string;
+    tokenAmount: number;
+    amountUSD: number;
+    swapType: 'buy' | 'sell';
+    timestamp: Date;
+    category: 'sniper' | 'hunter' | 'trader';
+    winRate: number;
+    pnl: number;
+    totalTrades: number;
+    dex?: string;
+  }): Promise<void> {
+    try {
+      // Используем ПРАВИЛЬНЫЙ доступ к БД через this.db
+      const stmt = this.db.prepare(`
+        INSERT OR REPLACE INTO smart_money_transactions (
+          transaction_id, wallet_address, token_address, token_symbol, token_name,
+          amount, amount_usd, swap_type, timestamp, dex,
+          wallet_category, is_family_member, family_id,
+          wallet_pnl, wallet_win_rate, wallet_total_trades
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      stmt.run(
+        swapInfo.transactionId,
+        swapInfo.walletAddress,
+        swapInfo.tokenAddress,
+        swapInfo.tokenSymbol,
+        swapInfo.tokenName,
+        swapInfo.tokenAmount,
+        swapInfo.amountUSD,
+        swapInfo.swapType,
+        swapInfo.timestamp.toISOString(),
+        swapInfo.dex || 'Smart-Money',
+        swapInfo.category,
+        0, // is_family_member = false (отключено)
+        null, // family_id = null
+        swapInfo.pnl,
+        swapInfo.winRate,
+        swapInfo.totalTrades
+      );
+
+      this.logger.debug(`💾 Saved SM transaction: ${swapInfo.tokenSymbol} - $${swapInfo.amountUSD.toFixed(0)} (${swapInfo.swapType})`);
+
+    } catch (error) {
+      this.logger.error('❌ Error saving Smart Money transaction:', error);
+      throw error;
+    }
   }
 
   // Методы для family clusters - ОТКЛЮЧЕНЫ
@@ -616,60 +551,30 @@ export class SmartMoneyDatabase {
             config?.priority || (wallet.performanceScore > 85 ? 'high' : 'medium'),
             1, // enabled
             wallet.isActive ? 1 : 0,
-            safeEnabled,
+            safeEnabled, // verified
             wallet.lastActiveAt.toISOString(),
-            0, // is_family_member
-            null, // family_addresses
-            null, // coordination_score
-            null, // stealth_level
+            false, // is_family_member
+            null,  // family_addresses
+            0,     // coordination_score
+            wallet.stealthLevel || null,
             normalizedAddedBy,
             new Date().toISOString()
           );
         }
-        
-        this.logger.info(`✅ Successfully replaced with ${newWallets.length} new wallets`);
       } catch (error) {
-        this.logger.error('❌ Error in safe wallet replacement:', error);
+        this.logger.error('❌ Error in wallet replacement transaction:', error);
         throw error;
       }
     });
-    
-    // Выполняем транзакцию
+
     transaction();
+    this.logger.info(`✅ Successfully replaced all wallets: ${newWallets.length} new wallets added`);
   }
 
   /**
-   * Получает все адреса кошельков из базы данных
-   * @returns массив адресов кошельков
-   */
-  async getAllWalletAddresses(): Promise<string[]> {
-    try {
-      const rows = this.db.prepare('SELECT address FROM smart_money_wallets').all() as any[];
-      return rows.map(row => row.address);
-    } catch (error) {
-      this.logger.error('❌ Error getting wallet addresses:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Получает общее количество кошельков в базе данных
-   * @returns количество кошельков
-   */
-  async getWalletCount(): Promise<number> {
-    try {
-      const row = this.db.prepare('SELECT COUNT(*) as count FROM smart_money_wallets').get() as any;
-      return row.count;
-    } catch (error) {
-      this.logger.error('❌ Error getting wallet count:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Проверяет существование кошелька по адресу
-   * @param address адрес кошелька для проверки
-   * @returns true если кошелек существует, false если нет
+   * Проверяет существование кошелька
+   * @param address адрес кошелька
+   * @returns true если кошелек существует
    */
   async walletExists(address: string): Promise<boolean> {
     try {
@@ -749,19 +654,19 @@ export class SmartMoneyDatabase {
       performanceScore: row.performance_score,
       volumeScore: row.volume_score,
       isActive: !!row.is_active,
-      isFamilyMember: false, // Всегда false
-      familyAddresses: undefined, // Всегда undefined
-      coordinationScore: null, // Всегда null
-      stealthLevel: null, // Всегда null
+      
+      // Family поля ОТКЛЮЧЕНЫ
+      isFamilyMember: false,
+      familyAddresses: undefined,
+      coordinationScore: 0,
+      stealthLevel: row.stealth_level,
+      
+      // Категория-специфичные метрики
       earlyEntryRate: row.early_entry_rate,
       avgHoldTime: row.avg_hold_time,
+      
       createdAt: row.created_at ? new Date(row.created_at) : undefined,
       updatedAt: row.updated_at ? new Date(row.updated_at) : undefined
     };
-  }
-
-  async close(): Promise<void> {
-    this.db.close();
-    this.logger.info('Smart Money Database connection closed');
   }
 }

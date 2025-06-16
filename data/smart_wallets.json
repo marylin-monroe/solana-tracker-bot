@@ -1,6 +1,6 @@
 {
   "version": "2.0",
-  "lastUpdated": "2025-06-14",
+  "lastUpdated": "2025-06-16",
   "description": "Smart Money wallets (hardcoded fallback)",
   "totalWallets": 10,
   "wallets": [
