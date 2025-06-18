@@ -1,4 +1,4 @@
-// src/main.ts - ПОЛНЫЙ файл с добавленным Module B (Large Transaction Monitor) + ВСЕ СТАРЫЕ ФУНКЦИИ СОХРАНЕНЫ
+// src/main.ts - ИСПРАВЛЕНО: убран жестко прописанный путь Dragon + все функции сохранены
 import * as dotenv from 'dotenv';
 import { TelegramNotifier } from './services/TelegramNotifier';
 import { Database } from './services/Database';
@@ -60,12 +60,15 @@ class SmartMoneyBotRunner {
     
     this.webhookManager = new QuickNodeWebhookManager();
 
-    // 🆕 DRAGON INTEGRATION
+    // 🔧 ИСПРАВЛЕНО: убран жестко прописанный путь Dragon!
     this.dragonParser = new DragonResultsParser(
       this.smDatabase, 
       this.telegramNotifier,
       {
-        dragonOutputPath: 'C:\\Users\\ibm\\OneDrive\\Документы\\Dragon-main\\Dragon\\data\\Solana\\TopTraders\\',
+        // ❌ УДАЛЕНА жестко прописанная строка:
+        // dragonOutputPath: 'C:\\Users\\ibm\\OneDrive\\Документы\\Dragon-main\\Dragon\\data\\Solana\\TopTraders\\',
+        
+        // ✅ ТОЛЬКО фильтры (путь определяется автоматически):
         minPnl: 10000,        // $10K минимум
         minWinrate: 65,       // 65% минимум  
         minTrades: 15,        // 15 сделок минимум
@@ -465,7 +468,7 @@ class SmartMoneyBotRunner {
 
   private async sendStartupNotification(): Promise<void> {
     try {
-      const mode = this.webhookId === 'polling-mode' ? 'Polling (5 min)' : 'Real-time Webhooks';
+      const mode = this.webhookId === 'polling-mode' ? 'Polling (1 min)' : 'Real-time Webhooks';
       const stats = await this.smDatabase.getWalletStats(); // ✅ ИСПРАВЛЕНО: теперь метод существует в SmartMoneyDatabase
       const multiProviderMetrics = this.multiProviderService.getMetrics();
       

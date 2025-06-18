@@ -1,3 +1,4 @@
+# render.yaml - ОБНОВЛЕНО: добавлены переменные для Dragon Git интеграции
 services:
   - type: background-worker
     name: smart-money-tracker
@@ -8,21 +9,45 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      - key: HELIUS_API_KEY
-        fromSecret: HELIUS_API_KEY
+      
+      # 🔧 ОСНОВНЫЕ API КЛЮЧИ
+      - key: QUICKNODE_HTTP_URL
+        fromSecret: QUICKNODE_HTTP_URL
+      - key: QUICKNODE_API_KEY
+        fromSecret: QUICKNODE_API_KEY
+      - key: ALCHEMY_HTTP_URL
+        fromSecret: ALCHEMY_HTTP_URL
+      - key: ALCHEMY_API_KEY
+        fromSecret: ALCHEMY_API_KEY
+      
+      # 🤖 TELEGRAM
       - key: TELEGRAM_BOT_TOKEN
         fromSecret: TELEGRAM_BOT_TOKEN
       - key: TELEGRAM_USER_ID
         fromSecret: TELEGRAM_USER_ID
+      
+      # 💾 БАЗА ДАННЫХ
       - key: DATABASE_PATH
         value: ./data/tracker.db
-      # 🆕 DRAGON VARIABLES:
+      
+      # 🐲 DRAGON INTEGRATION - НОВЫЕ ПЕРЕМЕННЫЕ
       - key: DRAGON_OUTPUT_PATH
         value: /opt/render/project/src/data/dragon-output
       - key: DRAGON_REPO_URL
         value: https://github.com/marylin-monroe/dragon-files.git
       - key: GITHUB_TOKEN
         fromSecret: GITHUB_TOKEN
+      
+      # 🌐 WEBHOOK (опционально)
+      - key: WEBHOOK_URL
+        fromSecret: WEBHOOK_URL
+      
+      # 🔧 ДОПОЛНИТЕЛЬНЫЕ НАСТРОЙКИ
+      - key: PORT
+        value: 3000
+      - key: LOG_LEVEL
+        value: info
+        
     disk:
       name: smart-money-data
       mountPath: /opt/render/project/src/data

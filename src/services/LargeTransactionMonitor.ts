@@ -1,9 +1,10 @@
-// src/services/LargeTransactionMonitor.ts
+// src/services/LargeTransactionMonitor.ts - ИСПРАВЛЕНО: добавлен maxSupportedTransactionVersion + интеграция TokenMetadataService
 // 🚨 MODULE B: Independent Large Transaction Monitoring ($2M+ USD)
 
 import { Logger } from '../utils/Logger';
 import { TelegramNotifier } from './TelegramNotifier';
 import { MultiProviderService } from './MultiProviderService';
+import { TokenMetadataService } from './TokenMetadataService'; // 🆕 ДОБАВЛЕНО
 
 interface LargeTransaction {
   signature: string;
@@ -36,13 +37,14 @@ interface MonitoringStats {
   alertsSent: number;
   lastScanTime: Date;
   avgProcessingTime: number;
-  errorsCount: number;
+  errors: number; // 🔧 ИСПРАВЛЕНО: переименовано с errorsCount
 }
 
 export class LargeTransactionMonitor {
   private logger: Logger;
   private telegramNotifier: TelegramNotifier;
   private multiProvider: MultiProviderService;
+  private tokenMetadataService: TokenMetadataService; // 🆕 ДОБАВЛЕНО
   
   // 🚨 THRESHOLD FOR LARGE TRANSACTIONS ($2M USD)
   private readonly LARGE_TX_THRESHOLD = 2_000_000;
@@ -51,7 +53,6 @@ export class LargeTransactionMonitor {
   private scamAddresses = new Set<string>([
     // Common scam addresses - would be loaded from API in production
     '11111111111111111111111111111112', // System program (not scam, just example)
-    'So11111111111111111111111111111111111111112' // SOL wrapper (not scam, example)
   ]);
   
   // 🏛️ KNOWN EXCHANGE ADDRESSES
@@ -71,7 +72,7 @@ export class LargeTransactionMonitor {
   
   // 📊 MONITORING STATE
   private isMonitoring = false;
-  private lastScannedBlock = 0;
+  private lastProcessedSlot = 0; // 🔧 ИСПРАВЛЕНО: переименовано с lastScannedBlock
   private monitoringInterval: NodeJS.Timeout | null = null;
   private stats: MonitoringStats = {
     totalScanned: 0,
@@ -80,7 +81,7 @@ export class LargeTransactionMonitor {
     alertsSent: 0,
     lastScanTime: new Date(),
     avgProcessingTime: 0,
-    errorsCount: 0
+    errors: 0 // 🔧 ИСПРАВЛЕНО
   };
 
   // 💾 RECENTLY PROCESSED TRANSACTIONS CACHE
@@ -94,6 +95,7 @@ export class LargeTransactionMonitor {
     this.logger = Logger.getInstance();
     this.telegramNotifier = telegramNotifier;
     this.multiProvider = multiProvider;
+    this.tokenMetadataService = new TokenMetadataService(); // 🆕 ДОБАВЛЕНО
     
     this.logger.info('🚨 Large Transaction Monitor initialized ($2M+ threshold)');
   }
@@ -113,15 +115,8 @@ export class LargeTransactionMonitor {
     // Load known addresses before starting
     await this.loadKnownAddresses();
     
-    // Start monitoring loop every 15 seconds
-    this.monitoringInterval = setInterval(async () => {
-      if (this.isMonitoring) {
-        await this.scanForLargeTransactions();
-      }
-    }, 15000); // Every 15 seconds
-
-    // Initial scan
-    await this.scanForLargeTransactions();
+    // Start monitoring loop
+    this.monitoringLoop();
     
     this.logger.info('✅ Large Transaction Monitor started successfully');
   }
@@ -139,33 +134,76 @@ export class LargeTransactionMonitor {
   }
 
   /**
-   * 🔍 SCAN RECENT BLOCKS FOR LARGE TRANSACTIONS
+   * 🔄 IMPROVED MONITORING LOOP - better error handling
+   */
+  private async monitoringLoop(): Promise<void> {
+    while (this.isMonitoring) {
+      try {
+        await this.scanForLargeTransactions();
+        await this.sleep(15000); // 15 секунд между сканированиями
+      } catch (error) {
+        this.logger.error('❌ Error in monitoring loop:', error);
+        this.stats.errors++;
+        
+        // Пауза при ошибке перед повторной попыткой
+        await this.sleep(30000); // 30 секунд при ошибке
+      }
+    }
+  }
+
+  /**
+   * 🔍 SCAN RECENT BLOCKS FOR LARGE TRANSACTIONS - УЛУЧШЕНО
    */
   private async scanForLargeTransactions(): Promise<void> {
     const startTime = Date.now();
     
     try {
-      // Get latest block number
-      const latestBlockResponse = await this.multiProvider.getBlockHeight();
-      if (!latestBlockResponse.success || !latestBlockResponse.data) {
-        this.logger.warn('⚠️ Failed to get latest block height');
+      // Get latest slot number (исправлено с block на slot для Solana)
+      let latestSlot: number;
+      try {
+        const slotResponse = await this.multiProvider.makeRequest('getSlot', [
+          { commitment: 'confirmed' }
+        ]);
+        
+        // ✅ ИСПРАВЛЕНО: Правильное извлечение данных из APIResponse
+        if (!slotResponse.success || !slotResponse.data) {
+          this.logger.warn('⚠️ Failed to get latest slot from response');
+          return;
+        }
+        latestSlot = slotResponse.data;
+      } catch (slotError) {
+        this.logger.warn('⚠️ Failed to get latest slot, using cached value');
         return;
       }
 
-      const latestBlock = latestBlockResponse.data;
-      
-      // Scan last 5 blocks (or from last scanned block)
-      const startBlock = Math.max(this.lastScannedBlock + 1, latestBlock - 5);
-      const endBlock = latestBlock;
+      // Сканируем только новые слоты
+      const startSlot = this.lastProcessedSlot + 1;
+      const endSlot = Math.min(latestSlot, startSlot + 3); // Не более 3 слотов за раз
 
-      this.logger.debug(`🔍 Scanning blocks ${startBlock} to ${endBlock} for large transactions`);
-
-      for (let blockNumber = startBlock; blockNumber <= endBlock; blockNumber++) {
-        await this.scanBlock(blockNumber);
-        this.stats.totalScanned++;
+      if (startSlot > endSlot) {
+        return; // Нет новых слотов
       }
 
-      this.lastScannedBlock = endBlock;
+      this.logger.debug(`🔍 Scanning slots ${startSlot} to ${endSlot} for large transactions`);
+
+      // Сканируем слоты последовательно
+      for (let slot = startSlot; slot <= endSlot; slot++) {
+        if (!this.isMonitoring) break;
+        
+        try {
+          await this.scanBlock(slot);
+          this.lastProcessedSlot = slot;
+          this.stats.totalScanned++;
+          
+          // Небольшая пауза между слотами
+          await this.sleep(100);
+        } catch (blockError) {
+          this.logger.warn(`⚠️ Failed to scan slot ${slot}:`, blockError);
+          this.stats.errors++;
+          // Продолжаем сканирование следующих слотов
+        }
+      }
+
       this.stats.lastScanTime = new Date();
       
       // Update average processing time
@@ -173,27 +211,30 @@ export class LargeTransactionMonitor {
       this.stats.avgProcessingTime = (this.stats.avgProcessingTime + processingTime) / 2;
 
     } catch (error) {
-      this.stats.errorsCount++;
+      this.stats.errors++;
       this.logger.error('❌ Error scanning for large transactions:', error);
     }
   }
 
   /**
-   * 🔍 SCAN SPECIFIC BLOCK FOR LARGE TRANSACTIONS
+   * 🔍 SCAN SPECIFIC BLOCK FOR LARGE TRANSACTIONS - ✅ ИСПРАВЛЕНО: добавлен maxSupportedTransactionVersion
    */
-  private async scanBlock(blockNumber: number): Promise<void> {
+  private async scanBlock(slot: number): Promise<void> {
     try {
-      // Get block with transaction details
+      this.logger.debug(`🔍 Scanning slot ${slot} for large transactions...`);
+
+      // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Добавлен maxSupportedTransactionVersion: 0
       const blockResponse = await this.multiProvider.makeRequest('getBlock', [
-        blockNumber,
+        slot,
         {
-          encoding: 'jsonParsed',
+          maxSupportedTransactionVersion: 0,  // ← ДОБАВЛЕНА ЭТА СТРОКА
+          commitment: 'confirmed',
           transactionDetails: 'full',
-          rewards: false,
-          commitment: 'confirmed'
+          rewards: false
         }
       ]);
 
+      // ✅ ИСПРАВЛЕНО: Правильное извлечение данных из APIResponse
       if (!blockResponse.success || !blockResponse.data || !blockResponse.data.transactions) {
         return;
       }
@@ -210,7 +251,7 @@ export class LargeTransactionMonitor {
             continue;
           }
 
-          await this.analyzeTransaction(tx, blockNumber);
+          await this.analyzeLargeTransaction(tx, slot);
           
           // Add to processed cache
           this.processedTransactions.add(signature);
@@ -224,14 +265,15 @@ export class LargeTransactionMonitor {
       }
 
     } catch (error) {
-      this.logger.error(`❌ Error scanning block ${blockNumber}:`, error);
+      this.logger.error(`❌ Error scanning slot ${slot}:`, error);
+      this.stats.errors++;
     }
   }
 
   /**
-   * 🔍 ANALYZE INDIVIDUAL TRANSACTION FOR LARGE AMOUNTS
+   * 🔍 ANALYZE INDIVIDUAL TRANSACTION FOR LARGE AMOUNTS - УЛУЧШЕНО
    */
-  private async analyzeTransaction(txData: any, blockNumber: number): Promise<void> {
+  private async analyzeLargeTransaction(txData: any, slot: number): Promise<void> {
     try {
       const tx = txData.transaction;
       const meta = txData.meta;
@@ -245,25 +287,29 @@ export class LargeTransactionMonitor {
 
       // Analyze token transfers for large amounts
       const tokenTransfers = meta.tokenTransfers || [];
-      const nativeTransfers = meta.nativeTransfers || [];
+      const nativeTransfers = meta.preBalances && meta.postBalances ? 
+        this.extractNativeTransfers(meta.preBalances, meta.postBalances, tx.message.accountKeys) : [];
 
       // Check token transfers
       for (const transfer of tokenTransfers) {
         const amountUSD = await this.estimateTokenValueUSD(transfer.mint, transfer.tokenAmount);
         
         if (amountUSD >= this.LARGE_TX_THRESHOLD) {
+          // 🆕 ИСПОЛЬЗУЕМ TokenMetadataService
+          const tokenMetadata = await this.tokenMetadataService.getTokenMetadata(transfer.mint);
+          
           const largeTransaction: LargeTransaction = {
             signature,
             amount: transfer.tokenAmount,
             amountUSD,
             tokenAddress: transfer.mint,
-            tokenSymbol: await this.getTokenSymbol(transfer.mint),
-            tokenName: await this.getTokenName(transfer.mint),
+            tokenSymbol: tokenMetadata?.symbol || 'UNKNOWN',
+            tokenName: tokenMetadata?.name || 'Unknown Token',
             fromAddress: transfer.fromUserAccount || '',
             toAddress: transfer.toUserAccount || '',
             transactionType: this.determineTransactionType(transfer),
             timestamp,
-            blockNumber,
+            blockNumber: slot,
             chain: 'solana'
           };
 
@@ -273,7 +319,7 @@ export class LargeTransactionMonitor {
 
       // Check native SOL transfers
       for (const transfer of nativeTransfers) {
-        const solAmount = transfer.amount / 1e9; // Convert lamports to SOL
+        const solAmount = Math.abs(transfer.change) / 1e9; // Convert lamports to SOL
         const amountUSD = await this.estimateSOLValueUSD(solAmount);
         
         if (amountUSD >= this.LARGE_TX_THRESHOLD) {
@@ -284,11 +330,11 @@ export class LargeTransactionMonitor {
             tokenAddress: 'So11111111111111111111111111111111111111112', // SOL
             tokenSymbol: 'SOL',
             tokenName: 'Solana',
-            fromAddress: transfer.fromUserAccount || '',
-            toAddress: transfer.toUserAccount || '',
-            transactionType: 'buy', // Simplified
+            fromAddress: transfer.fromAddress || '',
+            toAddress: transfer.toAddress || '',
+            transactionType: transfer.change > 0 ? 'buy' : 'sell',
             timestamp,
-            blockNumber,
+            blockNumber: slot,
             chain: 'solana'
           };
 
@@ -298,7 +344,33 @@ export class LargeTransactionMonitor {
 
     } catch (error) {
       this.logger.error('❌ Error analyzing transaction:', error);
+      this.stats.errors++;
     }
+  }
+
+  /**
+   * 🆕 НОВЫЙ МЕТОД: Extract native SOL transfers
+   */
+  private extractNativeTransfers(preBalances: number[], postBalances: number[], accountKeys: string[]): Array<{
+    fromAddress: string;
+    toAddress: string;
+    change: number;
+  }> {
+    const transfers = [];
+    
+    for (let i = 0; i < preBalances.length && i < postBalances.length && i < accountKeys.length; i++) {
+      const change = postBalances[i] - preBalances[i];
+      
+      if (Math.abs(change) > 1000000) { // Минимум 0.001 SOL (1M lamports)
+        transfers.push({
+          fromAddress: change < 0 ? accountKeys[i] : '',
+          toAddress: change > 0 ? accountKeys[i] : '',
+          change
+        });
+      }
+    }
+    
+    return transfers;
   }
 
   /**
@@ -324,6 +396,7 @@ export class LargeTransactionMonitor {
 
     } catch (error) {
       this.logger.error('❌ Error processing large transaction:', error);
+      this.stats.errors++;
     }
   }
 
@@ -420,6 +493,7 @@ export class LargeTransactionMonitor {
 
     } catch (error) {
       this.logger.error('❌ Error filtering transaction:', error);
+      this.stats.errors++;
       return {
         passed: true, // Default to pass on error
         reason: undefined,
@@ -450,14 +524,16 @@ export class LargeTransactionMonitor {
   }
 
   /**
-   * 📅 GET WALLET AGE IN HOURS
+   * 📅 GET WALLET AGE IN HOURS - УЛУЧШЕНО
    */
   private async getWalletAge(address: string): Promise<number> {
     try {
-      const signaturesResponse = await this.multiProvider.getSignaturesForAddress(address, {
-        limit: 1000
-      });
+      const signaturesResponse = await this.multiProvider.makeRequest('getSignaturesForAddress', [
+        address,
+        { limit: 1000 }
+      ]);
       
+      // ✅ ИСПРАВЛЕНО: Правильное извлечение данных из APIResponse
       if (!signaturesResponse.success || !signaturesResponse.data || signaturesResponse.data.length === 0) {
         return 0;
       }
@@ -516,7 +592,7 @@ export class LargeTransactionMonitor {
         `👤 <b>From:</b> <code>${this.truncateAddress(tx.fromAddress)}</code>\n` +
         `👤 <b>To:</b> <code>${this.truncateAddress(tx.toAddress)}</code>\n\n` +
         `🔗 <b>Signature:</b> <code>${tx.signature.slice(0, 16)}...${tx.signature.slice(-8)}</code>\n` +
-        `📦 <b>Block:</b> <code>${tx.blockNumber}</code>\n\n` +
+        `📦 <b>Slot:</b> <code>${tx.blockNumber}</code>\n\n` +
         `✅ <i>Filtered: No scam/owner/exchange activity detected</i>\n\n` +
         `<a href="https://solscan.io/tx/${tx.signature}">View Transaction</a> | ` +
         `<a href="https://solscan.io/token/${tx.tokenAddress}">Token Info</a>`;
@@ -525,16 +601,17 @@ export class LargeTransactionMonitor {
 
     } catch (error) {
       this.logger.error('❌ Error sending large transaction alert:', error);
+      this.stats.errors++;
     }
   }
 
   /**
-   * 💰 ESTIMATE TOKEN VALUE IN USD
+   * 💰 ESTIMATE TOKEN VALUE IN USD - УЛУЧШЕНО с TokenMetadataService
    */
   private async estimateTokenValueUSD(tokenAddress: string, amount: number): Promise<number> {
     try {
-      // Simplified price estimation
-      // In production, this would use Jupiter, Coingecko, or other price APIs
+      // Используем TokenMetadataService для получения метаданных
+      const tokenMetadata = await this.tokenMetadataService.getTokenMetadata(tokenAddress);
       
       if (tokenAddress === 'So11111111111111111111111111111111111111112') {
         // SOL price (hardcoded for example, should be from API)
@@ -546,8 +623,13 @@ export class LargeTransactionMonitor {
         return amount;
       }
       
+      if (tokenAddress === 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB') {
+        // USDT
+        return amount;
+      }
+      
       // For other tokens, use a rough estimate
-      // In production, query real-time prices
+      // In production, query real-time prices from Jupiter/CoinGecko
       return amount * 0.001; // Default very low price
 
     } catch (error) {
@@ -568,50 +650,6 @@ export class LargeTransactionMonitor {
     } catch (error) {
       this.logger.error('❌ Error estimating SOL value:', error);
       return 0;
-    }
-  }
-
-  /**
-   * 🏷️ GET TOKEN SYMBOL
-   */
-  private async getTokenSymbol(tokenAddress: string): Promise<string> {
-    try {
-      if (tokenAddress === 'So11111111111111111111111111111111111111112') {
-        return 'SOL';
-      }
-      
-      if (tokenAddress === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') {
-        return 'USDC';
-      }
-      
-      // For other tokens, would query metadata
-      return 'UNKNOWN';
-
-    } catch (error) {
-      this.logger.error(`❌ Error getting token symbol for ${tokenAddress}:`, error);
-      return 'UNKNOWN';
-    }
-  }
-
-  /**
-   * 🏷️ GET TOKEN NAME
-   */
-  private async getTokenName(tokenAddress: string): Promise<string> {
-    try {
-      if (tokenAddress === 'So11111111111111111111111111111111111111112') {
-        return 'Solana';
-      }
-      
-      if (tokenAddress === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') {
-        return 'USD Coin';
-      }
-      
-      // For other tokens, would query metadata
-      return 'Unknown Token';
-
-    } catch (error) {
-      this.logger.error(`❌ Error getting token name for ${tokenAddress}:`, error);
-      return 'Unknown Token';
     }
   }
 
@@ -689,6 +727,10 @@ export class LargeTransactionMonitor {
         return `${ageDays}d ${ageHours % 24}h ago`;
       }
     }
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   /**

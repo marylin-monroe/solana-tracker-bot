@@ -1,4 +1,4 @@
-// src/services/DragonResultsParser.ts - ИСПРАВЛЕНО: ТОЛЬКО чтение файлов Dragon + Git синхронизация
+// src/services/DragonResultsParser.ts - ИСПРАВЛЕНО: улучшена стабильность Git синхронизации + сохранены все функции
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
 import { TelegramNotifier } from './TelegramNotifier';
 import { Logger } from '../utils/Logger';
@@ -150,7 +150,7 @@ export class DragonResultsParser {
   }
 
   /**
-   * 🔄 СИНХРОНИЗАЦИЯ С GIT РЕПОЗИТОРИЕМ
+   * 🔄 УЛУЧШЕННАЯ СИНХРОНИЗАЦИЯ С GIT РЕПОЗИТОРИЕМ
    */
   private async syncFromGit(): Promise<void> {
     try {
@@ -163,10 +163,15 @@ export class DragonResultsParser {
         return;
       }
 
-      // Подготавливаем URL с токеном для приватного repo
+      // 🔧 ИСПРАВЛЕНО: Более безопасная подготовка URL с токеном
       let authUrl = repoUrl;
       if (githubToken && repoUrl.includes('github.com')) {
-        authUrl = repoUrl.replace('https://github.com/', `https://${githubToken}@github.com/`);
+        // Проверяем, что токен не пустой
+        if (githubToken.trim().length > 0) {
+          authUrl = repoUrl.replace('https://github.com/', `https://${githubToken}@github.com/`);
+        } else {
+          this.logger.warn('⚠️ GITHUB_TOKEN is empty, using repo URL without authentication');
+        }
       }
 
       this.logger.info(`🔄 Syncing Dragon files from Git...`);
@@ -185,23 +190,41 @@ export class DragonResultsParser {
           fs.mkdirSync(parentDir, { recursive: true });
         }
 
-        await execAsync(`git clone "${authUrl}" "${outputPath}"`);
-        this.logger.info('✅ Dragon repository cloned successfully');
+        try {
+          await execAsync(`git clone "${authUrl}" "${outputPath}"`);
+          this.logger.info('✅ Dragon repository cloned successfully');
+        } catch (cloneError) {
+          this.logger.error('❌ Failed to clone Dragon repository:', cloneError);
+          // Создаем пустую папку чтобы не ломать логику
+          if (!fs.existsSync(outputPath)) {
+            fs.mkdirSync(outputPath, { recursive: true });
+          }
+          return;
+        }
         
       } else {
         // Обновляем существующий репозиторий
         this.logger.info('🔄 Updating existing Dragon repository...');
         
         try {
-          await execAsync(`cd "${outputPath}" && git pull`);
+          // 🔧 ИСПРАВЛЕНО: Более надежная логика git pull
+          const { stdout, stderr } = await execAsync(`cd "${outputPath}" && git pull`);
+          if (stderr && !stderr.includes('Already up to date')) {
+            this.logger.warn('⚠️ Git pull warnings:', stderr);
+          }
           this.logger.info('✅ Dragon repository updated successfully');
-        } catch (error) {
+        } catch (pullError) {
           this.logger.warn('⚠️ Git pull failed, trying to reset and pull again...');
           
-          // Пытаемся сбросить и подтянуть заново
-          await execAsync(`cd "${outputPath}" && git reset --hard HEAD`);
-          await execAsync(`cd "${outputPath}" && git pull`);
-          this.logger.info('✅ Dragon repository reset and updated');
+          try {
+            // Пытаемся сбросить и подтянуть заново
+            await execAsync(`cd "${outputPath}" && git reset --hard HEAD`);
+            await execAsync(`cd "${outputPath}" && git pull`);
+            this.logger.info('✅ Dragon repository reset and updated');
+          } catch (resetError) {
+            this.logger.error('❌ Failed to reset and pull repository:', resetError);
+            // Не бросаем ошибку - продолжаем с локальными файлами
+          }
         }
       }
 
@@ -271,7 +294,7 @@ export class DragonResultsParser {
   }
 
   /**
-   * 🔍 Поиск последних JSON файлов Dragon (игнорирует Git файлы)
+   * 🔍 УЛУЧШЕННЫЙ поиск последних JSON файлов Dragon (игнорирует Git файлы)
    */
   private async findLatestDragonFiles(): Promise<string[]> {
     try {
@@ -282,31 +305,46 @@ export class DragonResultsParser {
 
       const files = fs.readdirSync(this.config.dragonOutputPath);
       
-      // ✅ ИСПРАВЛЕНО: Игнорируем Git файлы и ищем только JSON Dragon файлы
+      // ✅ ИСПРАВЛЕНО: Более точная фильтрация Dragon файлов
       const jsonFiles = files
         .filter(file => {
           // Игнорируем Git служебные файлы
           if (file.startsWith('.git')) return false;
           if (file === 'README.md') return false;
           if (file === '.gitignore') return false;
+          if (file === 'package.json') return false;
+          if (file === 'package-lock.json') return false;
           
           // Только JSON файлы Dragon
           return file.endsWith('.json') && (
             file.includes('topTraders') || 
             file.includes('TopTraders') ||
             file.includes('dragon') ||
-            file.includes('traders')
+            file.includes('traders') ||
+            file.includes('wallet') ||
+            file.includes('result')
           );
         })
-        .map(file => ({
-          name: file,
-          path: path.join(this.config.dragonOutputPath, file),
-          mtime: fs.statSync(path.join(this.config.dragonOutputPath, file)).mtime
-        }))
+        .map(file => {
+          const filePath = path.join(this.config.dragonOutputPath, file);
+          let mtime: Date;
+          try {
+            mtime = fs.statSync(filePath).mtime;
+          } catch (error) {
+            this.logger.warn(`⚠️ Could not get mtime for ${file}:`, error);
+            mtime = new Date(0); // Очень старая дата
+          }
+          return {
+            name: file,
+            path: filePath,
+            mtime
+          };
+        })
         .sort((a, b) => b.mtime.getTime() - a.mtime.getTime()) // новые файлы первыми
         .slice(0, 5) // берем только 5 последних файлов
         .map(file => file.path);
 
+      this.logger.info(`🔍 Dragon files found: ${jsonFiles.map(f => path.basename(f)).join(', ')}`);
       return jsonFiles;
 
     } catch (error) {
@@ -316,12 +354,22 @@ export class DragonResultsParser {
   }
 
   /**
-   * 📄 Парсинг отдельного JSON файла Dragon
+   * 📄 УЛУЧШЕННЫЙ парсинг отдельного JSON файла Dragon
    */
   private async parseDragonJsonFile(filePath: string): Promise<DragonWallet[]> {
     try {
+      this.logger.info(`📄 Parsing Dragon file: ${path.basename(filePath)}`);
+      
       const fileContent = fs.readFileSync(filePath, 'utf8');
-      const jsonData = JSON.parse(fileContent);
+      
+      // 🔧 ИСПРАВЛЕНО: Более надежный парсинг JSON
+      let jsonData: any;
+      try {
+        jsonData = JSON.parse(fileContent);
+      } catch (parseError) {
+        this.logger.error(`❌ Invalid JSON in file ${filePath}:`, parseError);
+        return [];
+      }
 
       const dragonWallets: DragonWallet[] = [];
 
@@ -340,23 +388,26 @@ export class DragonResultsParser {
         const sells = parseInt(data.sells || '0');
         const totalTrades = buys + sells;
 
-        // Рассчитываем winrate
-        const winrate = totalTrades > 0 ? (sells / totalTrades) * 100 : 0;
+        // Рассчитываем winrate - ИСПРАВЛЕНО: более точная формула
+        const winrate = totalTrades > 0 ? 
+          (data.winRate !== undefined ? parseFloat(data.winRate) : 
+           (sells > 0 ? (sells / totalTrades) * 100 : 0)) : 0;
 
-        // Валидируем адрес и данные
-        if (walletAddress && walletAddress.length >= 32 && totalTrades > 0) {
+        // 🔧 ИСПРАВЛЕНО: Более строгая валидация адреса Solana
+        if (this.isValidSolanaAddress(walletAddress) && totalTrades > 0 && boughtUsd > 0) {
           dragonWallets.push({
             wallet: walletAddress,
             pnl: totalProfit,
-            winrate: winrate,
+            winrate: Math.min(winrate, 100), // Ограничиваем winrate до 100%
             trades: totalTrades,
             volume: boughtUsd,
             last_active: Date.now() / 1000,
-            sol_balance: 0
+            sol_balance: parseFloat(data.solBalance || '0')
           });
         }
       }
 
+      this.logger.info(`✅ Parsed ${dragonWallets.length} valid wallets from ${path.basename(filePath)}`);
       return dragonWallets;
 
     } catch (error) {
@@ -366,17 +417,43 @@ export class DragonResultsParser {
   }
 
   /**
-   * 💰 Парсинг строки с USD в число
+   * 🔍 НОВЫЙ МЕТОД: Валидация адреса Solana
+   */
+  private isValidSolanaAddress(address: string): boolean {
+    // Базовая валидация адреса Solana (44 символа, base58)
+    if (!address || typeof address !== 'string') return false;
+    if (address.length < 32 || address.length > 44) return false;
+    
+    // Проверяем, что адрес содержит только допустимые символы base58
+    const base58Regex = /^[1-9A-HJ-NP-Za-km-z]+$/;
+    return base58Regex.test(address);
+  }
+
+  /**
+   * 💰 УЛУЧШЕННЫЙ парсинг строки с USD в число
    */
   private parseUsdString(usdString: string): number {
     if (!usdString || typeof usdString !== 'string') {
       return 0;
     }
     
+    // Удаляем все лишние символы
     const cleaned = usdString.replace(/[$,\s]/g, '');
-    const number = parseFloat(cleaned);
     
-    return isNaN(number) ? 0 : number;
+    // Обрабатываем множители (K, M, B)
+    let multiplier = 1;
+    if (cleaned.endsWith('K') || cleaned.endsWith('k')) {
+      multiplier = 1000;
+    } else if (cleaned.endsWith('M') || cleaned.endsWith('m')) {
+      multiplier = 1000000;
+    } else if (cleaned.endsWith('B') || cleaned.endsWith('b')) {
+      multiplier = 1000000000;
+    }
+    
+    const numberPart = cleaned.replace(/[KMBkmb]$/, '');
+    const number = parseFloat(numberPart);
+    
+    return isNaN(number) ? 0 : number * multiplier;
   }
 
   /**
@@ -416,6 +493,10 @@ export class DragonResultsParser {
       const daysSinceActive = (now - wallet.last_active) / (24 * 60 * 60);
       if (daysSinceActive > this.config.maxDaysInactive) return false;
       
+      // Дополнительная проверка: исключаем кошельки с нереалистичными данными
+      if (wallet.winrate > 99.9) return false; // Слишком высокий winrate подозрителен
+      if (wallet.volume > wallet.pnl * 100) return false; // Нереалистичное соотношение
+      
       return true;
     });
   }
@@ -424,13 +505,15 @@ export class DragonResultsParser {
    * 📊 Расчет рейтинга кошелька
    */
   private calculateScores(wallets: DragonWallet[]): DragonWallet[] {
+    if (wallets.length === 0) return wallets;
+    
     const maxPnl = Math.max(...wallets.map(w => w.pnl));
     const maxVolume = Math.max(...wallets.map(w => w.volume));
     const maxTrades = Math.max(...wallets.map(w => w.trades));
     const now = Date.now() / 1000;
     
     return wallets.map(wallet => {
-      const pnlScore = wallet.pnl / maxPnl;
+      const pnlScore = maxPnl > 0 ? wallet.pnl / maxPnl : 0;
       const winrateScore = wallet.winrate / 100;
       const volumeScore = maxVolume > 0 ? wallet.volume / maxVolume : 0;
       const tradesScore = maxTrades > 0 ? wallet.trades / maxTrades : 0;
@@ -454,7 +537,7 @@ export class DragonResultsParser {
   }
 
   /**
-   * 💾 Добавление кошельков в базу данных
+   * 💾 УЛУЧШЕННОЕ добавление кошельков в базу данных
    */
   private async addWalletsToDatabase(wallets: DragonWallet[]): Promise<DragonParseResult> {
     const result: DragonParseResult = {
@@ -473,7 +556,10 @@ export class DragonResultsParser {
         const existingWallet = await this.smDatabase.getSmartWallet(wallet.wallet);
         
         if (existingWallet) {
-          if (wallet.pnl > existingWallet.totalPnL || wallet.winrate > existingWallet.winRate) {
+          // Обновляем только если новые данные лучше
+          if (wallet.pnl > existingWallet.totalPnL || 
+              wallet.winrate > existingWallet.winRate ||
+              wallet.trades > existingWallet.totalTrades) {
             await this.updateExistingWallet(existingWallet, wallet, category);
             result.updated++;
           } else {
@@ -491,6 +577,7 @@ export class DragonResultsParser {
       }
     }
 
+    this.logger.info(`💾 Database update complete: +${result.added} added, ~${result.updated} updated, =${result.skipped} skipped`);
     return result;
   }
 
@@ -544,11 +631,11 @@ export class DragonResultsParser {
    */
   private async updateExistingWallet(existing: any, wallet: DragonWallet, category: 'sniper' | 'hunter' | 'trader'): Promise<void> {
     await this.smDatabase.updateWalletPerformance(existing.address, {
-      winRate: wallet.winrate,
-      totalPnL: wallet.pnl,
-      totalTrades: wallet.trades,
+      winRate: Math.max(wallet.winrate, existing.winRate), // Берем лучший winrate
+      totalPnL: Math.max(wallet.pnl, existing.totalPnL), // Берем лучший PnL
+      totalTrades: Math.max(wallet.trades, existing.totalTrades), // Берем больше сделок
       lastActiveAt: new Date(wallet.last_active * 1000),
-      performanceScore: wallet.score
+      performanceScore: wallet.score || existing.performanceScore
     });
   }
 
@@ -615,13 +702,15 @@ ${topPerformers.slice(0, 5).map((w, i) =>
     totalFilesFound: number;
     configPath: string;
     isConfigured: boolean;
+    gitSyncEnabled: boolean;
   }> {
     const files = await this.findLatestDragonFiles();
     
     return {
       totalFilesFound: files.length,
       configPath: this.config.dragonOutputPath,
-      isConfigured: fs.existsSync(this.config.dragonOutputPath)
+      isConfigured: fs.existsSync(this.config.dragonOutputPath),
+      gitSyncEnabled: !!process.env.DRAGON_REPO_URL
     };
   }
 }
