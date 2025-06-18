@@ -1,4 +1,4 @@
-// src/main.ts - ПОЛНЫЙ файл с добавленной командой /holdings + ИСПРАВЛЕНЫ ВСЕ ОШИБКИ
+// src/main.ts - ПОЛНЫЙ файл с добавленным Module B (Large Transaction Monitor) + ВСЕ СТАРЫЕ ФУНКЦИИ СОХРАНЕНЫ
 import * as dotenv from 'dotenv';
 import { TelegramNotifier } from './services/TelegramNotifier';
 import { Database } from './services/Database';
@@ -7,6 +7,8 @@ import { SmartMoneyFlowAnalyzer } from './services/SmartMoneyFlowAnalyzer';
 import { WebhookServer } from './services/WebhookServer';
 import { QuickNodeWebhookManager } from './services/QuickNodeWebhookManager';
 import { DragonResultsParser } from './services/DragonResultsParser'; // 🆕 DRAGON INTEGRATION
+import { LargeTransactionMonitor } from './services/LargeTransactionMonitor'; // 🚨 MODULE B - LARGE TX MONITOR
+import { MultiProviderService } from './services/MultiProviderService'; // 🆕 MULTI-PROVIDER FOR MODULE B
 import { Logger } from './utils/Logger';
 import { SmartWalletLoader } from './services/SmartWalletLoader';
 import * as path from 'path';
@@ -23,6 +25,8 @@ class SmartMoneyBotRunner {
   private webhookManager: QuickNodeWebhookManager;
   private smartWalletLoader: SmartWalletLoader;
   private dragonParser: DragonResultsParser; // 🆕 DRAGON PARSER
+  private largeTransactionMonitor: LargeTransactionMonitor; // 🚨 MODULE B - LARGE TX MONITOR
+  private multiProviderService: MultiProviderService; // 🆕 MULTI-PROVIDER SERVICE
   
   private logger: Logger;
   
@@ -69,7 +73,16 @@ class SmartMoneyBotRunner {
       }
     );
 
-    this.logger.info('✅ Smart Money Bot services initialized (SIMPLIFIED + DRAGON INTEGRATION)');
+    // 🚨 MODULE B: MULTI-PROVIDER SERVICE INITIALIZATION
+    this.multiProviderService = new MultiProviderService();
+
+    // 🚨 MODULE B: LARGE TRANSACTION MONITOR INITIALIZATION
+    this.largeTransactionMonitor = new LargeTransactionMonitor(
+      this.telegramNotifier,
+      this.multiProviderService
+    );
+
+    this.logger.info('✅ Smart Money Bot services initialized (SIMPLIFIED + DRAGON INTEGRATION + MODULE B)');
   }
 
   private validateEnvironment(): void {
@@ -137,10 +150,11 @@ class SmartMoneyBotRunner {
       '/dragon': this.handleDragonCommand.bind(this),
       '/flows': this.handleFlowsCommand.bind(this),
       '/holdings': this.handleHoldingsCommand.bind(this), // 🆕 HOLDINGS COMMAND
+      '/large': this.handleLargeTransactionsCommand.bind(this), // 🚨 MODULE B COMMAND
       '/help': this.handleHelpCommand.bind(this)
     });
 
-    this.logger.info('🤖 Telegram commands setup completed (including /holdings)');
+    this.logger.info('🤖 Telegram commands setup completed (including /holdings + /large)');
   }
 
   private async handleStatsCommand(): Promise<void> {
@@ -297,6 +311,51 @@ class SmartMoneyBotRunner {
     }
   }
 
+  // 🚨 MODULE B: LARGE TRANSACTIONS COMMAND - НОВАЯ КОМАНДА
+  private async handleLargeTransactionsCommand(): Promise<void> {
+    try {
+      this.logger.info('🚨 Processing /large command');
+      
+      await this.telegramNotifier.sendCycleLog('🚨 <b>Analyzing Large Transactions ($2M+)...</b>\n\nGetting latest statistics...');
+      
+      const largeStats = this.largeTransactionMonitor.getStats();
+      const multiProviderStats = this.multiProviderService.getProviderStats();
+      const multiProviderMetrics = this.multiProviderService.getMetrics();
+      
+      await this.telegramNotifier.sendCycleLog(
+        `🚨 <b>Large Transaction Monitor Stats</b>\n\n` +
+        `📊 <b>Monitoring Status:</b>\n` +
+        `• Total Scanned: <code>${largeStats.totalScanned}</code>\n` +
+        `• Large TXs Found: <code>${largeStats.largeTransactionsFound}</code>\n` +
+        `• Filtered Out: <code>${largeStats.filtered}</code>\n` +
+        `• Alerts Sent: <code>${largeStats.alertsSent}</code>\n\n` +
+        `🔧 <b>Multi-Provider Status:</b>\n` +
+        `• Total Providers: <code>${multiProviderMetrics.totalProviders}</code>\n` +
+        `• Healthy: <code>${multiProviderMetrics.healthyProviders}</code>\n` +
+        `• Primary: <code>${multiProviderMetrics.primaryProvider}</code>\n` +
+        `• Total Requests: <code>${multiProviderMetrics.totalRequests}</code>\n` +
+        `• Success Rate: <code>${((multiProviderMetrics.successfulRequests / Math.max(multiProviderMetrics.totalRequests, 1)) * 100).toFixed(1)}%</code>\n` +
+        `• Avg Response: <code>${multiProviderMetrics.avgResponseTime.toFixed(0)}ms</code>\n\n` +
+        `💾 <b>Cache Performance:</b>\n` +
+        `• Cache Hits: <code>${multiProviderMetrics.cacheHits}</code>\n` +
+        `• Hit Rate: <code>${multiProviderMetrics.cacheHitRate.toFixed(1)}%</code>\n` +
+        `• Cache Size: <code>${multiProviderMetrics.cacheSize}</code>\n\n` +
+        `⚡ <b>Provider Details:</b>\n` +
+        multiProviderStats.slice(0, 3).map(provider => 
+          `• <code>${provider.name}</code>: ${provider.isHealthy ? '✅' : '❌'} ` +
+          `(${provider.successRate.toFixed(1)}% success, ${provider.avgResponseTime.toFixed(0)}ms)`
+        ).join('\n') +
+        `\n\n⚠️ <b>Threshold:</b> <code>$2,000,000+ USD</code>\n` +
+        `🛡️ <b>Filtering:</b> Scams, Token Owners, Exchange Internals\n\n` +
+        `⏰ <code>${new Date().toLocaleString()}</code>`
+      );
+
+    } catch (error) {
+      this.logger.error('Error processing /large command:', error);
+      await this.telegramNotifier.sendCommandError('large', error);
+    }
+  }
+
   private async handleHelpCommand(): Promise<void> {
     try {
       this.logger.info('❓ Processing /help command');
@@ -308,6 +367,7 @@ class SmartMoneyBotRunner {
         `🐲 <b>/dragon</b> - Process Dragon results\n` +
         `📈 <b>/flows</b> - Analyze current flows (1h/24h)\n` +
         `📊 <b>/holdings</b> - Portfolio holdings analysis\n` +
+        `🚨 <b>/large</b> - Large transaction monitor stats\n` +
         `❓ <b>/help</b> - This help message\n\n` +
         `🤖 <b>Bot Features:</b>\n` +
         `• Real-time DEX monitoring\n` +
@@ -316,7 +376,9 @@ class SmartMoneyBotRunner {
         `• Hot token detection\n` +
         `• Inflows/Outflows tracking\n` +
         `• Portfolio holdings analysis\n` +
-        `• Large transaction alerts\n\n` +
+        `• Large transaction alerts ($2M+)\n` +
+        `• Multi-provider API failover\n` +
+        `• Advanced scam filtering\n\n` +
         `⏰ <code>${new Date().toLocaleString()}</code>`
       );
 
@@ -328,7 +390,7 @@ class SmartMoneyBotRunner {
 
   async start(): Promise<void> {
     try {
-      this.logger.info('🚀 Starting Smart Money Bot (SIMPLIFIED + DRAGON INTEGRATION)...');
+      this.logger.info('🚀 Starting Smart Money Bot (FULL STACK + MODULE B)...');
 
       await this.database.init();
       await this.smDatabase.init();
@@ -348,12 +410,16 @@ class SmartMoneyBotRunner {
 
       await this.setupQuickNodeWebhook();
 
+      // 🚨 MODULE B: START LARGE TRANSACTION MONITORING
+      await this.largeTransactionMonitor.startMonitoring();
+      this.logger.info('🚨 Large Transaction Monitor started ($2M+ threshold)');
+
       await this.sendStartupNotification();
 
       this.startPeriodicAnalysis();
       this.startDragonProcessing(); // 🆕 DRAGON PROCESSING
 
-      this.logger.info('✅ Smart Money Bot started successfully (SIMPLIFIED + DRAGON)!');
+      this.logger.info('✅ Smart Money Bot started successfully (FULL STACK + MODULE B)!');
 
     } catch (error) {
       this.logger.error('❌ Error starting Smart Money Bot:', error);
@@ -401,6 +467,7 @@ class SmartMoneyBotRunner {
     try {
       const mode = this.webhookId === 'polling-mode' ? 'Polling (5 min)' : 'Real-time Webhooks';
       const stats = await this.smDatabase.getWalletStats(); // ✅ ИСПРАВЛЕНО: теперь метод существует в SmartMoneyDatabase
+      const multiProviderMetrics = this.multiProviderService.getMetrics();
       
       await this.telegramNotifier.sendCycleLog(
         `🚀 <b>Smart Money Bot Started!</b>\n\n` +
@@ -409,11 +476,16 @@ class SmartMoneyBotRunner {
         `  • 🔫 Snipers: <code>${stats.byCategory?.sniper || 0}</code>\n` +
         `  • 💡 Hunters: <code>${stats.byCategory?.hunter || 0}</code>\n` +
         `  • 🐳 Traders: <code>${stats.byCategory?.trader || 0}</code>\n\n` +
+        `🚨 <b>Large TX Monitor:</b> <code>Active ($2M+)</code>\n` +
+        `🔧 <b>Providers:</b> <code>${multiProviderMetrics.healthyProviders}/${multiProviderMetrics.totalProviders} healthy</code>\n\n` +
         `🔥 <b>Features:</b>\n` +
         `• Flow Analysis (1h/24h)\n` +
         `• Hot New Tokens\n` +
         `• Portfolio Holdings\n` +
-        `• Dragon Integration\n\n` +
+        `• Dragon Integration\n` +
+        `• Large TX Alerts ($2M+)\n` +
+        `• Multi-Provider Failover\n` +
+        `• Advanced Scam Filtering\n\n` +
         `⏰ <code>${new Date().toLocaleString()}</code>`
       );
 
@@ -456,7 +528,30 @@ class SmartMoneyBotRunner {
 
     this.intervalIds.push(holdingsAnalysisInterval);
 
-    this.logger.info('🔄 Periodic analysis started: Flow (4h), Holdings (12h)');
+    // 🚨 MODULE B: Large Transaction Summary каждые 6 часов
+    const largeTxSummaryInterval = setInterval(async () => {
+      try {
+        this.logger.info('🔄 Starting periodic large transaction summary...');
+        const largeStats = this.largeTransactionMonitor.getStats();
+        
+        if (largeStats.largeTransactionsFound > 0) {
+          await this.telegramNotifier.sendCycleLog(
+            `🚨 <b>Large TX Summary (6h)</b>\n\n` +
+            `💰 <b>Found:</b> <code>${largeStats.largeTransactionsFound}</code> transactions $2M+\n` +
+            `✅ <b>Alerts:</b> <code>${largeStats.alertsSent}</code> passed filters\n` +
+            `🚫 <b>Filtered:</b> <code>${largeStats.filtered}</code> scam/owner/exchange\n` +
+            `📊 <b>Total Scanned:</b> <code>${largeStats.totalScanned}</code>\n\n` +
+            `⏰ <code>${new Date().toLocaleString()}</code>`
+          );
+        }
+      } catch (error) {
+        this.logger.error('❌ Error in periodic large transaction summary:', error);
+      }
+    }, 6 * 60 * 60 * 1000); // 6 hours
+
+    this.intervalIds.push(largeTxSummaryInterval);
+
+    this.logger.info('🔄 Periodic analysis started: Flow (4h), Holdings (12h), Large TX Summary (6h)');
   }
 
   private startDragonProcessing(): void {
@@ -601,11 +696,18 @@ class SmartMoneyBotRunner {
         await this.webhookManager.deleteStream(this.webhookId);
       }
 
+      // 🚨 MODULE B: SHUTDOWN MULTI-PROVIDER SERVICE
+      await this.multiProviderService.shutdown();
+      this.logger.info('🔧 Multi-Provider Service shutdown completed');
+
       // Останавливаем сервисы
       await this.webhookServer.stop();
       
       await this.telegramNotifier.sendCycleLog(
         `🛑 <b>Smart Money Bot Stopped</b>\n\n` +
+        `🚨 Large TX Monitor: <code>Stopped</code>\n` +
+        `🔧 Multi-Provider: <code>Shutdown</code>\n` +
+        `📊 All Services: <code>Gracefully Stopped</code>\n\n` +
         `⏰ <code>${new Date().toLocaleString()}</code>`
       );
 
