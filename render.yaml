@@ -16,6 +16,13 @@ services:
         fromSecret: TELEGRAM_USER_ID
       - key: DATABASE_PATH
         value: ./data/tracker.db
+      # 🆕 DRAGON VARIABLES:
+      - key: DRAGON_OUTPUT_PATH
+        value: /opt/render/project/src/data/dragon-output
+      - key: DRAGON_REPO_URL
+        value: https://github.com/marylin-monroe/dragon-files.git
+      - key: GITHUB_TOKEN
+        fromSecret: GITHUB_TOKEN
     disk:
       name: smart-money-data
       mountPath: /opt/render/project/src/data
