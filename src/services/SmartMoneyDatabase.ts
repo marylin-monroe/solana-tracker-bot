@@ -1,4 +1,4 @@
-// src/services/SmartMoneyDatabase.ts - БЕЗ Family Detection + НОВЫЕ МЕТОДЫ ДЛЯ АВТОЗАМЕНЫ + ИСПРАВЛЕНА FOREIGN KEY ПРОБЛЕМА + НОВЫЙ ПУБЛИЧНЫЙ МЕТОД
+// src/services/SmartMoneyDatabase.ts - БЕЗ Family Detection + НОВЫЕ МЕТОДЫ ДЛЯ АВТОЗАМЕНЫ + ИСПРАВЛЕНА FOREIGN KEY ПРОБЛЕМА + НОВЫЙ ПУБЛИЧНЫЙ МЕТОД + ДОБАВЛЕН getWalletStats
 import BetterSqlite3 from 'better-sqlite3';
 import { Logger } from '../utils/Logger';
 import { SmartMoneyWallet, TokenSwap } from '../types';
@@ -138,6 +138,55 @@ export class SmartMoneyDatabase {
 
     } catch (error) {
       this.logger.error('Error during data migration:', error);
+    }
+  }
+
+  // ✅ ДОБАВЛЕН МЕТОД: getWalletStats для исправления ошибки компиляции
+  async getWalletStats(): Promise<{
+    total: number;
+    active: number;
+    enabled: number;
+    byCategory: { sniper: number; hunter: number; trader: number };
+    byPriority: { high: number; medium: number; low: number };
+    familyMembers: number;
+  }> {
+    try {
+      const diagnostics = await this.getDiagnosticInfo();
+      const activeWallets = await this.getAllActiveSmartWallets();
+      
+      // Группируем по категориям
+      const byCategory = {
+        sniper: activeWallets.filter(w => w.category === 'sniper').length,
+        hunter: activeWallets.filter(w => w.category === 'hunter').length,
+        trader: activeWallets.filter(w => w.category === 'trader').length
+      };
+
+      // Группируем по приоритету (используем performance score как базу)
+      const byPriority = {
+        high: activeWallets.filter(w => w.performanceScore > 85).length,
+        medium: activeWallets.filter(w => w.performanceScore >= 70 && w.performanceScore <= 85).length,
+        low: activeWallets.filter(w => w.performanceScore < 70).length
+      };
+
+      return {
+        total: diagnostics.totalWallets,
+        active: diagnostics.activeWallets,
+        enabled: diagnostics.enabledWallets,
+        byCategory,
+        byPriority,
+        familyMembers: 0 // Family detection отключена
+      };
+
+    } catch (error) {
+      this.logger.error('❌ Error getting wallet stats:', error);
+      return {
+        total: 0,
+        active: 0,
+        enabled: 0,
+        byCategory: { sniper: 0, hunter: 0, trader: 0 },
+        byPriority: { high: 0, medium: 0, low: 0 },
+        familyMembers: 0
+      };
     }
   }
 
@@ -668,5 +717,12 @@ export class SmartMoneyDatabase {
       createdAt: row.created_at ? new Date(row.created_at) : undefined,
       updatedAt: row.updated_at ? new Date(row.updated_at) : undefined
     };
+  }
+
+  async close(): Promise<void> {
+    if (this.db) {
+      this.db.close();
+      this.logger.info('📊 Smart Money Database connection closed');
+    }
   }
 }

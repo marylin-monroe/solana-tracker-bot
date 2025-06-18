@@ -400,7 +400,7 @@ class SmartMoneyBotRunner {
   private async sendStartupNotification(): Promise<void> {
     try {
       const mode = this.webhookId === 'polling-mode' ? 'Polling (5 min)' : 'Real-time Webhooks';
-      const stats = await this.smDatabase.getWalletStats(); // ✅ ИСПРАВЛЕНО: правильный метод
+      const stats = await this.smDatabase.getWalletStats(); // ✅ ИСПРАВЛЕНО: теперь метод существует в SmartMoneyDatabase
       
       await this.telegramNotifier.sendCycleLog(
         `🚀 <b>Smart Money Bot Started!</b>\n\n` +
@@ -503,6 +503,8 @@ class SmartMoneyBotRunner {
           return renderUrl;
         }
       }
+    } catch (error) {
+      this.logger.warn('⚠️ Error detecting render URL:', error);
     }
 
     const renderVars = [
@@ -574,6 +576,7 @@ class SmartMoneyBotRunner {
   private async forceCreateConfigFile(): Promise<void> {
     try {
       this.logger.info('🔧 Force creating config file with current DB wallets...');
+      // ✅ ИСПРАВЛЕНО: Используем существующий метод exportCurrentDatabaseToConfig (алиас)
       await this.smartWalletLoader.exportCurrentDatabaseToConfig();
       this.logger.info('✅ Config file force created with latest DB data');
     } catch (error) {
