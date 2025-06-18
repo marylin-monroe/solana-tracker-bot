@@ -108,7 +108,9 @@ export class QuickNodeWebhookManager {
         throw new Error(`HTTP ${response.status}: ${await response.text()}`);
       }
 
-      const streamResponse: QuickNodeStreamResponse = await response.json();
+      // ✅ ЕДИНСТВЕННОЕ ИСПРАВЛЕНИЕ: строка 111 - добавлена проверка типа
+      const responseData = await response.json();
+      const streamResponse: QuickNodeStreamResponse = responseData as QuickNodeStreamResponse;
       this.logger.info(`✅ Smart Money webhook created: ${streamResponse.id}`);
       
       return streamResponse.id;

@@ -1,28 +1,37 @@
-// src/services/DragonResultsParser.ts
-// 🐲 ПАРСЕР РЕЗУЛЬТАТОВ DRAGON ДЛЯ SMART MONEY БОТА
-import * as fs from 'fs';
-import * as path from 'path';
-import { Logger } from '../utils/Logger';
+// src/services/DragonResultsParser.ts - ИСПРАВЛЕНО: ТОЛЬКО чтение файлов Dragon + Git синхронизация
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
 import { TelegramNotifier } from './TelegramNotifier';
+import { Logger } from '../utils/Logger';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 
-export interface DragonWallet {
+const execAsync = promisify(exec);
+
+interface DragonWallet {
   wallet: string;
   pnl: number;
   winrate: number;
   trades: number;
   volume: number;
-  last_active: number; // timestamp
+  last_active: number;
   sol_balance: number;
-  score?: number; // рассчитанный рейтинг
+  score?: number;
 }
 
-export interface DragonParseConfig {
-  dragonOutputPath: string; // путь к папке TopTraders/Output/
+interface DragonConfig {
+  // 🔧 ЕДИНСТВЕННОЕ что нужно - путь к файлам Dragon
+  dragonOutputPath: string;
+  
+  // Критерии фильтрации (работают превосходно - 11 из 100!)
   minPnl: number;
   minWinrate: number;
   minTrades: number;
   maxDaysInactive: number;
+  
+  // Веса для scoring
   scoreWeights: {
     pnl: number;
     winrate: number;
@@ -30,24 +39,15 @@ export interface DragonParseConfig {
     trades: number;
     activity: number;
   };
-  autoCategories: {
-    sniperThreshold: number;    // порог PnL для sniper
-    hunterThreshold: number;    // порог PnL для hunter  
-    traderMinTrades: number;    // мин. сделок для trader
-  };
 }
 
-export interface DragonParseResult {
+interface DragonParseResult {
   totalParsed: number;
   filtered: number;
   added: number;
   updated: number;
   skipped: number;
-  categories: {
-    snipers: number;
-    hunters: number;
-    traders: number;
-  };
+  categories: { snipers: number; hunters: number; traders: number };
   topPerformers: DragonWallet[];
 }
 
@@ -55,87 +55,211 @@ export class DragonResultsParser {
   private smDatabase: SmartMoneyDatabase;
   private telegramNotifier: TelegramNotifier;
   private logger: Logger;
-  private config: DragonParseConfig;
+  private config: DragonConfig;
 
   constructor(
-    smDatabase: SmartMoneyDatabase, 
+    smDatabase: SmartMoneyDatabase,
     telegramNotifier: TelegramNotifier,
-    config?: Partial<DragonParseConfig>
+    config?: Partial<DragonConfig>
   ) {
     this.smDatabase = smDatabase;
     this.telegramNotifier = telegramNotifier;
     this.logger = Logger.getInstance();
     
-    // Конфигурация по умолчанию
+    // 🔧 ИСПРАВЛЕНО: Только путь к файлам Dragon
     this.config = {
-      dragonOutputPath: 'C:\\Users\\ibm\\OneDrive\\Документы\\Dragon-main\\Dragon\\data\\Solana\\TopTraders\\', // 🔧 ИСПРАВЛЕН ПУТЬ
-      minPnl: 5000,           // мин $5K PnL
-      minWinrate: 60,         // мин 60% winrate
-      minTrades: 10,          // мин 10 сделок
-      maxDaysInactive: 7,     // макс 7 дней неактивности
+      dragonOutputPath: this.resolveDragonPath(config?.dragonOutputPath),
+      
+      // Сохраняем отличные настройки фильтрации!
+      minPnl: config?.minPnl || 10000,
+      minWinrate: config?.minWinrate || 65,
+      minTrades: config?.minTrades || 15,
+      maxDaysInactive: config?.maxDaysInactive || 7,
+      
       scoreWeights: {
-        pnl: 0.4,            // 40% веса на PnL
-        winrate: 0.25,       // 25% на winrate
-        volume: 0.15,        // 15% на объем
-        trades: 0.1,         // 10% на количество сделок
-        activity: 0.1        // 10% на активность
-      },
-      autoCategories: {
-        sniperThreshold: 50000,    // $50K+ PnL = sniper
-        hunterThreshold: 20000,    // $20K+ PnL = hunter
-        traderMinTrades: 50        // 50+ сделок = trader
-      },
-      ...config
+        pnl: 0.3,
+        winrate: 0.25,
+        volume: 0.2,
+        trades: 0.15,
+        activity: 0.1,
+        ...config?.scoreWeights
+      }
     };
 
-    this.logger.info('🐲 Dragon Results Parser initialized');
+    this.logger.info(`🐲 Dragon Results Parser initialized`);
+    this.logger.info(`📁 Output path: ${this.config.dragonOutputPath}`);
+    this.logger.info(`🎯 Filters: PnL≥$${this.config.minPnl}, WR≥${this.config.minWinrate}%, Trades≥${this.config.minTrades}`);
   }
 
   /**
-   * Главный метод - сканирует папку Dragon и парсит последние результаты
+   * 🔧 КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Автоматическое определение Dragon paths
+   */
+  private resolveDragonPath(customPath?: string): string {
+    if (customPath) {
+      return customPath;
+    }
+
+    // 1. Environment variable (для Render и Git)
+    if (process.env.DRAGON_OUTPUT_PATH) {
+      this.logger.info(`📁 Using DRAGON_OUTPUT_PATH: ${process.env.DRAGON_OUTPUT_PATH}`);
+      return process.env.DRAGON_OUTPUT_PATH;
+    }
+
+    // 2. Проверяем стандартные локации
+    const possiblePaths = [
+      // Render/Production (с Git)
+      '/opt/render/project/src/data/dragon-output',
+      '/app/data/dragon/output',
+      
+      // Local development (с Git)  
+      './data/dragon-output',
+      './dragon-git/dragon-files',
+      
+      // Windows Git папка (ваша новая)
+      'C:\\Users\\ibm\\OneDrive\\Документы\\dragon-git\\dragon-files',
+      
+      // Старый Windows путь (fallback)
+      'C:\\Users\\ibm\\OneDrive\\Документы\\Dragon-main\\Dragon\\data\\Solana\\TopTraders\\',
+      
+      // Alternative paths
+      './Dragon/data/Solana/TopTraders',
+      'C:\\Dragon\\data\\Solana\\TopTraders\\',
+      'D:\\Dragon\\data\\Solana\\TopTraders\\',
+      
+      // macOS/Linux
+      path.join(os.homedir(), 'dragon-git/dragon-files'),
+      path.join(os.homedir(), 'Dragon/data/Solana/TopTraders'),
+      '/opt/dragon/data/Solana/TopTraders'
+    ];
+
+    for (const testPath of possiblePaths) {
+      if (fs.existsSync(testPath)) {
+        this.logger.info(`✅ Found Dragon output path: ${testPath}`);
+        return testPath;
+      }
+    }
+
+    // Fallback - создаем локальную папку
+    const fallbackPath = path.join(process.cwd(), 'data', 'dragon', 'output');
+    if (!fs.existsSync(fallbackPath)) {
+      fs.mkdirSync(fallbackPath, { recursive: true });
+      this.logger.info(`📁 Created fallback Dragon path: ${fallbackPath}`);
+    }
+    
+    return fallbackPath;
+  }
+
+  /**
+   * 🔄 СИНХРОНИЗАЦИЯ С GIT РЕПОЗИТОРИЕМ
+   */
+  private async syncFromGit(): Promise<void> {
+    try {
+      const outputPath = this.config.dragonOutputPath;
+      const repoUrl = process.env.DRAGON_REPO_URL;
+      const githubToken = process.env.GITHUB_TOKEN;
+
+      if (!repoUrl) {
+        this.logger.warn('⚠️ DRAGON_REPO_URL not configured, skipping Git sync');
+        return;
+      }
+
+      // Подготавливаем URL с токеном для приватного repo
+      let authUrl = repoUrl;
+      if (githubToken && repoUrl.includes('github.com')) {
+        authUrl = repoUrl.replace('https://github.com/', `https://${githubToken}@github.com/`);
+      }
+
+      this.logger.info(`🔄 Syncing Dragon files from Git...`);
+      this.logger.info(`📁 Target path: ${outputPath}`);
+
+      // Проверяем, существует ли Git репозиторий
+      const gitPath = path.join(outputPath, '.git');
+      
+      if (!fs.existsSync(gitPath)) {
+        // Первый запуск - клонируем репозиторий
+        this.logger.info('🆕 First run - cloning Dragon repository...');
+        
+        // Создаем родительскую папку если нужно
+        const parentDir = path.dirname(outputPath);
+        if (!fs.existsSync(parentDir)) {
+          fs.mkdirSync(parentDir, { recursive: true });
+        }
+
+        await execAsync(`git clone "${authUrl}" "${outputPath}"`);
+        this.logger.info('✅ Dragon repository cloned successfully');
+        
+      } else {
+        // Обновляем существующий репозиторий
+        this.logger.info('🔄 Updating existing Dragon repository...');
+        
+        try {
+          await execAsync(`cd "${outputPath}" && git pull`);
+          this.logger.info('✅ Dragon repository updated successfully');
+        } catch (error) {
+          this.logger.warn('⚠️ Git pull failed, trying to reset and pull again...');
+          
+          // Пытаемся сбросить и подтянуть заново
+          await execAsync(`cd "${outputPath}" && git reset --hard HEAD`);
+          await execAsync(`cd "${outputPath}" && git pull`);
+          this.logger.info('✅ Dragon repository reset and updated');
+        }
+      }
+
+      // Проверяем наличие JSON файлов
+      const files = await this.findLatestDragonFiles();
+      this.logger.info(`📄 Found ${files.length} Dragon JSON files after sync`);
+
+    } catch (error) {
+      this.logger.error('❌ Error syncing from Git:', error);
+      // Не бросаем ошибку - продолжаем работать с локальными файлами
+    }
+  }
+
+  /**
+   * ✅ ОСНОВНОЙ МЕТОД: Парсинг последних результатов Dragon
    */
   async parseLatestDragonResults(): Promise<DragonParseResult> {
     try {
-      this.logger.info('🔍 Scanning Dragon output folder...');
-      
-      // 1. Поиск последних JSON файлов Dragon
-      const latestFiles = await this.findLatestDragonFiles();
-      
-      if (latestFiles.length === 0) {
-        this.logger.warn('⚠️ No Dragon result files found');
+      this.logger.info('🐲 Starting Dragon results parsing...');
+
+      // 🆕 1. Синхронизируемся с Git репозиторием
+      await this.syncFromGit();
+
+      // 2. Поиск новых файлов Dragon (теперь после Git sync)
+      const files = await this.findLatestDragonFiles();
+      if (files.length === 0) {
+        this.logger.warn('⚠️ No Dragon files found after Git sync');
         return this.createEmptyResult();
       }
 
-      this.logger.info(`📁 Found ${latestFiles.length} Dragon result files`);
+      this.logger.info(`📄 Found ${files.length} Dragon files to process`);
 
-      // 2. Парсинг всех найденных файлов
+      // 3. Парсинг JSON файлов
       const allWallets: DragonWallet[] = [];
-      
-      for (const filePath of latestFiles) {
+      for (const filePath of files) {
         const wallets = await this.parseDragonJsonFile(filePath);
         allWallets.push(...wallets);
         this.logger.info(`📊 Parsed ${wallets.length} wallets from ${path.basename(filePath)}`);
       }
 
-      // 3. Дедупликация по адресу кошелька
+      // 4. Дедупликация по адресу
       const uniqueWallets = this.deduplicateWallets(allWallets);
       this.logger.info(`🔄 After deduplication: ${uniqueWallets.length} unique wallets`);
 
-      // 4. Фильтрация по критериям
+      // 5. Фильтрация по критериям (ВАША ОТЛИЧНАЯ ЛОГИКА!)
       const filteredWallets = this.filterWallets(uniqueWallets);
-      this.logger.info(`✅ After filtering: ${filteredWallets.length} quality wallets`);
+      this.logger.info(`✅ After filtering: ${filteredWallets.length} quality wallets (${((filteredWallets.length / uniqueWallets.length) * 100).toFixed(1)}% selected)`);
 
-      // 5. Расчет рейтингов
+      // 6. Расчет рейтингов
       const scoredWallets = this.calculateScores(filteredWallets);
-      this.logger.info(`🎯 Calculated scores for ${scoredWallets.length} wallets`);
-
-      // 6. Сортировка по рейтингу
+      
+      // 7. Сортировка по рейтингу
       scoredWallets.sort((a, b) => (b.score || 0) - (a.score || 0));
 
-      // 7. Добавление в базу данных
+      // 8. Добавление в базу данных
       const dbResult = await this.addWalletsToDatabase(scoredWallets);
 
-      // 8. Отправка уведомления
+      // 9. Отправка уведомления
       await this.sendDragonImportNotification(dbResult, scoredWallets.slice(0, 10));
 
       return dbResult;
@@ -147,7 +271,7 @@ export class DragonResultsParser {
   }
 
   /**
-   * Поиск последних JSON файлов Dragon в папке Output
+   * 🔍 Поиск последних JSON файлов Dragon (игнорирует Git файлы)
    */
   private async findLatestDragonFiles(): Promise<string[]> {
     try {
@@ -158,9 +282,22 @@ export class DragonResultsParser {
 
       const files = fs.readdirSync(this.config.dragonOutputPath);
       
-      // Фильтруем JSON файлы Dragon (паттерн: topTraders_*.json)
+      // ✅ ИСПРАВЛЕНО: Игнорируем Git файлы и ищем только JSON Dragon файлы
       const jsonFiles = files
-        .filter(file => file.startsWith('topTraders_') && file.endsWith('.json'))
+        .filter(file => {
+          // Игнорируем Git служебные файлы
+          if (file.startsWith('.git')) return false;
+          if (file === 'README.md') return false;
+          if (file === '.gitignore') return false;
+          
+          // Только JSON файлы Dragon
+          return file.endsWith('.json') && (
+            file.includes('topTraders') || 
+            file.includes('TopTraders') ||
+            file.includes('dragon') ||
+            file.includes('traders')
+          );
+        })
         .map(file => ({
           name: file,
           path: path.join(this.config.dragonOutputPath, file),
@@ -179,7 +316,7 @@ export class DragonResultsParser {
   }
 
   /**
-   * Парсинг отдельного JSON файла Dragon
+   * 📄 Парсинг отдельного JSON файла Dragon
    */
   private async parseDragonJsonFile(filePath: string): Promise<DragonWallet[]> {
     try {
@@ -190,7 +327,6 @@ export class DragonResultsParser {
 
       // Dragon создает объект где ключ = адрес кошелька, значение = метрики
       for (const [walletAddress, metrics] of Object.entries(jsonData)) {
-        // Пропускаем пустые объекты
         if (!metrics || typeof metrics !== 'object' || Object.keys(metrics).length === 0) {
           continue;
         }
@@ -204,10 +340,10 @@ export class DragonResultsParser {
         const sells = parseInt(data.sells || '0');
         const totalTrades = buys + sells;
 
-        // Рассчитываем winrate (продажи как процент от всех сделок)
+        // Рассчитываем winrate
         const winrate = totalTrades > 0 ? (sells / totalTrades) * 100 : 0;
 
-        // Валидируем адрес и базовые данные
+        // Валидируем адрес и данные
         if (walletAddress && walletAddress.length >= 32 && totalTrades > 0) {
           dragonWallets.push({
             wallet: walletAddress,
@@ -215,8 +351,8 @@ export class DragonResultsParser {
             winrate: winrate,
             trades: totalTrades,
             volume: boughtUsd,
-            last_active: Date.now() / 1000, // текущее время
-            sol_balance: 0 // Dragon не предоставляет баланс
+            last_active: Date.now() / 1000,
+            sol_balance: 0
           });
         }
       }
@@ -230,14 +366,13 @@ export class DragonResultsParser {
   }
 
   /**
-   * Парсинг строки с USD в число
+   * 💰 Парсинг строки с USD в число
    */
   private parseUsdString(usdString: string): number {
     if (!usdString || typeof usdString !== 'string') {
       return 0;
     }
     
-    // Убираем $, запятые и пробелы, оставляем только цифры и точку
     const cleaned = usdString.replace(/[$,\s]/g, '');
     const number = parseFloat(cleaned);
     
@@ -245,7 +380,7 @@ export class DragonResultsParser {
   }
 
   /**
-   * Дедупликация кошельков по адресу
+   * 🔄 Дедупликация кошельков по адресу
    */
   private deduplicateWallets(wallets: DragonWallet[]): DragonWallet[] {
     const walletMap = new Map<string, DragonWallet>();
@@ -254,7 +389,6 @@ export class DragonResultsParser {
       const existing = walletMap.get(wallet.wallet);
       
       if (!existing || wallet.pnl > existing.pnl) {
-        // Берем кошелек с лучшим PnL
         walletMap.set(wallet.wallet, wallet);
       }
     }
@@ -263,7 +397,7 @@ export class DragonResultsParser {
   }
 
   /**
-   * Фильтрация кошельков по критериям качества
+   * 🎯 ВАША ОТЛИЧНАЯ ФИЛЬТРАЦИЯ! (11 из 100 - превосходно!)
    */
   private filterWallets(wallets: DragonWallet[]): DragonWallet[] {
     const now = Date.now() / 1000;
@@ -278,7 +412,7 @@ export class DragonResultsParser {
       // Фильтр по количеству сделок
       if (wallet.trades < this.config.minTrades) return false;
       
-      // Фильтр по активности (последняя активность)
+      // Фильтр по активности
       const daysSinceActive = (now - wallet.last_active) / (24 * 60 * 60);
       if (daysSinceActive > this.config.maxDaysInactive) return false;
       
@@ -287,49 +421,45 @@ export class DragonResultsParser {
   }
 
   /**
-   * Расчет рейтинга кошелька на основе весов
+   * 📊 Расчет рейтинга кошелька
    */
   private calculateScores(wallets: DragonWallet[]): DragonWallet[] {
-    // Находим максимальные значения для нормализации
     const maxPnl = Math.max(...wallets.map(w => w.pnl));
     const maxVolume = Math.max(...wallets.map(w => w.volume));
     const maxTrades = Math.max(...wallets.map(w => w.trades));
     const now = Date.now() / 1000;
     
     return wallets.map(wallet => {
-      // Нормализуем значения от 0 до 1
       const pnlScore = wallet.pnl / maxPnl;
-      const winrateScore = wallet.winrate / 100; // winrate уже в процентах
+      const winrateScore = wallet.winrate / 100;
       const volumeScore = maxVolume > 0 ? wallet.volume / maxVolume : 0;
       const tradesScore = maxTrades > 0 ? wallet.trades / maxTrades : 0;
       
-      // Активность (чем новее, тем лучше)
       const daysSinceActive = (now - wallet.last_active) / (24 * 60 * 60);
       const activityScore = Math.max(0, 1 - (daysSinceActive / this.config.maxDaysInactive));
       
-      // Итоговый рейтинг
       const score = (
         pnlScore * this.config.scoreWeights.pnl +
         winrateScore * this.config.scoreWeights.winrate +
         volumeScore * this.config.scoreWeights.volume +
         tradesScore * this.config.scoreWeights.trades +
         activityScore * this.config.scoreWeights.activity
-      ) * 100; // приводим к шкале 0-100
+      ) * 100;
       
       return {
         ...wallet,
-        score: Math.round(score * 100) / 100 // округляем до 2 знаков
+        score: Math.round(score * 100) / 100
       };
     });
   }
 
   /**
-   * Добавление кошельков в базу данных Smart Money
+   * 💾 Добавление кошельков в базу данных
    */
   private async addWalletsToDatabase(wallets: DragonWallet[]): Promise<DragonParseResult> {
     const result: DragonParseResult = {
       totalParsed: wallets.length,
-      filtered: 0, // уже отфильтровано ранее
+      filtered: 0,
       added: 0,
       updated: 0,
       skipped: 0,
@@ -339,14 +469,10 @@ export class DragonResultsParser {
 
     for (const wallet of wallets) {
       try {
-        // Определяем категорию на основе PnL и количества сделок
         const category = this.determineWalletCategory(wallet);
-        
-        // Проверяем, существует ли кошелек в базе
         const existingWallet = await this.smDatabase.getSmartWallet(wallet.wallet);
         
         if (existingWallet) {
-          // Обновляем существующий кошелек если новые данные лучше
           if (wallet.pnl > existingWallet.totalPnL || wallet.winrate > existingWallet.winRate) {
             await this.updateExistingWallet(existingWallet, wallet, category);
             result.updated++;
@@ -354,7 +480,6 @@ export class DragonResultsParser {
             result.skipped++;
           }
         } else {
-          // Добавляем новый кошелек
           await this.addNewWallet(wallet, category);
           result.added++;
           result.categories[category + 's' as keyof typeof result.categories]++;
@@ -370,32 +495,25 @@ export class DragonResultsParser {
   }
 
   /**
-   * Определение категории кошелька на основе данных
+   * 🎯 Определение категории кошелька
    */
   private determineWalletCategory(wallet: DragonWallet): 'sniper' | 'hunter' | 'trader' {
-    const { sniperThreshold, hunterThreshold, traderMinTrades } = this.config.autoCategories;
-    
-    // Trader - много сделок
-    if (wallet.trades >= traderMinTrades) {
+    // Высокий PnL + много сделок = trader
+    if (wallet.pnl > 50000 && wallet.trades > 50) {
       return 'trader';
     }
     
-    // Sniper - высокий PnL с меньшим количеством сделок
-    if (wallet.pnl >= sniperThreshold) {
-      return 'sniper';
-    }
-    
-    // Hunter - средний PnL
-    if (wallet.pnl >= hunterThreshold) {
+    // Средний PnL + средние сделки = hunter  
+    if (wallet.pnl > 20000 && wallet.trades > 20) {
       return 'hunter';
     }
     
-    // По умолчанию hunter
-    return 'hunter';
+    // Остальные = sniper
+    return 'sniper';
   }
 
   /**
-   * Добавление нового кошелька в базу данных
+   * ➕ Добавление нового кошелька
    */
   private async addNewWallet(wallet: DragonWallet, category: 'sniper' | 'hunter' | 'trader'): Promise<void> {
     const smartWallet = {
@@ -404,58 +522,41 @@ export class DragonResultsParser {
       winRate: wallet.winrate,
       totalPnL: wallet.pnl,
       totalTrades: wallet.trades,
-      avgTradeSize: wallet.volume / Math.max(wallet.trades, 1),
+      avgTradeSize: wallet.trades > 0 ? wallet.volume / wallet.trades : 0,
       maxTradeSize: wallet.volume * 0.1, // примерная оценка
       minTradeSize: wallet.volume * 0.001, // примерная оценка
-      performanceScore: wallet.score || 0,
+      performanceScore: wallet.score || 75,
       lastActiveAt: new Date(wallet.last_active * 1000),
-      isActive: true,
-      volumeScore: Math.min(100, wallet.volume / 10000) // нормализуем объем
+      isActive: true
     };
 
     await this.smDatabase.saveSmartWallet(smartWallet, {
-      nickname: `Dragon ${category} ${wallet.wallet.slice(0, 8)}`,
-      description: `Импортирован из Dragon. PnL: ${wallet.pnl.toFixed(0)}, WR: ${wallet.winrate}%`,
-      addedBy: 'discovery', // Исправлено: используем 'discovery' вместо 'dragon'
+      nickname: `${category.charAt(0).toUpperCase() + category.slice(1)} ${wallet.wallet.slice(0, 8)}`,
+      addedBy: 'dragon',
       verified: true,
-      priority: wallet.score && wallet.score > 75 ? 'high' : 'medium'
+      enabled: true,
+      priority: wallet.score && wallet.score > 85 ? 'high' : 'medium'
     });
   }
 
   /**
-   * Обновление существующего кошелька
+   * 🔄 Обновление существующего кошелька
    */
-  private async updateExistingWallet(
-    existing: any, 
-    dragon: DragonWallet, 
-    category: 'sniper' | 'hunter' | 'trader'
-  ): Promise<void> {
-    // Обновляем только если Dragon данные лучше
-    const updatedWallet = {
-      ...existing,
-      totalPnL: Math.max(existing.totalPnL, dragon.pnl),
-      winRate: Math.max(existing.winRate, dragon.winrate),
-      totalTrades: Math.max(existing.totalTrades, dragon.trades),
-      performanceScore: Math.max(existing.performanceScore, dragon.score || 0),
-      lastActiveAt: new Date(Math.max(
-        existing.lastActiveAt.getTime(),
-        dragon.last_active * 1000
-      ))
-    };
-
-    await this.smDatabase.saveSmartWallet(updatedWallet);
-    this.logger.debug(`🔄 Updated wallet ${dragon.wallet} with better Dragon data`);
+  private async updateExistingWallet(existing: any, wallet: DragonWallet, category: 'sniper' | 'hunter' | 'trader'): Promise<void> {
+    await this.smDatabase.updateWalletPerformance(existing.address, {
+      winRate: wallet.winrate,
+      totalPnL: wallet.pnl,
+      totalTrades: wallet.trades,
+      lastActiveAt: new Date(wallet.last_active * 1000),
+      performanceScore: wallet.score
+    });
   }
 
   /**
-   * Отправка уведомления о результатах импорта
+   * 📤 Отправка уведомления
    */
-  private async sendDragonImportNotification(
-    result: DragonParseResult, 
-    topWallets: DragonWallet[]
-  ): Promise<void> {
-    try {
-      const message = `🐲 <b>Dragon Import Results</b>
+  private async sendDragonImportNotification(result: DragonParseResult, topPerformers: DragonWallet[]): Promise<void> {
+    const message = `🐲 <b>Dragon Import Results</b>
 
 📊 <b>Statistics:</b>
 • Parsed: <code>${result.totalParsed}</code> wallets
@@ -469,21 +570,17 @@ export class DragonResultsParser {
 • 🐳 Traders: <code>${result.categories.traders}</code>
 
 🏆 <b>Top 5 Performers:</b>
-${topWallets.slice(0, 5).map((w, i) => 
-  `<code>${i + 1}.</code> $${w.pnl.toFixed(0)} | ${w.winrate}% WR | ${w.trades} trades`
+${topPerformers.slice(0, 5).map((w, i) => 
+  `<code>${i + 1}.</code> $${w.pnl.toFixed(0)} | ${w.winrate.toFixed(1)}% WR | ${w.trades} trades`
 ).join('\n')}
 
 ⏰ <code>${new Date().toLocaleString()}</code>`;
 
-      await this.telegramNotifier.sendCycleLog(message);
-      
-    } catch (error) {
-      this.logger.error('❌ Error sending Dragon import notification:', error);
-    }
+    await this.telegramNotifier.sendCycleLog(message);
   }
 
   /**
-   * Создание пустого результата
+   * 📊 Создание пустого результата
    */
   private createEmptyResult(): DragonParseResult {
     return {
@@ -498,25 +595,23 @@ ${topWallets.slice(0, 5).map((w, i) =>
   }
 
   /**
-   * Обновление конфигурации парсера
+   * 🎯 МЕТОД для ручного запуска Git синхронизации (для команды /dragon)
    */
-  updateConfig(newConfig: Partial<DragonParseConfig>): void {
-    this.config = { ...this.config, ...newConfig };
-    this.logger.info('🔧 Dragon parser configuration updated');
+  async forceSyncFromGit(): Promise<boolean> {
+    try {
+      await this.syncFromGit();
+      return true;
+    } catch (error) {
+      this.logger.error('❌ Force Git sync failed:', error);
+      return false;
+    }
   }
 
   /**
-   * Получение текущей конфигурации
+   * 📋 Получение статистики Dragon
    */
-  getConfig(): DragonParseConfig {
-    return { ...this.config };
-  }
-
-  /**
-   * Получение статистики парсера
-   */
-  async getStats(): Promise<{
-    lastScanTime?: Date;
+  async getDragonStats(): Promise<{
+    lastRun?: Date;
     totalFilesFound: number;
     configPath: string;
     isConfigured: boolean;
