@@ -1,4 +1,4 @@
-// src/main.ts - ИСПРАВЛЕНО: убраны все упоминания HELIUS + добавлен TokenMetadataService + все функции сохранены
+// src/main.ts - КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Profit-First пороги + все функции сохранены
 import * as dotenv from 'dotenv';
 import { TelegramNotifier } from './services/TelegramNotifier';
 import { Database } from './services/Database';
@@ -71,18 +71,15 @@ class SmartMoneyBotRunner {
     
     this.webhookManager = new QuickNodeWebhookManager();
 
-    // 🔧 ИСПРАВЛЕНО: убран жестко прописанный путь Dragon!
+    // 🔧 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: PROFIT-FIRST пороги вместо старых значений!
     this.dragonParser = new DragonResultsParser(
       this.smDatabase, 
       this.telegramNotifier,
       {
-        // ❌ УДАЛЕНА жестко прописанная строка:
-        // dragonOutputPath: 'C:\\Users\\ibm\\OneDrive\\Документы\\Dragon-main\\Dragon\\data\\Solana\\TopTraders\\',
-        
-        // ✅ ТОЛЬКО фильтры (путь определяется автоматически):
-        minPnl: 10000,        // $10K минимум
-        minWinrate: 65,       // 65% минимум  
-        minTrades: 15,        // 15 сделок минимум
+        // ✅ НОВЫЕ PROFIT-FIRST ЗНАЧЕНИЯ (исправлено!)
+        minPnl: 50000,        // $50K (было $10K) ← ИСПРАВЛЕНО!
+        minWinrate: 35,       // 35% (было 65%) ← ИСПРАВЛЕНО!
+        minTrades: 10,        // 10 (было 15) ← ИСПРАВЛЕНО!
         maxDaysInactive: 7    // максимум 7 дней неактивности
       }
     );
@@ -97,7 +94,8 @@ class SmartMoneyBotRunner {
       this.tokenMetadataService // 🆕 ДОБАВЛЕНО
     );
 
-    this.logger.info('✅ Smart Money Bot services initialized (NO HELIUS + DRAGON INTEGRATION + MODULE B + TokenMetadataService)');
+    this.logger.info('✅ Smart Money Bot services initialized (PROFIT-FIRST + TokenMetadataService)');
+    this.logger.info('💰 Dragon thresholds: PnL≥$50K, WR≥35%, Trades≥10'); // 🆕 ЛОГИРУЕМ НОВЫЕ ПОРОГИ
   }
 
   private validateEnvironment(): void {
@@ -226,7 +224,7 @@ class SmartMoneyBotRunner {
     try {
       this.logger.info('🐲 Processing /dragon command');
       
-      await this.telegramNotifier.sendCycleLog('🐲 <b>Processing Dragon results...</b>\n\nThis may take 1-2 minutes.');
+      await this.telegramNotifier.sendCycleLog('🐲 <b>Processing Dragon results (PROFIT-FIRST)...</b>\n\nUsing thresholds: PnL≥$50K, WR≥35%, Trades≥10\nThis may take 1-2 minutes.');
       
       const result = await this.dragonParser.parseLatestDragonResults();
       
@@ -241,6 +239,11 @@ class SmartMoneyBotRunner {
         `• 🔫 Snipers: <code>${result.categories.snipers}</code>\n` +
         `• 💡 Hunters: <code>${result.categories.hunters}</code>\n` +
         `• 🐳 Traders: <code>${result.categories.traders}</code>\n\n` +
+        `💰 <b>Profit Distribution:</b>\n` +
+        `• 🐋 Mega-Whales ($1M+): <code>${result.profitDistribution.megaWhales}</code>\n` +
+        `• 🐳 Whales ($500K+): <code>${result.profitDistribution.whales}</code>\n` +
+        `• 💎 Big Players ($200K+): <code>${result.profitDistribution.bigPlayers}</code>\n` +
+        `• ⭐ Quality ($100K+): <code>${result.profitDistribution.quality}</code>\n\n` +
         `🚀 <b>Auto-loaded:</b> <code>${result.added > 0 ? 'Yes' : 'No'}</code>\n\n` +
         `⏰ <code>${new Date().toLocaleString()}</code>`
       );
@@ -379,14 +382,14 @@ class SmartMoneyBotRunner {
         `❓ <b>Smart Money Bot Commands</b>\n\n` +
         `📊 <b>/stats</b> - Bot statistics and status\n` +
         `👥 <b>/wallets</b> - Active Smart Money wallets\n` +
-        `🐲 <b>/dragon</b> - Process Dragon results\n` +
+        `🐲 <b>/dragon</b> - Process Dragon results (PROFIT-FIRST)\n` +
         `📈 <b>/flows</b> - Analyze current flows (1h/24h)\n` +
         `📊 <b>/holdings</b> - Portfolio holdings analysis\n` +
         `🚨 <b>/large</b> - Large transaction monitor stats\n` +
         `❓ <b>/help</b> - This help message\n\n` +
         `🤖 <b>Bot Features:</b>\n` +
         `• Real-time DEX monitoring\n` +
-        `• Smart Money flow analysis\n` +
+        `• PROFIT-FIRST Smart Money (PnL≥$50K)\n` +
         `• Dragon wallet integration\n` +
         `• Hot token detection\n` +
         `• Inflows/Outflows tracking\n` +
@@ -408,7 +411,7 @@ class SmartMoneyBotRunner {
 
   async start(): Promise<void> {
     try {
-      this.logger.info('🚀 Starting Smart Money Bot (NO HELIUS + FULL STACK + MODULE B + TokenMetadataService)...');
+      this.logger.info('🚀 Starting Smart Money Bot (PROFIT-FIRST + TokenMetadataService)...');
 
       await this.database.init();
       await this.smDatabase.init();
@@ -437,7 +440,7 @@ class SmartMoneyBotRunner {
       this.startPeriodicAnalysis();
       this.startDragonProcessing(); // 🆕 DRAGON PROCESSING
 
-      this.logger.info('✅ Smart Money Bot started successfully (NO HELIUS + FULL STACK + MODULE B + TokenMetadataService)!');
+      this.logger.info('✅ Smart Money Bot started successfully (PROFIT-FIRST + TokenMetadataService)!');
 
     } catch (error) {
       this.logger.error('❌ Error starting Smart Money Bot:', error);
@@ -495,6 +498,10 @@ class SmartMoneyBotRunner {
         `  • 🔫 Snipers: <code>${stats.byCategory?.sniper || 0}</code>\n` +
         `  • 💡 Hunters: <code>${stats.byCategory?.hunter || 0}</code>\n` +
         `  • 🐳 Traders: <code>${stats.byCategory?.trader || 0}</code>\n\n` +
+        `💰 <b>PROFIT-FIRST Thresholds:</b>\n` +
+        `  • Min PnL: <code>$50,000</code>\n` +
+        `  • Min WR: <code>35%</code>\n` +
+        `  • Min Trades: <code>10</code>\n\n` +
         `🚨 <b>Large TX Monitor:</b> <code>Active ($2M+)</code>\n` +
         `🔧 <b>Providers:</b> <code>${multiProviderMetrics.healthyProviders}/${multiProviderMetrics.totalProviders} healthy</code>\n` +
         `🏷️ <b>Token Metadata:</b> <code>Enhanced (Jupiter + Birdeye)</code>\n\n` +
@@ -502,7 +509,7 @@ class SmartMoneyBotRunner {
         `• Flow Analysis (1h/24h)\n` +
         `• Hot New Tokens\n` +
         `• Portfolio Holdings\n` +
-        `• Dragon Integration\n` +
+        `• Dragon Integration (PROFIT-FIRST)\n` +
         `• Large TX Alerts ($2M+)\n` +
         `• Multi-Provider Failover\n` +
         `• Advanced Scam Filtering\n` +
@@ -581,15 +588,16 @@ class SmartMoneyBotRunner {
     // Dragon processing каждые 6 часов
     const dragonInterval = setInterval(async () => {
       try {
-        this.logger.info('🐲 Starting automatic Dragon processing...');
+        this.logger.info('🐲 Starting automatic Dragon processing (PROFIT-FIRST)...');
         const result = await this.dragonParser.parseLatestDragonResults();
         
         if (result.added > 0 || result.updated > 0) {
           await this.telegramNotifier.sendCycleLog(
-            `🐲 <b>Auto Dragon Import</b>\n\n` +
+            `🐲 <b>Auto Dragon Import (PROFIT-FIRST)</b>\n\n` +
             `➕ Added: <code>${result.added}</code>\n` +
             `🔄 Updated: <code>${result.updated}</code>\n` +
-            `📊 Total Parsed: <code>${result.totalParsed}</code>\n\n` +
+            `📊 Total Parsed: <code>${result.totalParsed}</code>\n` +
+            `💰 Avg PnL: <code>$${this.formatNumber(result.averagePnL)}</code>\n\n` +
             `⏰ <code>${new Date().toLocaleString()}</code>`
           );
         }
@@ -600,7 +608,7 @@ class SmartMoneyBotRunner {
 
     this.intervalIds.push(dragonInterval);
 
-    this.logger.info('🐲 Dragon auto-processing started (every 6 hours)');
+    this.logger.info('🐲 Dragon auto-processing started (PROFIT-FIRST, every 6 hours)');
   }
 
   private detectRenderURL(): string {
@@ -649,59 +657,6 @@ class SmartMoneyBotRunner {
     return fallbackUrl;
   }
 
-  // ✅ ИСПРАВЛЕННЫЙ МЕТОД: Автоматическое исправление синхронизации кошельков
-  private async autoFixWalletSync(): Promise<void> {
-    try {
-      this.logger.info('🔧 Auto-fixing wallet sync...');
-
-      // ✅ Диагностика перед исправлением
-      try {
-        const diagnostics = await this.smDatabase.getDiagnosticInfo();
-        this.logger.info('📊 Current DB state:', diagnostics);
-      } catch (diagError) {
-        this.logger.warn('⚠️ Could not get diagnostics, continuing...', diagError);
-      }
-
-      // Проверяем количество кошельков в БД
-      const dbCount = await this.smDatabase.getWalletCount();
-      this.logger.info(`📊 Found ${dbCount} wallets in database`);
-
-      // Если кошельков меньше 8 (ожидаем 10), значит что-то не так
-      if (dbCount < 8) {
-        this.logger.warn('⚠️ Detected insufficient wallets, forcing reload...');
-        
-        // ✅ Полная очистка и перезагрузка через SmartWalletLoader с исправленной Foreign Key проблемой
-        const success = await this.smartWalletLoader.forceReplaceAllWallets();
-        if (success) {
-          this.logger.info('✅ Wallets force replaced successfully');
-        } else {
-          this.logger.error('❌ Failed to force replace wallets');
-        }
-      } else {
-        this.logger.info('✅ Sufficient wallets found, no replacement needed');
-      }
-
-      // Дополнительная проверка: если конфиг файл содержит старые данные
-      await this.forceCreateConfigFile();
-
-    } catch (error) {
-      this.logger.error('❌ Error in auto wallet sync fix:', error);
-      // Не бросаем ошибку дальше, чтобы бот продолжил работу
-    }
-  }
-
-  // 🚀 ПРИНУДИТЕЛЬНОЕ создание конфиг файла с актуальными кошельками
-  private async forceCreateConfigFile(): Promise<void> {
-    try {
-      this.logger.info('🔧 Force creating config file with current DB wallets...');
-      // ✅ ИСПРАВЛЕНО: Используем существующий метод exportCurrentDatabaseToConfig (алиас)
-      await this.smartWalletLoader.exportCurrentDatabaseToConfig();
-      this.logger.info('✅ Config file force created with latest DB data');
-    } catch (error) {
-      this.logger.error('❌ Error force creating config file:', error);
-    }
-  }
-
   async stop(): Promise<void> {
     try {
       this.logger.info('🛑 Stopping Smart Money Bot...');
@@ -740,7 +695,7 @@ class SmartMoneyBotRunner {
         `⏰ <code>${new Date().toLocaleString()}</code>`
       );
 
-      this.logger.info('✅ Smart Money Bot stopped successfully (NO HELIUS + TokenMetadataService)');
+      this.logger.info('✅ Smart Money Bot stopped successfully (PROFIT-FIRST + TokenMetadataService)');
 
     } catch (error) {
       this.logger.error('❌ Error stopping Smart Money Bot:', error);

@@ -1,4 +1,4 @@
-// src/services/QuickNodeWebhookManager.ts - ПОЛНЫЙ ФАЙЛ с добавлением tokenPrice + все функции сохранены
+// src/services/QuickNodeWebhookManager.ts - КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Фильтр старых транзакций + tokenPrice + все функции сохранены
 import { Logger } from '../utils/Logger';
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
 import { TelegramNotifier } from './TelegramNotifier';
@@ -84,9 +84,10 @@ export class QuickNodeWebhookManager {
   private lastProcessedSignatures = new Map<string, string>();
   private monitoredWallets: SmartMoneyWallet[] = [];
   
-  // 🆕 ДОБАВЛЕНО: Дедупликация обработанных транзакций
+  // 🆕 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Дедупликация обработанных транзакций + фильтр времени
   private processedSignatures = new Set<string>();
   private lastCleanupTime = Date.now();
+  private botStartTime = Date.now(); // 🆕 КРИТИЧНО: Время запуска бота для фильтрации старых транзакций
   
   // 🚀 АГРЕССИВНОЕ КЕШИРОВАНИЕ
   private tokenInfoCache = new Map<string, { 
@@ -124,6 +125,7 @@ export class QuickNodeWebhookManager {
     this.initializeProviders();
     this.startLimitResetTimer();
     this.startCacheCleanup();
+    this.logger.info('🆕 QuickNode initialized with TRANSACTION AGE FILTER + TokenMetadataService');
   }
 
   // 🆕 ИНИЦИАЛИЗАЦИЯ МУЛЬТИ-ПРОВАЙДЕР СИСТЕМЫ
@@ -158,7 +160,7 @@ export class QuickNodeWebhookManager {
       });
     }
 
-    // Alchemy (приоритет 3)
+    // Alchemy (приоритет 5)
     if (process.env.ALCHEMY_HTTP_URL && process.env.ALCHEMY_API_KEY) {
       providers.push({
         name: 'Alchemy-Enhanced',
@@ -608,7 +610,7 @@ export class QuickNodeWebhookManager {
     }
   }
 
-  // 🔧 ИСПРАВЛЕНО: Улучшенная дедупликация в processWalletTransaction
+  // 🔧 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Улучшенная дедупликация + ФИЛЬТР СТАРЫХ ТРАНЗАКЦИЙ
   private async processWalletTransaction(signature: string, wallet: SmartMoneyWallet): Promise<void> {
     try {
       // ✅ ДОБАВЛЕНО: Проверка на уже обработанные транзакции
@@ -636,9 +638,9 @@ export class QuickNodeWebhookManager {
       if (!transaction) return;
 
       // 🔧 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Проверяем возраст транзакции
-      if (!this.isTransactionRecent(transaction)) {
+      if (!this.isTransactionRecentAndValid(transaction)) {
         const transactionAge = this.getTransactionAge(transaction);
-        this.logger.debug(`⏰ Skipping old transaction: ${signature} (age: ${transactionAge})`);
+        this.logger.debug(`⏰ Skipping old/invalid transaction: ${signature.slice(0, 12)}... (age: ${transactionAge})`);
         return;
       }
 
@@ -656,15 +658,51 @@ export class QuickNodeWebhookManager {
     }
   }
 
-  // 🔧 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: НОВЫЙ МЕТОД - Проверка актуальности транзакции
-  private isTransactionRecent(transaction: any): boolean {
+  // 🔧 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: НОВЫЙ МЕТОД - Проверка актуальности и валидности транзакции
+  private isTransactionRecentAndValid(transaction: any): boolean {
     if (!transaction || !transaction.blockTime) return false;
     
     const transactionTime = transaction.blockTime * 1000; // Convert to milliseconds
     const now = Date.now();
-    const maxAge = 24 * 60 * 60 * 1000; // 24 часа в миллисекундах
     
-    return (now - transactionTime) <= maxAge;
+    // 🚨 КРИТИЧНО: Фильтр старых транзакций относительно времени запуска бота
+    const timeSinceBotStart = now - this.botStartTime;
+    const timeSinceTransaction = now - transactionTime;
+    
+    // Если бот работает менее 5 минут, игнорируем транзакции старше 5 минут
+    if (timeSinceBotStart < 5 * 60 * 1000) {
+      const maxAgeForNewBot = 5 * 60 * 1000; // 5 минут
+      if (timeSinceTransaction > maxAgeForNewBot) {
+        this.logger.debug(`🚫 Bot startup filter: Transaction too old (${this.formatTimeDiff(timeSinceTransaction)} ago, bot running ${this.formatTimeDiff(timeSinceBotStart)})`);
+        return false;
+      }
+    } else {
+      // Если бот работает дольше, используем стандартный фильтр 24 часа
+      const maxAge = 24 * 60 * 60 * 1000; // 24 часа
+      if (timeSinceTransaction > maxAge) {
+        this.logger.debug(`🚫 Age filter: Transaction too old (${this.formatTimeDiff(timeSinceTransaction)} ago)`);
+        return false;
+      }
+    }
+    
+    // Дополнительные проверки валидности
+    if (!transaction.meta || transaction.meta.err) {
+      this.logger.debug(`🚫 Invalid transaction: Has errors or missing meta`);
+      return false;
+    }
+    
+    return true;
+  }
+
+  // 🔧 ВСПОМОГАТЕЛЬНЫЙ МЕТОД: Форматирование разницы во времени
+  private formatTimeDiff(ms: number): string {
+    const minutes = Math.floor(ms / (1000 * 60));
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+    
+    if (days > 0) return `${days}d ${hours % 24}h`;
+    if (hours > 0) return `${hours}h ${minutes % 60}m`;
+    return `${minutes}m`;
   }
 
   // 🔧 ВСПОМОГАТЕЛЬНЫЙ МЕТОД: Получение возраста транзакции как строки
@@ -684,7 +722,7 @@ export class QuickNodeWebhookManager {
     return `${ageMinutes}m`;
   }
 
-  // 🔥 ИСПРАВЛЕНО: extractSwapsFromTransaction с добавлением tokenPrice
+  // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: extractSwapsFromTransaction с добавлением tokenPrice + улучшенной интеграцией TokenMetadataService
   private async extractSwapsFromTransaction(transaction: any, wallet: SmartMoneyWallet): Promise<SmartMoneySwap[]> {
     const swaps: SmartMoneySwap[] = [];
 
@@ -710,7 +748,12 @@ export class QuickNodeWebhookManager {
         if (Math.abs(difference) < 10) continue;
 
         const tokenMint = postBalance.mint;
-        const tokenInfo = await this.getTokenInfoCached(tokenMint);
+        
+        // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Улучшенная интеграция TokenMetadataService
+        const [tokenInfo, tokenPrice] = await Promise.all([
+          this.getTokenInfoCached(tokenMint),
+          this.tokenMetadataService.getTokenPrice(tokenMint)
+        ]);
 
         const swapType: 'buy' | 'sell' = difference > 0 ? 'buy' : 'sell';
         const tokenAmount = Math.abs(difference);
@@ -718,9 +761,6 @@ export class QuickNodeWebhookManager {
         const estimatedUSD = await this.estimateTokenValueUSDCached(tokenMint, tokenAmount);
 
         if (estimatedUSD > 5000) {
-          // 🆕 ДОБАВЛЕНО: получение цены токена через TokenMetadataService
-          const tokenPrice = await this.tokenMetadataService.getTokenPrice(tokenMint);
-
           const swap: SmartMoneySwap = {
             transactionId: transaction.transaction.signatures[0],
             walletAddress: wallet.address,
@@ -735,7 +775,7 @@ export class QuickNodeWebhookManager {
             winRate: wallet.winRate,
             pnl: wallet.totalPnL,
             totalTrades: wallet.totalTrades,
-            tokenPrice: tokenPrice || undefined, // 🆕 ДОБАВЛЕНО: цена токена
+            tokenPrice: tokenPrice || undefined, // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: цена токена из TokenMetadataService
             isFamilyMember: false,
             familySize: 0,
             familyId: undefined
@@ -773,7 +813,7 @@ export class QuickNodeWebhookManager {
     return true;
   }
 
-  // 🚀 КЕШИРОВАННОЕ ПОЛУЧЕНИЕ ИНФОРМАЦИИ О ТОКЕНЕ - ИНТЕГРИРОВАНО С TokenMetadataService
+  // 🚀 КЕШИРОВАННОЕ ПОЛУЧЕНИЕ ИНФОРМАЦИИ О ТОКЕНЕ - УЛУЧШЕННАЯ ИНТЕГРАЦИЯ С TokenMetadataService
   private async getTokenInfoCached(tokenMint: string): Promise<{ symbol: string; name: string }> {
     const cached = this.tokenInfoCache.get(tokenMint);
     if (cached && Date.now() - cached.timestamp < 60 * 60 * 1000) { // 1 час
@@ -781,11 +821,11 @@ export class QuickNodeWebhookManager {
     }
 
     try {
-      // ✅ ИСПРАВЛЕНО: Используем TokenMetadataService вместо прямых API вызовов
+      // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Используем TokenMetadataService для получения метаданных
       const metadata = await this.tokenMetadataService.getTokenMetadata(tokenMint);
       
       const tokenInfo = {
-        symbol: metadata?.symbol || 'UNKNOWN',
+        symbol: metadata?.symbol || `${tokenMint.slice(0, 6).toUpperCase()}`, // ✅ ИСПРАВЛЕНО: fallback к части адреса
         name: metadata?.name || 'Unknown Token',
         timestamp: Date.now()
       };
@@ -795,7 +835,11 @@ export class QuickNodeWebhookManager {
 
     } catch (error) {
       this.logger.error(`Error getting token info for ${tokenMint}:`, error);
-      return { symbol: 'UNKNOWN', name: 'Unknown Token' };
+      // ✅ ИСПРАВЛЕНО: Лучший fallback
+      return { 
+        symbol: `${tokenMint.slice(0, 6).toUpperCase()}`, 
+        name: 'Unknown Token' 
+      };
     }
   }
 
@@ -861,7 +905,8 @@ export class QuickNodeWebhookManager {
         dex: 'Multi-Provider'
       });
 
-      await this.telegramNotifier.sendSmartMoneySwap(swap);
+      // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Используем правильный метод TelegramNotifier
+      await this.telegramNotifier.sendSmartMoneySwapAlert(swap);
 
     } catch (error) {
       this.logger.error('Error saving and notifying swap:', error);
@@ -920,11 +965,15 @@ export class QuickNodeWebhookManager {
     isActive: boolean;
     walletsMonitored: number;
     lastProcessedSignatures: number;
+    processedSignatures: number; // ✅ ДОБАВЛЕНО
+    botStartTime: string; // ✅ ДОБАВЛЕНО
   } {
     return {
       isActive: this.isPollingActive,
       walletsMonitored: this.monitoredWallets.length,
-      lastProcessedSignatures: this.lastProcessedSignatures.size
+      lastProcessedSignatures: this.lastProcessedSignatures.size,
+      processedSignatures: this.processedSignatures.size, // ✅ ДОБАВЛЕНО
+      botStartTime: new Date(this.botStartTime).toISOString() // ✅ ДОБАВЛЕНО
     };
   }
 }
