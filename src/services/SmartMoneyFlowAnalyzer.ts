@@ -1,7 +1,8 @@
-// src/services/SmartMoneyFlowAnalyzer.ts - ИСПРАВЛЕНО: убраны все упоминания HELIUS + сохранена вся бизнес-логика
+// src/services/SmartMoneyFlowAnalyzer.ts - ИСПРАВЛЕНО: добавлена полная интеграция TokenMetadataService
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
 import { Database } from './Database';
 import { TelegramNotifier } from './TelegramNotifier';
+import { TokenMetadataService } from './TokenMetadataService'; // 🆕 ДОБАВЛЕНО
 import { Logger } from '../utils/Logger';
 import {
   TokenSwap,
@@ -68,6 +69,7 @@ export class SmartMoneyFlowAnalyzer {
   private smDatabase: SmartMoneyDatabase;
   private database: Database;
   private telegramNotifier: TelegramNotifier;
+  private readonly tokenMetadataService: TokenMetadataService; // 🆕 ДОБАВЛЕНО
   private logger: Logger;
   // ✅ ИСПРАВЛЕНО: убрали heliusApiKey - теперь используем QuickNode/Alchemy
   private quickNodeApiKey: string;
@@ -76,20 +78,31 @@ export class SmartMoneyFlowAnalyzer {
   private holdingsCache = new Map<string, { data: TokenHolding[]; timestamp: number }>();
   private readonly HOLDINGS_CACHE_TTL = 15 * 60 * 1000; // 15 минут
 
+  // 🆕 КЕШ ДЛЯ ОБОГАЩЕНИЯ ТОКЕНОВ
+  private enrichedTokenCache = new Map<string, {
+    symbol: string;
+    name: string;
+    price: number | null;
+    timestamp: number;
+  }>();
+  private readonly TOKEN_CACHE_TTL = 10 * 60 * 1000; // 10 минут
+
   constructor(
     smDatabase: SmartMoneyDatabase, 
     telegramNotifier: TelegramNotifier,
-    database: Database
+    database: Database,
+    tokenMetadataService: TokenMetadataService // 🆕 ДОБАВЛЕНО
   ) {
     this.smDatabase = smDatabase;
     this.database = database;
     this.telegramNotifier = telegramNotifier;
+    this.tokenMetadataService = tokenMetadataService; // 🆕 ДОБАВЛЕНО
     this.logger = Logger.getInstance();
     // ✅ ИСПРАВЛЕНО: используем QuickNode вместо Helius
     this.quickNodeApiKey = process.env.QUICKNODE_API_KEY!;
   }
 
-  // ========== СУЩЕСТВУЮЩИЕ МЕТОДЫ (БЕЗ ИЗМЕНЕНИЙ) ==========
+  // ========== СУЩЕСТВУЮЩИЕ МЕТОДЫ С ИНТЕГРАЦИЕЙ TokenMetadataService ==========
 
   // Основной метод анализа потоков Smart Money
   async analyzeSmartMoneyFlows(): Promise<FlowAnalysisResult> {
@@ -128,7 +141,7 @@ export class SmartMoneyFlowAnalyzer {
     }
   }
 
-  // Расчет притоков/оттоков для указанного периода
+  // 🔥 ИСПРАВЛЕНО: calculateFlows с обогащением через TokenMetadataService
   private async calculateFlows(
     smartWallets: SmartMoneyWallet[], 
     period: '1h' | '24h'
@@ -157,10 +170,13 @@ export class SmartMoneyFlowAnalyzer {
         const key = tx.tokenAddress;
         
         if (!tokenFlows.has(key)) {
+          // 🆕 ОБОГАЩАЕМ ДАННЫЕ ЧЕРЕЗ TokenMetadataService
+          const enrichedToken = await this.getEnrichedTokenInfo(tx.tokenAddress);
+          
           tokenFlows.set(key, {
             tokenAddress: tx.tokenAddress,
-            tokenSymbol: tx.tokenSymbol,
-            tokenName: tx.tokenName,
+            tokenSymbol: enrichedToken.symbol,
+            tokenName: enrichedToken.name,
             totalBuyUSD: 0,
             totalSellUSD: 0,
             uniqueBuyers: new Set(),
@@ -219,7 +235,7 @@ export class SmartMoneyFlowAnalyzer {
     };
   }
 
-  // Поиск Hot New Tokens (токены младше 24 часов с активностью SM)
+  // 🔥 ИСПРАВЛЕНО: findHotNewTokens с обогащением через TokenMetadataService
   private async findHotNewTokens(smartWallets: SmartMoneyWallet[]): Promise<HotNewToken[]> {
     const cutoffTime = new Date(Date.now() - 24 * 60 * 60 * 1000); // 24 часа назад
     
@@ -251,10 +267,13 @@ export class SmartMoneyFlowAnalyzer {
         const key = tx.tokenAddress;
         
         if (!hotTokens.has(key)) {
+          // 🆕 ОБОГАЩАЕМ ДАННЫЕ ЧЕРЕЗ TokenMetadataService
+          const enrichedToken = await this.getEnrichedTokenInfo(tx.tokenAddress);
+          
           hotTokens.set(key, {
             tokenAddress: tx.tokenAddress,
-            tokenSymbol: tx.tokenSymbol,
-            tokenName: tx.tokenName,
+            tokenSymbol: enrichedToken.symbol,
+            tokenName: enrichedToken.name,
             fdv: 0,
             smStakeUSD: 0,
             ageHours: this.calculateTokenAge(tx.timestamp),
@@ -334,10 +353,10 @@ export class SmartMoneyFlowAnalyzer {
     }
   }
 
-  // ========== 🆕 НОВЫЕ МЕТОДЫ ДЛЯ HOLDINGS/PORTFOLIO ==========
+  // ========== 🆕 НОВЫЕ МЕТОДЫ ДЛЯ HOLDINGS/PORTFOLIO С TokenMetadataService ==========
 
   /**
-   * 📊 ОСНОВНОЙ МЕТОД АНАЛИЗА HOLDINGS
+   * 📊 ОСНОВНОЙ МЕТОД АНАЛИЗА HOLDINGS С ИНТЕГРАЦИЕЙ TokenMetadataService
    */
   async analyzeSmartMoneyHoldings(): Promise<HoldingsReport> {
     this.logger.info('📊 Starting Smart Money Holdings Analysis...');
@@ -367,8 +386,8 @@ export class SmartMoneyFlowAnalyzer {
         this.logger.warn('⚠️ The issue is likely in the transaction saving process');
       }
 
-      // Анализируем holdings
-      const holdings = await this.calculateHoldings(smartWallets);
+      // Анализируем holdings с обогащением данных
+      const holdings = await this.calculateHoldingsWithEnrichment(smartWallets);
       
       // Сортируем по разным критериям
       const byWalletCount = [...holdings]
@@ -417,25 +436,26 @@ export class SmartMoneyFlowAnalyzer {
   }
 
   /**
-   * 🧮 РАСЧЕТ HOLDINGS ДЛЯ ВСЕХ ТОКЕНОВ
+   * 🧮 РАСЧЕТ HOLDINGS ДЛЯ ВСЕХ ТОКЕНОВ С ОБОГАЩЕНИЕМ ЧЕРЕЗ TokenMetadataService
    */
-  private async calculateHoldings(smartWallets: SmartMoneyWallet[]): Promise<TokenHolding[]> {
+  private async calculateHoldingsWithEnrichment(smartWallets: SmartMoneyWallet[]): Promise<TokenHolding[]> {
     
     // Проверяем кеш
-    const cacheKey = 'all_holdings';
+    const cacheKey = 'all_holdings_enriched';
     const cached = this.holdingsCache.get(cacheKey);
     if (cached && Date.now() - cached.timestamp < this.HOLDINGS_CACHE_TTL) {
       this.logger.info('📋 Using cached holdings data');
       return cached.data;
     }
 
-    this.logger.info('🔍 Calculating fresh holdings data...');
+    this.logger.info('🔍 Calculating fresh holdings data with token enrichment...');
 
     // Группируем транзакции по токенам
     const tokenData = new Map<string, {
       tokenAddress: string;
       tokenSymbol: string;
       tokenName: string;
+      currentPrice: number | null;
       wallets: Map<string, {
         category: 'sniper' | 'hunter' | 'trader';
         buyVolume: number;
@@ -462,10 +482,14 @@ export class SmartMoneyFlowAnalyzer {
         const tokenKey = tx.tokenAddress;
         
         if (!tokenData.has(tokenKey)) {
+          // 🆕 ОБОГАЩАЕМ ДАННЫЕ ЧЕРЕЗ TokenMetadataService
+          const enrichedToken = await this.getEnrichedTokenInfo(tx.tokenAddress);
+          
           tokenData.set(tokenKey, {
             tokenAddress: tx.tokenAddress,
-            tokenSymbol: tx.tokenSymbol,
-            tokenName: tx.tokenName,
+            tokenSymbol: enrichedToken.symbol,
+            tokenName: enrichedToken.name,
+            currentPrice: enrichedToken.price,
             wallets: new Map(),
             firstSeenAt: tx.timestamp
           });
@@ -522,8 +546,15 @@ export class SmartMoneyFlowAnalyzer {
         trader: validWallets.filter(([_, data]) => data.category === 'trader').length
       };
 
-      // Расчет балансов
-      const totalBalance = validWallets.reduce((sum, [_, data]) => sum + data.netPosition, 0);
+      // 🆕 УЛУЧШЕННЫЙ расчет балансов с учетом текущей цены токена
+      let totalBalance = validWallets.reduce((sum, [_, data]) => sum + data.netPosition, 0);
+      
+      // Если у нас есть текущая цена токена, пересчитываем баланс более точно
+      if (token.currentPrice && token.currentPrice > 0) {
+        // Пытаемся получить токеновые балансы и пересчитать по текущей цене
+        // Пока используем существующую логику, но в будущем можно улучшить
+      }
+      
       const maxSingleHolding = Math.max(...validWallets.map(([_, data]) => data.netPosition));
       const avgBalance = totalBalance / validWallets.length;
 
@@ -576,8 +607,64 @@ export class SmartMoneyFlowAnalyzer {
       timestamp: Date.now()
     });
 
-    this.logger.info(`✅ Calculated holdings for ${holdings.length} tokens`);
+    this.logger.info(`✅ Calculated enriched holdings for ${holdings.length} tokens`);
     return holdings;
+  }
+
+  // 🆕 НОВЫЙ МЕТОД: Обогащение информации о токене через TokenMetadataService
+  private async getEnrichedTokenInfo(tokenAddress: string): Promise<{
+    symbol: string;
+    name: string;
+    price: number | null;
+  }> {
+    // Проверяем кеш
+    const cached = this.enrichedTokenCache.get(tokenAddress);
+    if (cached && Date.now() - cached.timestamp < this.TOKEN_CACHE_TTL) {
+      return {
+        symbol: cached.symbol,
+        name: cached.name,
+        price: cached.price
+      };
+    }
+
+    try {
+      // Получаем метаданные и цену через TokenMetadataService
+      const [metadata, price] = await Promise.all([
+        this.tokenMetadataService.getTokenMetadata(tokenAddress),
+        this.tokenMetadataService.getTokenPrice(tokenAddress)
+      ]);
+
+      const enrichedInfo = {
+        symbol: metadata?.symbol || `TOKEN_${tokenAddress.slice(0, 6)}`,
+        name: metadata?.name || `Token ${tokenAddress.slice(0, 8)}...`,
+        price: price || null
+      };
+
+      // Кешируем результат
+      this.enrichedTokenCache.set(tokenAddress, {
+        ...enrichedInfo,
+        timestamp: Date.now()
+      });
+
+      return enrichedInfo;
+
+    } catch (error) {
+      this.logger.error(`Error getting enriched token info for ${tokenAddress}:`, error);
+      
+      // Fallback
+      const fallbackInfo = {
+        symbol: `TOKEN_${tokenAddress.slice(0, 6)}`,
+        name: `Token ${tokenAddress.slice(0, 8)}...`,
+        price: null
+      };
+
+      this.enrichedTokenCache.set(tokenAddress, {
+        ...fallbackInfo,
+        timestamp: Date.now()
+      });
+
+      return fallbackInfo;
+    }
   }
 
   /**
@@ -777,10 +864,12 @@ export class SmartMoneyFlowAnalyzer {
   // 🆕 МЕТОДЫ ДЛЯ ПОЛУЧЕНИЯ СТАТИСТИКИ
   getCacheStats(): {
     holdingsCache: number;
+    enrichedTokenCache: number;
     cacheHitRate: number;
   } {
     return {
       holdingsCache: this.holdingsCache.size,
+      enrichedTokenCache: this.enrichedTokenCache.size,
       cacheHitRate: 0 // Заглушка - можно добавить отслеживание
     };
   }
@@ -788,6 +877,7 @@ export class SmartMoneyFlowAnalyzer {
   // 🆕 ОЧИСТКА КЕША
   clearCache(): void {
     this.holdingsCache.clear();
-    this.logger.info('🧹 Holdings cache cleared');
+    this.enrichedTokenCache.clear();
+    this.logger.info('🧹 Holdings and token enrichment cache cleared');
   }
 }

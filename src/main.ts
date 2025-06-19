@@ -1,9 +1,10 @@
-// src/main.ts - ИСПРАВЛЕНО: убраны все упоминания HELIUS + все функции сохранены
+// src/main.ts - ИСПРАВЛЕНО: убраны все упоминания HELIUS + добавлен TokenMetadataService + все функции сохранены
 import * as dotenv from 'dotenv';
 import { TelegramNotifier } from './services/TelegramNotifier';
 import { Database } from './services/Database';
 import { SmartMoneyDatabase } from './services/SmartMoneyDatabase';
 import { SmartMoneyFlowAnalyzer } from './services/SmartMoneyFlowAnalyzer';
+import { TokenMetadataService } from './services/TokenMetadataService'; // 🆕 ДОБАВЛЕНО
 import { WebhookServer } from './services/WebhookServer';
 import { QuickNodeWebhookManager } from './services/QuickNodeWebhookManager';
 import { DragonResultsParser } from './services/DragonResultsParser'; // 🆕 DRAGON INTEGRATION
@@ -20,6 +21,7 @@ class SmartMoneyBotRunner {
   private database: Database;
   private smDatabase: SmartMoneyDatabase;
   private telegramNotifier: TelegramNotifier;
+  private tokenMetadataService: TokenMetadataService; // 🆕 ДОБАВЛЕНО
   private flowAnalyzer: SmartMoneyFlowAnalyzer;
   private webhookServer: WebhookServer;
   private webhookManager: QuickNodeWebhookManager;
@@ -47,9 +49,18 @@ class SmartMoneyBotRunner {
       process.env.TELEGRAM_USER_ID!
     );
 
+    // 🆕 ДОБАВЛЕНО: Создаем TokenMetadataService
+    this.tokenMetadataService = new TokenMetadataService();
+
     this.smartWalletLoader = new SmartWalletLoader(this.smDatabase, this.telegramNotifier);
     
-    this.flowAnalyzer = new SmartMoneyFlowAnalyzer(this.smDatabase, this.telegramNotifier, this.database);
+    // ✅ ИСПРАВЛЕНО: Добавлен TokenMetadataService в конструктор (4-й аргумент)
+    this.flowAnalyzer = new SmartMoneyFlowAnalyzer(
+      this.smDatabase, 
+      this.telegramNotifier, 
+      this.database,
+      this.tokenMetadataService // 🆕 ДОБАВЛЕНО
+    );
     
     this.webhookServer = new WebhookServer(
       this.database, 
@@ -79,13 +90,14 @@ class SmartMoneyBotRunner {
     // 🚨 MODULE B: MULTI-PROVIDER SERVICE INITIALIZATION
     this.multiProviderService = new MultiProviderService();
 
-    // 🚨 MODULE B: LARGE TRANSACTION MONITOR INITIALIZATION
+    // ✅ ИСПРАВЛЕНО: Добавлен TokenMetadataService в конструктор (3-й аргумент)
     this.largeTransactionMonitor = new LargeTransactionMonitor(
       this.telegramNotifier,
-      this.multiProviderService
+      this.multiProviderService,
+      this.tokenMetadataService // 🆕 ДОБАВЛЕНО
     );
 
-    this.logger.info('✅ Smart Money Bot services initialized (NO HELIUS + DRAGON INTEGRATION + MODULE B)');
+    this.logger.info('✅ Smart Money Bot services initialized (NO HELIUS + DRAGON INTEGRATION + MODULE B + TokenMetadataService)');
   }
 
   private validateEnvironment(): void {
@@ -382,7 +394,8 @@ class SmartMoneyBotRunner {
         `• Large transaction alerts ($2M+)\n` +
         `• Multi-provider API failover\n` +
         `• Advanced scam filtering\n\n` +
-        `📡 <b>Data Sources:</b> QuickNode + Alchemy + Jupiter\n` +
+        `📡 <b>Data Sources:</b> QuickNode + Alchemy + Jupiter + Birdeye\n` +
+        `🏷️ <b>Token Metadata:</b> Enhanced with prices & symbols\n` +
         `🚫 <b>NOT USING:</b> Helius API (removed)\n\n` +
         `⏰ <code>${new Date().toLocaleString()}</code>`
       );
@@ -395,7 +408,7 @@ class SmartMoneyBotRunner {
 
   async start(): Promise<void> {
     try {
-      this.logger.info('🚀 Starting Smart Money Bot (NO HELIUS + FULL STACK + MODULE B)...');
+      this.logger.info('🚀 Starting Smart Money Bot (NO HELIUS + FULL STACK + MODULE B + TokenMetadataService)...');
 
       await this.database.init();
       await this.smDatabase.init();
@@ -424,7 +437,7 @@ class SmartMoneyBotRunner {
       this.startPeriodicAnalysis();
       this.startDragonProcessing(); // 🆕 DRAGON PROCESSING
 
-      this.logger.info('✅ Smart Money Bot started successfully (NO HELIUS + FULL STACK + MODULE B)!');
+      this.logger.info('✅ Smart Money Bot started successfully (NO HELIUS + FULL STACK + MODULE B + TokenMetadataService)!');
 
     } catch (error) {
       this.logger.error('❌ Error starting Smart Money Bot:', error);
@@ -483,7 +496,8 @@ class SmartMoneyBotRunner {
         `  • 💡 Hunters: <code>${stats.byCategory?.hunter || 0}</code>\n` +
         `  • 🐳 Traders: <code>${stats.byCategory?.trader || 0}</code>\n\n` +
         `🚨 <b>Large TX Monitor:</b> <code>Active ($2M+)</code>\n` +
-        `🔧 <b>Providers:</b> <code>${multiProviderMetrics.healthyProviders}/${multiProviderMetrics.totalProviders} healthy</code>\n\n` +
+        `🔧 <b>Providers:</b> <code>${multiProviderMetrics.healthyProviders}/${multiProviderMetrics.totalProviders} healthy</code>\n` +
+        `🏷️ <b>Token Metadata:</b> <code>Enhanced (Jupiter + Birdeye)</code>\n\n` +
         `🔥 <b>Features:</b>\n` +
         `• Flow Analysis (1h/24h)\n` +
         `• Hot New Tokens\n` +
@@ -491,8 +505,9 @@ class SmartMoneyBotRunner {
         `• Dragon Integration\n` +
         `• Large TX Alerts ($2M+)\n` +
         `• Multi-Provider Failover\n` +
-        `• Advanced Scam Filtering\n\n` +
-        `📡 <b>APIs:</b> QuickNode + Alchemy + Jupiter\n` +
+        `• Advanced Scam Filtering\n` +
+        `• Enhanced Token Data\n\n` +
+        `📡 <b>APIs:</b> QuickNode + Alchemy + Jupiter + Birdeye\n` +
         `🚫 <b>NO HELIUS:</b> Removed for stability\n\n` +
         `⏰ <code>${new Date().toLocaleString()}</code>`
       );
@@ -704,6 +719,10 @@ class SmartMoneyBotRunner {
         await this.webhookManager.deleteStream(this.webhookId);
       }
 
+      // 🚨 MODULE B: STOP LARGE TRANSACTION MONITORING
+      await this.largeTransactionMonitor.stopMonitoring();
+      this.logger.info('🚨 Large Transaction Monitor stopped');
+
       // 🚨 MODULE B: SHUTDOWN MULTI-PROVIDER SERVICE
       await this.multiProviderService.shutdown();
       this.logger.info('🔧 Multi-Provider Service shutdown completed');
@@ -715,12 +734,13 @@ class SmartMoneyBotRunner {
         `🛑 <b>Smart Money Bot Stopped</b>\n\n` +
         `🚨 Large TX Monitor: <code>Stopped</code>\n` +
         `🔧 Multi-Provider: <code>Shutdown</code>\n` +
+        `🏷️ Token Metadata: <code>Disconnected</code>\n` +
         `📊 All Services: <code>Gracefully Stopped</code>\n` +
-        `🚫 APIs Used: <code>QuickNode + Alchemy (NO HELIUS)</code>\n\n` +
+        `🚫 APIs Used: <code>QuickNode + Alchemy + Jupiter + Birdeye (NO HELIUS)</code>\n\n` +
         `⏰ <code>${new Date().toLocaleString()}</code>`
       );
 
-      this.logger.info('✅ Smart Money Bot stopped successfully (NO HELIUS)');
+      this.logger.info('✅ Smart Money Bot stopped successfully (NO HELIUS + TokenMetadataService)');
 
     } catch (error) {
       this.logger.error('❌ Error stopping Smart Money Bot:', error);

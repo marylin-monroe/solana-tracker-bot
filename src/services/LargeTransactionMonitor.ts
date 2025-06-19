@@ -1,6 +1,7 @@
-// src/services/LargeTransactionMonitor.ts - MODULE B: ИСПРАВЛЕНО БЕЗ HELIUS + используем MultiProviderService
+// src/services/LargeTransactionMonitor.ts - ИСПРАВЛЕНО: добавлена полная интеграция TokenMetadataService
 import { TelegramNotifier } from './TelegramNotifier';
 import { MultiProviderService } from './MultiProviderService';
+import { TokenMetadataService } from './TokenMetadataService'; // 🆕 ДОБАВЛЕНО
 import { Logger } from '../utils/Logger';
 
 interface LargeTransaction {
@@ -15,6 +16,7 @@ interface LargeTransaction {
   dex?: string;
   isFiltered: boolean;
   filterReason?: string;
+  tokenPrice?: number; // 🆕 ДОБАВЛЕНО
 }
 
 interface FilterResult {
@@ -49,6 +51,7 @@ interface OwnerDetectionResult {
 export class LargeTransactionMonitor {
   private telegramNotifier: TelegramNotifier;
   private multiProvider: MultiProviderService;
+  private readonly tokenMetadataService: TokenMetadataService; // 🆕 ДОБАВЛЕНО
   private logger: Logger;
   
   // Мониторинг
@@ -76,20 +79,30 @@ export class LargeTransactionMonitor {
   // Кеши для оптимизации
   private scamAddressCache = new Map<string, { isScam: boolean; timestamp: number }>();
   private ownerAddressCache = new Map<string, { isOwner: boolean; timestamp: number }>();
-  private tokenInfoCache = new Map<string, { symbol: string; name: string; timestamp: number }>();
+  
+  // 🆕 КЕШ ДЛЯ ОБОГАЩЕННОЙ ИНФОРМАЦИИ О ТОКЕНАХ
+  private enrichedTokenCache = new Map<string, { 
+    symbol: string; 
+    name: string; 
+    price: number | null;
+    timestamp: number; 
+  }>();
   
   // Время жизни кешей
   private readonly CACHE_TTL = 60 * 60 * 1000; // 1 час
+  private readonly TOKEN_CACHE_TTL = 10 * 60 * 1000; // 10 минут для токенов
 
   constructor(
     telegramNotifier: TelegramNotifier,
-    multiProvider: MultiProviderService
+    multiProvider: MultiProviderService,
+    tokenMetadataService: TokenMetadataService // 🆕 ДОБАВЛЕНО
   ) {
     this.telegramNotifier = telegramNotifier;
     this.multiProvider = multiProvider;
+    this.tokenMetadataService = tokenMetadataService; // 🆕 ДОБАВЛЕНО
     this.logger = Logger.getInstance();
     
-    this.logger.info('🚨 LargeTransactionMonitor initialized (NO HELIUS, using MultiProvider)');
+    this.logger.info('🚨 LargeTransactionMonitor initialized with TokenMetadataService integration');
   }
 
   /**
@@ -125,8 +138,8 @@ export class LargeTransactionMonitor {
         `🚨 <b>Large Transaction Monitor Started</b>\n\n` +
         `💰 <b>Threshold:</b> <code>$${this.TRANSACTION_THRESHOLD_USD.toLocaleString()}</code>\n` +
         `⏰ <b>Scan Interval:</b> <code>${this.SCAN_INTERVAL_MS / 1000}s</code>\n` +
-        `📡 <b>Data Source:</b> <code>QuickNode + Alchemy</code>\n` +
-        `🚫 <b>NO HELIUS:</b> <code>Removed for stability</code>\n` +
+        `📡 <b>Data Source:</b> <code>MultiProvider (QuickNode + Alchemy)</code>\n` +
+        `🏷️ <b>Token Metadata:</b> <code>TokenMetadataService (Jupiter + Birdeye)</code>\n` +
         `🛡️ <b>Filtering:</b> <code>Scams + Token Owners + Exchange</code>\n\n` +
         `🎯 <b>Starting Slot:</b> <code>${this.lastProcessedSlot}</code>\n` +
         `⏰ <code>${new Date().toLocaleString()}</code>`
@@ -232,7 +245,8 @@ export class LargeTransactionMonitor {
         encoding: 'jsonParsed',
         transactionDetails: 'full',
         rewards: false,
-        commitment: 'confirmed'
+        commitment: 'confirmed',
+        maxSupportedTransactionVersion: 0 // ✅ ИСПРАВЛЕНО: добавлено для совместимости
       }]);
 
       if (response.success && response.data) {
@@ -280,7 +294,7 @@ export class LargeTransactionMonitor {
       }
 
       // Анализируем инструкции для поиска свапов
-      const swapInfo = await this.extractSwapInfo(transaction);
+      const swapInfo = await this.extractSwapInfoWithEnrichment(transaction);
       if (!swapInfo) {
         return;
       }
@@ -291,7 +305,7 @@ export class LargeTransactionMonitor {
       }
 
       this.stats.largeTransactionsFound++;
-      this.logger.info(`💰 Found large transaction: $${swapInfo.amountUSD.toLocaleString()} - ${swapInfo.tokenSymbol}`);
+      this.logger.info(`💰 Found large transaction: $${swapInfo.amountUSD.toLocaleString()} - ${swapInfo.tokenSymbol} ${swapInfo.tokenPrice ? `@ $${swapInfo.tokenPrice}` : ''}`);
 
       // Применяем фильтры
       const filterResult = await this.applyFilters(swapInfo);
@@ -314,9 +328,9 @@ export class LargeTransactionMonitor {
   }
 
   /**
-   * 🔍 ИЗВЛЕЧЕНИЕ ИНФОРМАЦИИ О СВАПЕ
+   * 🔍 ИЗВЛЕЧЕНИЕ ИНФОРМАЦИИ О СВАПЕ С ОБОГАЩЕНИЕМ ЧЕРЕЗ TokenMetadataService
    */
-  private async extractSwapInfo(transaction: any): Promise<LargeTransaction | null> {
+  private async extractSwapInfoWithEnrichment(transaction: any): Promise<LargeTransaction | null> {
     try {
       // Извлекаем базовую информацию
       const signature = transaction.transaction?.signatures?.[0];
@@ -327,6 +341,7 @@ export class LargeTransactionMonitor {
       const accountKeys = transaction.transaction?.message?.accountKeys || [];
       
       let tokenAddress = '';
+      let tokenAmount = 0;
       let amountUSD = 0;
       let walletAddress = '';
       let transactionType: 'buy' | 'sell' = 'buy';
@@ -348,39 +363,148 @@ export class LargeTransactionMonitor {
 
         if (Math.abs(balanceChange) > 1000) { // Значительное изменение
           tokenAddress = postBalance.mint;
+          tokenAmount = Math.abs(balanceChange);
           walletAddress = accountKeys[postBalance.accountIndex]?.pubkey || '';
-          
-          // Примерная конвертация в USD (упрощенно)
-          amountUSD = Math.abs(balanceChange) * 1; // Заглушка - нужна интеграция с ценами
           transactionType = balanceChange > 0 ? 'buy' : 'sell';
           break;
         }
       }
 
-      if (!tokenAddress || amountUSD < 1000) {
+      if (!tokenAddress || tokenAmount < 1000) {
         return null;
       }
 
-      // Получаем информацию о токене
-      const tokenInfo = await this.getTokenInfo(tokenAddress);
+      // 🆕 ОБОГАЩАЕМ ИНФОРМАЦИЮ ЧЕРЕЗ TokenMetadataService
+      const enrichedTokenInfo = await this.getEnrichedTokenInfo(tokenAddress);
+      
+      // 🆕 УЛУЧШЕННЫЙ РАСЧЕТ USD стоимости через токен-цену
+      if (enrichedTokenInfo.price && enrichedTokenInfo.price > 0) {
+        amountUSD = tokenAmount * enrichedTokenInfo.price;
+        this.logger.debug(`💰 USD calculation: ${tokenAmount} * $${enrichedTokenInfo.price} = $${amountUSD.toLocaleString()}`);
+      } else {
+        // Fallback к примерной оценке
+        amountUSD = tokenAmount * this.getTokenFallbackPrice(tokenAddress);
+        this.logger.debug(`⚠️ Using fallback price calculation for ${enrichedTokenInfo.symbol}`);
+      }
 
       return {
         signature,
         timestamp,
         walletAddress,
         tokenAddress,
-        tokenSymbol: tokenInfo.symbol,
-        tokenName: tokenInfo.name,
+        tokenSymbol: enrichedTokenInfo.symbol,
+        tokenName: enrichedTokenInfo.name,
         amountUSD,
         transactionType,
-        dex: 'Unknown',
-        isFiltered: false
+        dex: this.detectDexFromTransaction(transaction),
+        isFiltered: false,
+        tokenPrice: enrichedTokenInfo.price || undefined // 🆕 ДОБАВЛЕНО
       };
 
     } catch (error) {
       this.logger.debug('Error extracting swap info:', error);
       return null;
     }
+  }
+
+  /**
+   * 🆕 НОВЫЙ МЕТОД: Получение обогащенной информации о токене
+   */
+  private async getEnrichedTokenInfo(tokenAddress: string): Promise<{
+    symbol: string;
+    name: string;
+    price: number | null;
+  }> {
+    // Проверяем кеш
+    const cached = this.enrichedTokenCache.get(tokenAddress);
+    if (cached && Date.now() - cached.timestamp < this.TOKEN_CACHE_TTL) {
+      return {
+        symbol: cached.symbol,
+        name: cached.name,
+        price: cached.price
+      };
+    }
+
+    try {
+      // Получаем метаданные и цену через TokenMetadataService
+      const [metadata, price] = await Promise.all([
+        this.tokenMetadataService.getTokenMetadata(tokenAddress),
+        this.tokenMetadataService.getTokenPrice(tokenAddress)
+      ]);
+
+      const enrichedInfo = {
+        symbol: metadata?.symbol || this.generateFallbackSymbol(tokenAddress),
+        name: metadata?.name || this.generateFallbackName(tokenAddress),
+        price: price || null
+      };
+
+      // Кешируем результат
+      this.enrichedTokenCache.set(tokenAddress, {
+        ...enrichedInfo,
+        timestamp: Date.now()
+      });
+
+      this.logger.debug(`🏷️ Enriched token ${tokenAddress}: ${enrichedInfo.symbol} @ $${enrichedInfo.price || 'N/A'}`);
+      return enrichedInfo;
+
+    } catch (error) {
+      this.logger.error(`Error getting enriched token info for ${tokenAddress}:`, error);
+      
+      // Fallback
+      const fallbackInfo = {
+        symbol: this.generateFallbackSymbol(tokenAddress),
+        name: this.generateFallbackName(tokenAddress),
+        price: null
+      };
+
+      this.enrichedTokenCache.set(tokenAddress, {
+        ...fallbackInfo,
+        timestamp: Date.now()
+      });
+
+      return fallbackInfo;
+    }
+  }
+
+  /**
+   * 🔧 ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ДЛЯ FALLBACK
+   */
+  private generateFallbackSymbol(tokenAddress: string): string {
+    return `TOKEN_${tokenAddress.slice(0, 6)}`;
+  }
+
+  private generateFallbackName(tokenAddress: string): string {
+    return `Token ${tokenAddress.slice(0, 8)}...${tokenAddress.slice(-4)}`;
+  }
+
+  private getTokenFallbackPrice(tokenAddress: string): number {
+    // Известные токены
+    const knownTokenPrices: Record<string, number> = {
+      'So11111111111111111111111111111111111111112': 140, // SOL
+      'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': 1, // USDC
+      'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB': 1, // USDT
+    };
+
+    return knownTokenPrices[tokenAddress] || 0.001; // Очень низкая цена для неизвестных токенов
+  }
+
+  private detectDexFromTransaction(transaction: any): string {
+    // Простая детекция DEX по program ID
+    const instructions = transaction.transaction?.message?.instructions || [];
+    
+    for (const instruction of instructions) {
+      const programId = instruction.programId;
+      
+      if (programId === '9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM') {
+        return 'Raydium';
+      } else if (programId === 'JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB') {
+        return 'Jupiter';
+      } else if (programId === '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8') {
+        return 'Raydium AMM';
+      }
+    }
+    
+    return 'Unknown DEX';
   }
 
   /**
@@ -575,19 +699,29 @@ export class LargeTransactionMonitor {
   }
 
   /**
-   * 📬 ОТПРАВКА АЛЕРТА О БОЛЬШОЙ ТРАНЗАКЦИИ
+   * 📬 ОТПРАВКА АЛЕРТА О БОЛЬШОЙ ТРАНЗАКЦИИ С РАСШИРЕННОЙ ИНФОРМАЦИЕЙ
    */
   private async sendLargeTransactionAlert(transaction: LargeTransaction): Promise<void> {
     try {
       const typeEmoji = transaction.transactionType === 'buy' ? '💰' : '🔴';
       const amountFormatted = this.formatNumber(transaction.amountUSD);
       
-      const message = 
+      // 🆕 РАСШИРЕННОЕ СООБЩЕНИЕ С ЦЕНОЙ ТОКЕНА
+      let message = 
         `🚨 <b>Large Transaction Alert!</b>\n\n` +
         `${typeEmoji} <b>Type:</b> <code>${transaction.transactionType.toUpperCase()}</code>\n` +
         `💰 <b>Amount:</b> <code>$${amountFormatted}</code>\n` +
         `🪙 <b>Token:</b> <code>${transaction.tokenSymbol}</code>\n` +
-        `📄 <b>Name:</b> <code>${transaction.tokenName}</code>\n` +
+        `📄 <b>Name:</b> <code>${transaction.tokenName}</code>\n`;
+
+      // Добавляем цену токена если доступна
+      if (transaction.tokenPrice && transaction.tokenPrice > 0) {
+        message += `💵 <b>Token Price:</b> <code>$${transaction.tokenPrice.toFixed(6)}</code>\n`;
+        const tokenAmount = transaction.amountUSD / transaction.tokenPrice;
+        message += `🎯 <b>Token Amount:</b> <code>${this.formatNumber(tokenAmount)}</code>\n`;
+      }
+
+      message += 
         `👤 <b>Wallet:</b> <code>${transaction.walletAddress.slice(0, 8)}...${transaction.walletAddress.slice(-4)}</code>\n` +
         `🏪 <b>DEX:</b> <code>${transaction.dex || 'Unknown'}</code>\n` +
         `⏰ <b>Time:</b> <code>${transaction.timestamp.toLocaleString()}</code>\n\n` +
@@ -599,66 +733,10 @@ export class LargeTransactionMonitor {
 
       await this.telegramNotifier.sendCycleLog(message);
 
+      this.logger.info(`📤 Large transaction alert sent: ${transaction.tokenSymbol} - $${amountFormatted}`);
+
     } catch (error) {
       this.logger.error('Error sending large transaction alert:', error);
-    }
-  }
-
-  /**
-   * 🏷️ ПОЛУЧЕНИЕ ИНФОРМАЦИИ О ТОКЕНЕ
-   */
-  private async getTokenInfo(tokenAddress: string): Promise<{ symbol: string; name: string }> {
-    const cached = this.tokenInfoCache.get(tokenAddress);
-    if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
-      return { symbol: cached.symbol, name: cached.name };
-    }
-
-    try {
-      // Пытаемся получить через Jupiter API
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
-      
-      const response = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${tokenAddress}&outputMint=So11111111111111111111111111111111111111112&amount=1000000`, {
-        method: 'GET',
-        headers: { 
-          'Content-Type': 'application/json',
-          'User-Agent': 'Smart-Money-Bot/1.0'
-        },
-        signal: controller.signal
-      });
-      
-      clearTimeout(timeoutId);
-
-      let symbol = 'UNKNOWN';
-      let name = 'Unknown Token';
-
-      if (response.ok) {
-        // Jupiter не дает метаданные в quote, используем fallback
-        symbol = tokenAddress.slice(0, 6);
-        name = `Token ${tokenAddress.slice(0, 8)}...`;
-      } else {
-        symbol = tokenAddress.slice(0, 6);
-        name = `Token ${tokenAddress.slice(0, 8)}...`;
-      }
-
-      const tokenInfo = { symbol, name, timestamp: Date.now() };
-      this.tokenInfoCache.set(tokenAddress, tokenInfo);
-      
-      return { symbol, name };
-
-    } catch (error) {
-      this.logger.debug(`Error getting token info for ${tokenAddress}:`, error);
-      
-      const fallbackSymbol = tokenAddress.slice(0, 6);
-      const fallbackName = `Token ${tokenAddress.slice(0, 8)}...`;
-      
-      this.tokenInfoCache.set(tokenAddress, {
-        symbol: fallbackSymbol,
-        name: fallbackName,
-        timestamp: Date.now()
-      });
-      
-      return { symbol: fallbackSymbol, name: fallbackName };
     }
   }
 
@@ -725,7 +803,7 @@ export class LargeTransactionMonitor {
   clearCaches(): void {
     this.scamAddressCache.clear();
     this.ownerAddressCache.clear();
-    this.tokenInfoCache.clear();
+    this.enrichedTokenCache.clear();
     
     this.logger.info('🧹 Large transaction monitor caches cleared');
   }
@@ -753,20 +831,60 @@ export class LargeTransactionMonitor {
     cacheStats: {
       scamAddressCache: number;
       ownerAddressCache: number;
-      tokenInfoCache: number;
+      enrichedTokenCache: number;
     };
     isMonitoring: boolean;
     lastProcessedSlot: number;
+    enrichmentStats: {
+      tokensEnriched: number;
+      pricesFound: number;
+      metadataFound: number;
+    };
   } {
+    const enrichedTokens = Array.from(this.enrichedTokenCache.values());
+    
     return {
       ...this.stats,
       cacheStats: {
         scamAddressCache: this.scamAddressCache.size,
         ownerAddressCache: this.ownerAddressCache.size,
-        tokenInfoCache: this.tokenInfoCache.size
+        enrichedTokenCache: this.enrichedTokenCache.size
       },
       isMonitoring: this.isMonitoring,
-      lastProcessedSlot: this.lastProcessedSlot
+      lastProcessedSlot: this.lastProcessedSlot,
+      enrichmentStats: {
+        tokensEnriched: enrichedTokens.length,
+        pricesFound: enrichedTokens.filter(t => t.price !== null).length,
+        metadataFound: enrichedTokens.filter(t => t.symbol !== `TOKEN_${this.enrichedTokenCache.keys().next().value?.slice(0, 6) || ''}`).length
+      }
+    };
+  }
+
+  /**
+   * 🆕 ПОЛУЧЕНИЕ СТАТИСТИКИ ПО КЕШУ ТОКЕНОВ
+   */
+  getTokenCacheStats(): {
+    totalCachedTokens: number;
+    tokensWithPrices: number;
+    tokensWithMetadata: number;
+    avgCacheAge: number;
+    cacheHitRate: number;
+  } {
+    const cachedTokens = Array.from(this.enrichedTokenCache.values());
+    const now = Date.now();
+    
+    const tokensWithPrices = cachedTokens.filter(t => t.price !== null).length;
+    const tokensWithMetadata = cachedTokens.filter(t => !t.symbol.startsWith('TOKEN_')).length;
+    const avgCacheAge = cachedTokens.length > 0 
+      ? cachedTokens.reduce((sum, t) => sum + (now - t.timestamp), 0) / cachedTokens.length / 1000 / 60 // в минутах
+      : 0;
+
+    return {
+      totalCachedTokens: cachedTokens.length,
+      tokensWithPrices,
+      tokensWithMetadata,
+      avgCacheAge: Math.round(avgCacheAge),
+      cacheHitRate: 0 // Заглушка - можно добавить отслеживание
     };
   }
 }
