@@ -1,4 +1,4 @@
-// src/services/TokenMetadataService.ts - ИСПРАВЛЕНО: убраны все ошибки TypeScript + замена Helius на Jupiter/Birdeye API
+// src/services/TokenMetadataService.ts - ПОЛНЫЙ ФАЙЛ с добавленным getTokenPrice()
 import { Logger } from '../utils/Logger';
 
 interface TokenMetadata {
@@ -96,6 +96,10 @@ export class TokenMetadataService {
   private jupiterTokenList: Map<string, JupiterTokenData> = new Map();
   private lastJupiterUpdate = 0;
   private readonly JUPITER_UPDATE_INTERVAL = 60 * 60 * 1000; // 1 час
+
+  // 🆕 КЕШ ДЛЯ ЦЕН ТОКЕНОВ
+  private priceCache = new Map<string, { price: number; timestamp: number }>();
+  private readonly PRICE_CACHE_DURATION = 5 * 60 * 1000; // 5 минут
 
   // Известные токены для быстрого доступа
   private readonly WELL_KNOWN_TOKENS = new Map<string, TokenMetadata>([
@@ -458,12 +462,14 @@ export class TokenMetadataService {
     jupiterTokens: number;
     cacheHitRate: number;
     lastJupiterUpdate: Date | null;
+    priceCacheSize: number;
   } {
     return {
       totalCached: this.cache.size,
       jupiterTokens: this.jupiterTokenList.size,
       cacheHitRate: 0, // Можно добавить отслеживание hit rate
-      lastJupiterUpdate: this.lastJupiterUpdate ? new Date(this.lastJupiterUpdate) : null
+      lastJupiterUpdate: this.lastJupiterUpdate ? new Date(this.lastJupiterUpdate) : null,
+      priceCacheSize: this.priceCache.size
     };
   }
 
@@ -472,6 +478,7 @@ export class TokenMetadataService {
    */
   clearCache(): void {
     this.cache.clear();
+    this.priceCache.clear();
     this.logger.info('🧹 Token metadata cache cleared');
   }
 
@@ -615,6 +622,89 @@ export class TokenMetadataService {
       const basicMetadata = await this.getTokenMetadata(mintAddress);
       return basicMetadata;
     }
+  }
+
+  /**
+   * 💰 ПОЛУЧЕНИЕ ЦЕНЫ ТОКЕНА (новый метод для TelegramNotifier)
+   */
+  async getTokenPrice(tokenAddress: string): Promise<number | null> {
+    try {
+      if (!tokenAddress || tokenAddress === 'UNKNOWN') {
+        return null;
+      }
+
+      // Проверяем кеш цен
+      const cached = this.priceCache.get(tokenAddress);
+      if (cached && Date.now() - cached.timestamp < this.PRICE_CACHE_DURATION) {
+        return cached.price;
+      }
+
+      // Известные токены с фиксированными ценами
+      if (tokenAddress === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' || // USDC
+          tokenAddress === 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB') { // USDT
+        const price = 1.0;
+        this.priceCache.set(tokenAddress, { price, timestamp: Date.now() });
+        return price;
+      }
+
+      // Получаем через Birdeye API
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+      const response = await fetch(`https://public-api.birdeye.so/public/price?address=${tokenAddress}`, {
+        method: 'GET',
+        headers: { 
+          'Content-Type': 'application/json',
+          'User-Agent': 'Smart-Money-Bot/1.0'
+        },
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        const data = await response.json();
+        
+        if (this.isBirdeyePriceResponse(data) && data.data.value) {
+          const price = data.data.value;
+          this.priceCache.set(tokenAddress, { price, timestamp: Date.now() });
+          return price;
+        }
+      }
+
+      return null;
+
+    } catch (error) {
+      this.logger.debug(`Error getting token price for ${tokenAddress}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * 🎯 ПАКЕТНОЕ ПОЛУЧЕНИЕ ЦЕН ТОКЕНОВ
+   */
+  async getBatchTokenPrices(tokenAddresses: string[]): Promise<Map<string, number | null>> {
+    const results = new Map<string, number | null>();
+    
+    // Обрабатываем пакетами по 5 токенов для соблюдения rate limits
+    const batchSize = 5;
+    for (let i = 0; i < tokenAddresses.length; i += batchSize) {
+      const batch = tokenAddresses.slice(i, i + batchSize);
+      
+      const batchPromises = batch.map(async (address) => {
+        const price = await this.getTokenPrice(address);
+        results.set(address, price);
+      });
+      
+      await Promise.all(batchPromises);
+      
+      // Пауза между пакетами для соблюдения rate limits
+      if (i + batchSize < tokenAddresses.length) {
+        await this.sleep(200);
+      }
+    }
+    
+    return results;
   }
 
   // Type Guards для проверки структуры API ответов

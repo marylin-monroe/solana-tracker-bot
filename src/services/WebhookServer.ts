@@ -1,9 +1,10 @@
-// src/services/WebhookServer.ts - ИСПРАВЛЕНО: убраны все упоминания HELIUS + сохранена вся бизнес-логика
+// src/services/WebhookServer.ts - ИСПРАВЛЕНО: убраны все упоминания HELIUS + добавлена поддержка tokenPrice
 import express from 'express';
 import { Database } from './Database';
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
 import { TelegramNotifier } from './TelegramNotifier';
 import { SolanaMonitor } from './SolanaMonitor';
+import { TokenMetadataService } from './TokenMetadataService'; // 🆕 ДОБАВЛЕНО
 import { Logger } from '../utils/Logger';
 import { SmartMoneySwap, SmartMoneyWallet, TokenSwap } from '../types';
 
@@ -111,6 +112,7 @@ export class WebhookServer {
   private smDatabase: SmartMoneyDatabase;
   private telegramNotifier: TelegramNotifier;
   private solanaMonitor: SolanaMonitor;
+  private tokenMetadataService: TokenMetadataService; // 🆕 ДОБАВЛЕНО
   private logger: Logger;
   private port: number;
   private server: any;
@@ -186,6 +188,7 @@ export class WebhookServer {
     this.smDatabase = smDatabase;
     this.telegramNotifier = telegramNotifier;
     this.solanaMonitor = solanaMonitor;
+    this.tokenMetadataService = new TokenMetadataService(); // 🆕 ДОБАВЛЕНО
     this.logger = Logger.getInstance();
     this.port = parseInt(process.env.PORT || '3000');
 
@@ -701,6 +704,7 @@ export class WebhookServer {
     }
   }
 
+  // 🔥 ИСПРАВЛЕНО: extractSwapInfo с добавлением tokenPrice через TokenMetadataService
   private async extractSwapInfo(txData: SolanaWebhookPayload, swapEvent: any, smartWallet: SmartMoneyWallet): Promise<SmartMoneySwap | null> {
     try {
       let tokenAddress = '';
@@ -733,6 +737,9 @@ export class WebhookServer {
 
       const tokenInfo = await this.getTokenInfo(tokenAddress);
       
+      // 🆕 ДОБАВЛЕНО: получение цены токена через TokenMetadataService
+      const tokenPrice = await this.tokenMetadataService.getTokenPrice(tokenAddress);
+      
       return {
         transactionId: txData.signature,
         walletAddress: smartWallet.address,
@@ -747,6 +754,7 @@ export class WebhookServer {
         winRate: smartWallet.winRate,
         pnl: smartWallet.totalPnL,
         totalTrades: smartWallet.totalTrades,
+        tokenPrice: tokenPrice || undefined, // 🆕 ДОБАВЛЕНО: цена токена
         isFamilyMember: false,
         familySize: 0,
         familyId: undefined
@@ -848,52 +856,45 @@ export class WebhookServer {
     }
 
     try {
-      // ✅ ИСПОЛЬЗУЕМ JUPITER API вместо Helius для метаданных токенов
-      const response = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${tokenAddress}&outputMint=So11111111111111111111111111111111111111112&amount=1000000`, {
-        method: 'GET',
-        headers: { 
-          'Content-Type': 'application/json',
-          'User-Agent': 'Smart-Money-Bot/1.0'
-        }
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        
-        // Пытаемся получить символ из Jupiter
-        let symbol = 'UNKNOWN';
-        let name = 'Unknown Token';
-        
-        // Если Jupiter не дает метаданные, используем сокращенный адрес
-        if (tokenAddress) {
-          symbol = tokenAddress.slice(0, 6);
-          name = `Token ${tokenAddress.slice(0, 8)}...`;
-        }
-        
-        const tokenInfo = {
-          symbol,
-          name,
-          timestamp: Date.now()
-        };
-        
-        this.tokenInfoCache.set(tokenAddress, tokenInfo);
-        return { symbol: tokenInfo.symbol, name: tokenInfo.name };
+      // ✅ ИСПРАВЛЕНО: Используем TokenMetadataService вместо прямых API вызовов
+      const metadata = await this.tokenMetadataService.getTokenMetadata(tokenAddress);
+      
+      let symbol = 'UNKNOWN';
+      let name = 'Unknown Token';
+      
+      if (metadata) {
+        symbol = metadata.symbol || symbol;
+        name = metadata.name || name;
+      } else {
+        // Fallback: используем сокращенный адрес
+        symbol = tokenAddress.slice(0, 6);
+        name = `Token ${tokenAddress.slice(0, 8)}...`;
       }
+      
+      const tokenInfo = {
+        symbol,
+        name,
+        timestamp: Date.now()
+      };
+      
+      this.tokenInfoCache.set(tokenAddress, tokenInfo);
+      return { symbol: tokenInfo.symbol, name: tokenInfo.name };
+
     } catch (error) {
       this.logger.error(`Error getting token info for ${tokenAddress}:`, error);
+      
+      // Fallback: используем сокращенный адрес
+      const fallbackSymbol = tokenAddress ? tokenAddress.slice(0, 6) : 'UNKNOWN';
+      const fallbackName = tokenAddress ? `Token ${tokenAddress.slice(0, 8)}...` : 'Unknown Token';
+      
+      this.tokenInfoCache.set(tokenAddress, {
+        symbol: fallbackSymbol,
+        name: fallbackName,
+        timestamp: Date.now()
+      });
+
+      return { symbol: fallbackSymbol, name: fallbackName };
     }
-
-    // Fallback: используем сокращенный адрес
-    const fallbackSymbol = tokenAddress ? tokenAddress.slice(0, 6) : 'UNKNOWN';
-    const fallbackName = tokenAddress ? `Token ${tokenAddress.slice(0, 8)}...` : 'Unknown Token';
-    
-    this.tokenInfoCache.set(tokenAddress, {
-      symbol: fallbackSymbol,
-      name: fallbackName,
-      timestamp: Date.now()
-    });
-
-    return { symbol: fallbackSymbol, name: fallbackName };
   }
 
   // 🧹 АВТООЧИСТКА КЕШЕЙ

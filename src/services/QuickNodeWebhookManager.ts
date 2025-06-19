@@ -1,8 +1,8 @@
-// src/services/QuickNodeWebhookManager.ts - ИСПРАВЛЕНО: интеграция TokenMetadataService + оптимизация polling + удаление Helius
+// src/services/QuickNodeWebhookManager.ts - ПОЛНЫЙ ФАЙЛ с добавлением tokenPrice + все функции сохранены
 import { Logger } from '../utils/Logger';
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
 import { TelegramNotifier } from './TelegramNotifier';
-import { TokenMetadataService } from './TokenMetadataService'; // 🆕 ДОБАВЛЕНО
+import { TokenMetadataService } from './TokenMetadataService';
 import { SmartMoneyWallet, SmartMoneySwap } from '../types';
 
 interface QuickNodeStreamConfig {
@@ -76,7 +76,7 @@ export class QuickNodeWebhookManager {
   
   private smDatabase: SmartMoneyDatabase | null = null;
   private telegramNotifier: TelegramNotifier | null = null;
-  private tokenMetadataService: TokenMetadataService; // 🆕 ДОБАВЛЕНО
+  private tokenMetadataService: TokenMetadataService;
   
   // 🔥 ОПТИМИЗИРОВАННЫЙ POLLING SERVICE
   private isPollingActive: boolean = false;
@@ -120,7 +120,7 @@ export class QuickNodeWebhookManager {
 
   constructor() {
     this.logger = Logger.getInstance();
-    this.tokenMetadataService = new TokenMetadataService(); // 🆕 ДОБАВЛЕНО
+    this.tokenMetadataService = new TokenMetadataService();
     this.initializeProviders();
     this.startLimitResetTimer();
     this.startCacheCleanup();
@@ -684,6 +684,7 @@ export class QuickNodeWebhookManager {
     return `${ageMinutes}m`;
   }
 
+  // 🔥 ИСПРАВЛЕНО: extractSwapsFromTransaction с добавлением tokenPrice
   private async extractSwapsFromTransaction(transaction: any, wallet: SmartMoneyWallet): Promise<SmartMoneySwap[]> {
     const swaps: SmartMoneySwap[] = [];
 
@@ -717,6 +718,9 @@ export class QuickNodeWebhookManager {
         const estimatedUSD = await this.estimateTokenValueUSDCached(tokenMint, tokenAmount);
 
         if (estimatedUSD > 5000) {
+          // 🆕 ДОБАВЛЕНО: получение цены токена через TokenMetadataService
+          const tokenPrice = await this.tokenMetadataService.getTokenPrice(tokenMint);
+
           const swap: SmartMoneySwap = {
             transactionId: transaction.transaction.signatures[0],
             walletAddress: wallet.address,
@@ -731,6 +735,7 @@ export class QuickNodeWebhookManager {
             winRate: wallet.winRate,
             pnl: wallet.totalPnL,
             totalTrades: wallet.totalTrades,
+            tokenPrice: tokenPrice || undefined, // 🆕 ДОБАВЛЕНО: цена токена
             isFamilyMember: false,
             familySize: 0,
             familyId: undefined
@@ -794,7 +799,7 @@ export class QuickNodeWebhookManager {
     }
   }
 
-  // 🚀 КЕШИРОВАННАЯ ОЦЕНКА СТОИМОСТИ ТОКЕНА
+  // 🚀 КЕШИРОВАННАЯ ОЦЕНКА СТОИМОСТИ ТОКЕНА с улучшенным алгоритмом
   private async estimateTokenValueUSDCached(tokenMint: string, amount: number): Promise<number> {
     const cached = this.priceCache.get(tokenMint);
     if (cached && Date.now() - cached.timestamp < 5 * 60 * 1000) { // 5 минут
@@ -802,18 +807,22 @@ export class QuickNodeWebhookManager {
     }
 
     try {
-      // Простая оценка - можно заменить на реальный price API
-      let estimatedPrice = 1; // $1 за токен по умолчанию
+      // 🆕 УЛУЧШЕНО: Используем TokenMetadataService для получения цены
+      const tokenPrice = await this.tokenMetadataService.getTokenPrice(tokenMint);
       
-      // Известные токены
-      if (tokenMint === 'So11111111111111111111111111111111111111112') {
-        estimatedPrice = 140; // SOL
-      } else if (tokenMint === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') {
-        estimatedPrice = 1; // USDC
-      } else if (tokenMint === 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB') {
-        estimatedPrice = 1; // USDT
-      } else {
-        estimatedPrice = 0.001; // Неизвестные токены
+      let estimatedPrice = tokenPrice || 1; // Используем цену из TokenMetadataService или fallback
+      
+      // Известные токены как fallback
+      if (!tokenPrice) {
+        if (tokenMint === 'So11111111111111111111111111111111111111112') {
+          estimatedPrice = 140; // SOL
+        } else if (tokenMint === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') {
+          estimatedPrice = 1; // USDC
+        } else if (tokenMint === 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB') {
+          estimatedPrice = 1; // USDT
+        } else {
+          estimatedPrice = 0.001; // Неизвестные токены
+        }
       }
       
       this.priceCache.set(tokenMint, {

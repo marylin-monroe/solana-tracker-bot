@@ -204,6 +204,7 @@ export interface SmartMoneySwap {
   winRate: number;
   pnl: number;
   totalTrades: number;
+  tokenPrice?: number;
   
   // Family поля ОТКЛЮЧЕНЫ - всегда false/0/undefined
   isFamilyMember: false; // всегда false
