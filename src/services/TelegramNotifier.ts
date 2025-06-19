@@ -1,4 +1,4 @@
-// src/services/TelegramNotifier.ts - КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Дедупликация + TokenMetadataService + CryptoAttack формат
+// src/services/TelegramNotifier.ts - КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ГЛОБАЛЬНАЯ дедупликация + TokenMetadataService + CryptoAttack формат
 import TelegramBot from 'node-telegram-bot-api';
 import { SmartMoneyFlow, HotNewToken, SmartMoneySwap } from '../types';
 import { Logger } from '../utils/Logger';
@@ -61,14 +61,16 @@ interface SmartMoneyInflow {
   }>;
 }
 
-// 🆕 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Улучшенные интерфейсы для дедупликации и агрегации
-interface TransactionSignature {
+// 🆕 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ГЛОБАЛЬНАЯ дедупликация - расширенные интерфейсы
+interface GlobalTransactionSignature {
   signature: string;
   timestamp: Date;
   tokenSymbol: string;
   amountUSD: number;
-  walletAddress: string; // ✅ ДОБАВЛЕНО для лучшей идентификации
-  tokenAddress: string;  // ✅ ДОБАВЛЕНО для лучшей идентификации
+  walletAddress: string;
+  tokenAddress: string;
+  source: string; // Откуда пришел swap: 'LargeTransactionMonitor' | 'QuickNodeWebhookManager' | 'Other'
+  messageHash: string; // Хеш содержимого сообщения для защиты от идентичных свапов
 }
 
 interface AggregatedSwap {
@@ -85,6 +87,100 @@ interface AggregatedSwap {
   transactions: SmartMoneySwap[];
 }
 
+// 🆕 ГЛОБАЛЬНАЯ защита от дублей - статические переменные для всех экземпляров
+class GlobalDeduplicationManager {
+  private static instance: GlobalDeduplicationManager;
+  private static globalTransactionCache = new Map<string, GlobalTransactionSignature>();
+  private static readonly GLOBAL_DUPLICATE_WINDOW = 15 * 60 * 1000; // 15 минут глобальной защиты
+  
+  public static getInstance(): GlobalDeduplicationManager {
+    if (!GlobalDeduplicationManager.instance) {
+      GlobalDeduplicationManager.instance = new GlobalDeduplicationManager();
+      GlobalDeduplicationManager.startGlobalCleanup();
+    }
+    return GlobalDeduplicationManager.instance;
+  }
+
+  // 🔒 ГЛОБАЛЬНАЯ проверка дублей между всеми сервисами
+  public checkGlobalDuplicate(swap: SmartMoneySwap, source: string): boolean {
+    const messageHash = this.generateMessageHash(swap);
+    const primaryKey = swap.transactionId;
+    const secondaryKey = messageHash;
+    
+    const now = Date.now();
+    
+    // Проверяем по signature (основная защита)
+    const existingBySignature = GlobalDeduplicationManager.globalTransactionCache.get(primaryKey);
+    if (existingBySignature && (now - existingBySignature.timestamp.getTime()) < GlobalDeduplicationManager.GLOBAL_DUPLICATE_WINDOW) {
+      return true; // Дубликат найден по signature
+    }
+    
+    // Проверяем по содержимому сообщения (дополнительная защита)
+    for (const [key, transaction] of GlobalDeduplicationManager.globalTransactionCache) {
+      if (transaction.messageHash === secondaryKey && 
+          (now - transaction.timestamp.getTime()) < GlobalDeduplicationManager.GLOBAL_DUPLICATE_WINDOW) {
+        return true; // Дубликат найден по содержимому
+      }
+    }
+    
+    // Регистрируем новую транзакцию
+    GlobalDeduplicationManager.globalTransactionCache.set(primaryKey, {
+      signature: swap.transactionId,
+      timestamp: new Date(),
+      tokenSymbol: swap.tokenSymbol || 'UNKNOWN',
+      amountUSD: swap.amountUSD,
+      walletAddress: swap.walletAddress,
+      tokenAddress: swap.tokenAddress,
+      source,
+      messageHash
+    });
+    
+    return false; // Не дубликат
+  }
+
+  // 🆕 Генерация хеша сообщения для защиты от идентичных свапов
+  private generateMessageHash(swap: SmartMoneySwap): string {
+    const hashContent = `${swap.walletAddress}_${swap.tokenAddress}_${swap.swapType}_${Math.floor(swap.amountUSD)}_${swap.tokenSymbol}`;
+    return this.simpleHash(hashContent);
+  }
+
+  private simpleHash(str: string): string {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      const char = str.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash; // Convert to 32bit integer
+    }
+    return Math.abs(hash).toString();
+  }
+
+  // 🧹 Глобальная очистка старых записей
+  private static startGlobalCleanup(): void {
+    setInterval(() => {
+      const now = Date.now();
+      let cleanedCount = 0;
+      
+      for (const [key, transaction] of GlobalDeduplicationManager.globalTransactionCache) {
+        if (now - transaction.timestamp.getTime() > GlobalDeduplicationManager.GLOBAL_DUPLICATE_WINDOW) {
+          GlobalDeduplicationManager.globalTransactionCache.delete(key);
+          cleanedCount++;
+        }
+      }
+      
+      if (cleanedCount > 0) {
+        console.log(`🧹 Global deduplication cleanup: ${cleanedCount} transactions removed`);
+      }
+    }, 5 * 60 * 1000); // Каждые 5 минут
+  }
+
+  public getGlobalStats(): { totalTracked: number; windowMinutes: number } {
+    return {
+      totalTracked: GlobalDeduplicationManager.globalTransactionCache.size,
+      windowMinutes: GlobalDeduplicationManager.GLOBAL_DUPLICATE_WINDOW / (60 * 1000)
+    };
+  }
+}
+
 export class TelegramNotifier {
   private bot: TelegramBot;
   private userId: string;
@@ -98,19 +194,22 @@ export class TelegramNotifier {
   private messagesThisSecond: number = 0;
   private secondReset: number = 0;
   
-  // 🆕 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Улучшенная дедупликация транзакций
-  private sentTransactions = new Map<string, TransactionSignature>();
-  private readonly DUPLICATE_WINDOW = 10 * 60 * 1000; // ✅ УВЕЛИЧЕНО: 10 минут для дедупликации (было 5)
+  // 🆕 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Локальная дедупликация (дополнительная к глобальной)
+  private sentTransactions = new Map<string, GlobalTransactionSignature>();
+  private readonly DUPLICATE_WINDOW = 10 * 60 * 1000; // 10 минут локальной дедупликации
+  
+  // 🆕 ГЛОБАЛЬНАЯ дедупликация
+  private globalDeduplication: GlobalDeduplicationManager;
   
   // 🆕 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Улучшенная агрегация уведомлений
   private pendingSwaps = new Map<string, AggregatedSwap>();
   private aggregationTimer: NodeJS.Timeout | null = null;
-  private readonly AGGREGATION_DELAY = 45 * 1000; // ✅ УВЕЛИЧЕНО: 45 секунд агрегации (было 30)
-  private readonly MIN_SWAPS_FOR_AGGREGATION = 2; // ✅ СНИЖЕНО: 2 свапа для агрегации (было 3)
+  private readonly AGGREGATION_DELAY = 45 * 1000; // 45 секунд агрегации
+  private readonly MIN_SWAPS_FOR_AGGREGATION = 2; // 2 свапа для агрегации
   
   // Rate limits: Telegram allows 30 messages per second
-  private readonly MAX_MESSAGES_PER_SECOND = 20; // ✅ СНИЖЕНО: больше запаса (было 25)
-  private readonly MESSAGE_DELAY = 75; // ✅ УВЕЛИЧЕНО: 75ms между сообщениями (было 50)
+  private readonly MAX_MESSAGES_PER_SECOND = 20; // Больше запаса
+  private readonly MESSAGE_DELAY = 75; // 75ms между сообщениями
   private readonly MAX_RETRIES = 3;
   private readonly RETRY_DELAY = 2000; // 2 seconds
   
@@ -126,6 +225,7 @@ export class TelegramNotifier {
     retryAttempts: 0,
     lastMessageTime: new Date(),
     duplicatesFiltered: 0,
+    globalDuplicatesFiltered: 0, // 🆕 Глобальные дубли
     aggregatedSwaps: 0,
     hotTokenAlerts: 0,
     positionSplittingAlerts: 0,
@@ -137,10 +237,12 @@ export class TelegramNotifier {
     this.bot = new TelegramBot(token, { polling: true });
     this.userId = userId;
     this.logger = Logger.getInstance();
+    this.globalDeduplication = GlobalDeduplicationManager.getInstance(); // 🆕 Глобальная дедупликация
+    
     this.setupBaseHandlers();
     this.startMessageQueueProcessor();
     this.startDuplicateCleanup();
-    this.logger.info('📱 TelegramNotifier initialized with IMPROVED deduplication + TokenMetadataService integration');
+    this.logger.info('📱 TelegramNotifier initialized with ГЛОБАЛЬНАЯ дедупликация + TokenMetadataService integration');
   }
 
   // 🆕 БАЗОВЫЕ ОБРАБОТЧИКИ
@@ -184,7 +286,7 @@ export class TelegramNotifier {
     }, 100); // Проверяем очередь каждые 100ms
   }
 
-  // 🆕 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Улучшенная очистка старых дубликатов
+  // 🆕 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Локальная очистка старых дубликатов
   private startDuplicateCleanup(): void {
     setInterval(() => {
       const now = Date.now();
@@ -198,37 +300,48 @@ export class TelegramNotifier {
       }
       
       if (cleanedCount > 0) {
-        this.logger.debug(`🧹 Cleaned ${cleanedCount} old transaction signatures from duplicate cache`);
+        this.logger.debug(`🧹 Local duplicate cleanup: ${cleanedCount} signatures removed`);
       }
     }, 60 * 1000); // Каждую минуту
   }
 
-  // 🔍 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Улучшенная проверка на дубликаты
-  private isDuplicateTransaction(swap: SmartMoneySwap): boolean {
+  // 🔍 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ДВУХУРОВНЕВАЯ проверка на дубликаты (ГЛОБАЛЬНАЯ + ЛОКАЛЬНАЯ)
+  private isDuplicateTransaction(swap: SmartMoneySwap, source: string = 'Unknown'): boolean {
+    // 1. 🌍 ГЛОБАЛЬНАЯ проверка между всеми сервисами
+    const isGlobalDuplicate = this.globalDeduplication.checkGlobalDuplicate(swap, source);
+    if (isGlobalDuplicate) {
+      this.logger.warn(`🚫 GLOBAL DUPLICATE FILTERED: TX ${swap.transactionId.slice(0, 8)}...${swap.transactionId.slice(-4)} | Source: ${source} | Token: ${swap.tokenSymbol} | Wallet: ${swap.walletAddress.slice(0, 8)}... | Amount: $${swap.amountUSD.toFixed(0)}`);
+      this.stats.globalDuplicatesFiltered++;
+      return true;
+    }
+
+    // 2. 📍 ЛОКАЛЬНАЯ проверка внутри текущего экземпляра
     const signature = swap.transactionId;
     
     if (this.sentTransactions.has(signature)) {
       const existing = this.sentTransactions.get(signature)!;
       
-      // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Дополнительная проверка по кошельку и токену
+      // Дополнительная проверка по кошельку и токену
       const isDuplicate = existing.walletAddress === swap.walletAddress && 
                           existing.tokenAddress === swap.tokenAddress;
       
       if (isDuplicate) {
-        this.logger.warn(`🚫 DUPLICATE FILTERED: TX ${signature.slice(0, 8)}...${signature.slice(-4)} | Token: ${swap.tokenSymbol} | Wallet: ${swap.walletAddress.slice(0, 8)}... | Amount: $${swap.amountUSD.toFixed(0)} | Original: ${existing.timestamp.toISOString()}`);
+        this.logger.warn(`🚫 LOCAL DUPLICATE FILTERED: TX ${signature.slice(0, 8)}...${signature.slice(-4)} | Source: ${source} | Token: ${swap.tokenSymbol} | Wallet: ${swap.walletAddress.slice(0, 8)}... | Amount: $${swap.amountUSD.toFixed(0)} | Original: ${existing.timestamp.toISOString()}`);
         this.stats.duplicatesFiltered++;
         return true;
       }
     }
     
-    // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Добавляем расширенную информацию в отслеживание
+    // Добавляем в локальный кеш для дополнительной защиты
     this.sentTransactions.set(signature, {
       signature,
       timestamp: new Date(),
       tokenSymbol: swap.tokenSymbol || 'UNKNOWN',
       amountUSD: swap.amountUSD,
       walletAddress: swap.walletAddress,
-      tokenAddress: swap.tokenAddress
+      tokenAddress: swap.tokenAddress,
+      source,
+      messageHash: ''
     });
     
     return false;
@@ -236,7 +349,7 @@ export class TelegramNotifier {
 
   // 🔄 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Улучшенная агрегация свапов
   private async aggregateSwap(swap: SmartMoneySwap): Promise<boolean> {
-    // ✅ ИСПРАВЛЕНО: Используем комбинацию токена + кошелька для более точной агрегации
+    // Используем комбинацию токена + кошелька для более точной агрегации
     const tokenKey = `${swap.tokenAddress}_${swap.walletAddress}`;
     
     if (!this.pendingSwaps.has(tokenKey)) {
@@ -278,7 +391,7 @@ export class TelegramNotifier {
       this.sendAggregatedSwaps();
     }, this.AGGREGATION_DELAY);
     
-    // ✅ ИСПРАВЛЕНО: Более консервативные условия для немедленной отправки
+    // Более консервативные условия для немедленной отправки
     if (aggregated.swapCount >= this.MIN_SWAPS_FOR_AGGREGATION * 3) {
       this.sendAggregatedSwaps();
       return true;
@@ -295,14 +408,14 @@ export class TelegramNotifier {
     }
     
     const swapsToProcess = Array.from(this.pendingSwaps.entries());
-    this.pendingSwaps.clear(); // ✅ ИСПРАВЛЕНО: Очищаем сразу, чтобы избежать повторной обработки
+    this.pendingSwaps.clear(); // Очищаем сразу, чтобы избежать повторной обработки
     
     for (const [tokenKey, aggregated] of swapsToProcess) {
       if (aggregated.swapCount >= this.MIN_SWAPS_FOR_AGGREGATION) {
         await this.sendAggregatedSwapMessage(aggregated);
         this.stats.aggregatedSwaps++;
       } else {
-        // ✅ ИСПРАВЛЕНО: добавлен await для каждого индивидуального сообщения
+        // Добавлен await для каждого индивидуального сообщения
         for (const swap of aggregated.transactions) {
           await this.sendIndividualSwapMessage(swap);
         }
@@ -317,7 +430,7 @@ export class TelegramNotifier {
       const netFlow = aggregated.buyCount - aggregated.sellCount;
       const flowEmoji = netFlow > 0 ? '📈' : netFlow < 0 ? '📉' : '↔️';
       
-      // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Улучшенная обработка символов токенов
+      // Улучшенная обработка символов токенов
       const tokenSymbol = this.getDisplayTokenSymbol(aggregated.tokenSymbol, aggregated.tokenAddress);
       
       // Компактный формат как у CryptoAttack для агрегации
@@ -328,7 +441,7 @@ export class TelegramNotifier {
       message += `👥${aggregated.wallets.size} wallets\n`;
       message += `📊 ${this.formatTransactionAge(aggregated.firstSeen)} - ${this.formatTransactionAge(aggregated.lastSeen)}\n`;
       
-      // ✅ ДОБАВЛЕНЫ HTML-ССЫЛКИ на токен
+      // HTML-ссылки на токен
       message += `🔗 <a href="https://solscan.io/token/${aggregated.tokenAddress}">Token Info</a>\n`;
       message += `📋 #${aggregated.tokenAddress.slice(0, 8)}...${aggregated.tokenAddress.slice(-4)}`;
       
@@ -380,7 +493,7 @@ export class TelegramNotifier {
       const categoryEmoji = this.getCategoryEmoji(swap.category);
       const actionEmoji = swap.swapType === 'buy' ? '🟢' : '🔴';
       
-      // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Правильное отображение символов токенов
+      // Правильное отображение символов токенов
       const tokenSymbol = this.getDisplayTokenSymbol(swap.tokenSymbol, swap.tokenAddress);
       
       const tokenAmount = this.formatTokenAmount(swap.tokenAmount || 0);
@@ -389,7 +502,7 @@ export class TelegramNotifier {
       let message = `${categoryEmoji} ${this.formatNumber(swap.amountUSD)} ${actionEmoji} ${tokenAmount} `;
       message += `<b>#${tokenSymbol}</b>`;
       
-      // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Добавляем цену токена если есть и она валидна
+      // Добавляем цену токена если есть и она валидна
       if (swap.tokenPrice && swap.tokenPrice > 0 && swap.tokenPrice < 1000000) {
         message += ` (${this.formatPrice(swap.tokenPrice)})`;
       }
@@ -415,7 +528,7 @@ export class TelegramNotifier {
       message += ` BS DS`; // Как у CryptoAttack
       message += `\nWallet TXN #SmartSwap${swap.swapType === 'buy' ? 'Buy' : 'Sell'}`;
       
-      // ✅ ДОБАВЛЕНЫ HTML-ССЫЛКИ НА SOLSCAN
+      // HTML-ссылки на SOLSCAN
       message += `\n🔗 <a href="https://solscan.io/tx/${swap.transactionId}">TX</a> | `;
       message += `<a href="https://solscan.io/account/${swap.walletAddress}">Wallet</a> | `;
       message += `<a href="https://solscan.io/token/${swap.tokenAddress}">Token</a>`;
@@ -594,6 +707,7 @@ export class TelegramNotifier {
     try {
       const uptimeHours = Math.floor(data.uptime / 3600);
       const uptimeMinutes = Math.floor((data.uptime % 3600) / 60);
+      const globalStats = this.globalDeduplication.getGlobalStats();
       
       let message = `📊 <b>Smart Money Bot Statistics</b>\n\n`;
       
@@ -614,18 +728,23 @@ export class TelegramNotifier {
       message += `💱 Total Swaps: <code>${data.dbStats?.totalSwaps || 0}</code>\n`;
       message += `🎯 Positions: <code>${data.dbStats?.positionAggregations || 0}</code>\n\n`;
       
-      message += `🤖 <b>Notifications (IMPROVED):</b>\n`;
+      message += `🤖 <b>Notifications (GLOBAL DEDUPLICATION):</b>\n`;
       message += `📤 Total Sent: <code>${this.stats.totalSent}</code>\n`;
       message += `🚀 Smart Swaps: <code>${this.stats.smartMoneySwaps}</code>\n`;
       message += `📈 Flow Reports: <code>${this.stats.flowsSent}</code>\n`;
       message += `🔥 Hot Tokens: <code>${this.stats.hotTokenAlerts}</code>\n`;
       message += `🐲 Dragon Imports: <code>${this.stats.dragonImports}</code>\n`;
       message += `⚙️ Commands: <code>${this.stats.commandsProcessed}</code>\n`;
-      message += `🚫 Duplicates Filtered: <code>${this.stats.duplicatesFiltered}</code>\n`;
+      message += `🚫 Local Duplicates: <code>${this.stats.duplicatesFiltered}</code>\n`;
+      message += `🌍 Global Duplicates: <code>${this.stats.globalDuplicatesFiltered}</code>\n`;
       message += `📊 Aggregated: <code>${this.stats.aggregatedSwaps}</code>\n`;
       message += `❌ Errors: <code>${this.stats.errorsSent}</code>\n\n`;
       
-      message += `<code>#BotStats #SystemStatus #ImprovedDeduplication</code>`;
+      message += `🔒 <b>Global Deduplication:</b>\n`;
+      message += `👁️ Tracked: <code>${globalStats.totalTracked}</code> transactions\n`;
+      message += `⏰ Window: <code>${globalStats.windowMinutes}</code> minutes\n\n`;
+      
+      message += `<code>#BotStats #SystemStatus #GlobalDeduplication</code>`;
 
       await this.sendCycleLog(message);
       this.logger.info('📊 Stats response sent');
@@ -873,11 +992,11 @@ ${result.topPerformers.slice(0, 5).map((w, i) =>
     }
   }
 
-  // 🎯 ГЛАВНЫЙ МЕТОД SMART MONEY SWAP - КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ с улучшенной дедупликацией и агрегацией
-  async sendSmartMoneySwapAlert(swap: SmartMoneySwap): Promise<void> {
+  // 🎯 ГЛАВНЫЙ МЕТОД SMART MONEY SWAP - КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ с ГЛОБАЛЬНОЙ дедупликацией
+  async sendSmartMoneySwapAlert(swap: SmartMoneySwap, source: string = 'Unknown'): Promise<void> {
     try {
-      // 1. КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Проверяем на дубликаты
-      if (this.isDuplicateTransaction(swap)) {
+      // 1. КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ГЛОБАЛЬНАЯ + ЛОКАЛЬНАЯ проверка на дубликаты
+      if (this.isDuplicateTransaction(swap, source)) {
         return; // Пропускаем дубликат
       }
       
@@ -953,18 +1072,22 @@ ${result.topPerformers.slice(0, 5).map((w, i) =>
     }
   }
 
-  // ✅ GET STATS с новыми метриками для дедупликации и агрегации
+  // ✅ GET STATS с новыми метриками для ГЛОБАЛЬНОЙ дедупликации
   getNotificationStats() {
+    const globalStats = this.globalDeduplication.getGlobalStats();
+    
     return {
       ...this.stats,
       queueSize: this.messageQueue.length,
       isProcessingQueue: this.isProcessingQueue,
       messagesThisSecond: this.messagesThisSecond,
       duplicatesTracked: this.sentTransactions.size,
+      globalDuplicatesTracked: globalStats.totalTracked, // 🆕
       pendingAggregations: this.pendingSwaps.size,
       errorRate: this.stats.totalSent > 0 ? (this.stats.errorsSent / this.stats.totalSent * 100).toFixed(2) + '%' : '0%',
       successRate: this.stats.totalSent > 0 ? ((this.stats.totalSent - this.stats.errorsSent) / this.stats.totalSent * 100).toFixed(2) + '%' : '100%',
       duplicateWindowMinutes: this.DUPLICATE_WINDOW / (60 * 1000),
+      globalDuplicateWindowMinutes: globalStats.windowMinutes, // 🆕
       aggregationDelaySeconds: this.AGGREGATION_DELAY / 1000
     };
   }
@@ -976,16 +1099,18 @@ ${result.topPerformers.slice(0, 5).map((w, i) =>
 
   // 🆕 ALIAS for backward compatibility with WebhookServer.ts - ДОБАВЛЕНО ЗДЕСЬ!
   async sendSmartMoneySwap(swap: SmartMoneySwap): Promise<void> {
-    return this.sendSmartMoneySwapAlert(swap);
+    return this.sendSmartMoneySwapAlert(swap, 'WebhookServer');
   }
 
   // 🆕 МЕТОДЫ ДЛЯ УПРАВЛЕНИЯ ДЕДУПЛИКАЦИЕЙ
   getDuplicationStats(): {
     totalTracked: number;
     duplicatesFiltered: number;
+    globalDuplicatesFiltered: number; // 🆕
     oldestTransaction: Date | null;
     newestTransaction: Date | null;
     windowMinutes: number;
+    globalWindowMinutes: number; // 🆕
   } {
     let oldest: Date | null = null;
     let newest: Date | null = null;
@@ -999,12 +1124,16 @@ ${result.topPerformers.slice(0, 5).map((w, i) =>
       }
     }
     
+    const globalStats = this.globalDeduplication.getGlobalStats();
+    
     return {
       totalTracked: this.sentTransactions.size,
       duplicatesFiltered: this.stats.duplicatesFiltered,
+      globalDuplicatesFiltered: this.stats.globalDuplicatesFiltered, // 🆕
       oldestTransaction: oldest,
       newestTransaction: newest,
-      windowMinutes: this.DUPLICATE_WINDOW / (60 * 1000)
+      windowMinutes: this.DUPLICATE_WINDOW / (60 * 1000),
+      globalWindowMinutes: globalStats.windowMinutes // 🆕
     };
   }
 
@@ -1019,6 +1148,6 @@ ${result.topPerformers.slice(0, 5).map((w, i) =>
   // 🆕 ОЧИСТКА ДЕДУПЛИКАЦИИ
   clearDuplicationCache(): void {
     this.sentTransactions.clear();
-    this.logger.info('🧹 Duplication cache cleared');
+    this.logger.info('🧹 Local duplication cache cleared');
   }
 }

@@ -1,4 +1,4 @@
-// src/services/LargeTransactionMonitor.ts - ПОЛНЫЙ ИСПРАВЛЕННЫЙ ФАЙЛ с мега-фильтрацией
+// src/services/LargeTransactionMonitor.ts - ФАЗА 1: КРИТИЧЕСКИЕ УЛУЧШЕНИЯ с Enhanced Honeypot Detection
 import { TelegramNotifier } from './TelegramNotifier';
 import { MultiProviderService } from './MultiProviderService';
 import { TokenMetadataService } from './TokenMetadataService';
@@ -37,11 +37,24 @@ interface MonitoringStats {
   filterReasons: Record<string, number>;
 }
 
-interface MintInfo {
+// 🆕 ФАЗА 1: Enhanced Mint Info with Token-2022 support
+interface EnhancedMintInfo {
   mintAuthority: string | null;
   freezeAuthority: string | null;
   decimals: number;
   supply: number;
+  isInitialized: boolean;
+  
+  // 🆕 Token-2022 Extensions
+  hasTransferFeeConfig: boolean;
+  hasTransferHook: boolean;
+  hasPermanentDelegate: boolean;
+  hasNonTransferable: boolean;
+  extensionTypes: string[];
+  
+  // 🆕 Program Information
+  tokenProgram: string;
+  isToken2022: boolean;
 }
 
 interface TokenMetadata {
@@ -64,6 +77,16 @@ interface JupiterQuoteResponse {
   platformFee: null | any;
   priceImpactPct: string;
   routePlan: any[];
+}
+
+// 🆕 ФАЗА 1: Token Creator Analysis Result
+interface TokenCreatorAnalysis {
+  isDeployer: boolean;
+  isMintAuthority: boolean;
+  isFreezeAuthority: boolean;
+  deployerConfidence: number;
+  firstTransactionRole: 'creator' | 'early_buyer' | 'liquidity_provider' | 'unknown';
+  creationTimeDistance: number; // minutes since token creation
 }
 
 export class LargeTransactionMonitor {
@@ -108,11 +131,17 @@ export class LargeTransactionMonitor {
     price: number | null;
     timestamp: number; 
   }>();
-  private mintInfoCache = new Map<string, { mintInfo: MintInfo; timestamp: number }>();
+  private mintInfoCache = new Map<string, { mintInfo: EnhancedMintInfo; timestamp: number }>();
+  
+  // 🆕 ФАЗА 1: Новые кеши для улучшенного анализа
+  private tokenCreatorCache = new Map<string, { analysis: TokenCreatorAnalysis; timestamp: number }>();
+  private tokenAgeCache = new Map<string, { ageHours: number; timestamp: number }>();
+  private walletHistoryCache = new Map<string, { ageHours: number; txCount: number; timestamp: number }>();
   
   // Время жизни кешей
   private readonly CACHE_TTL = 60 * 60 * 1000; // 1 час
   private readonly TOKEN_CACHE_TTL = 10 * 60 * 1000; // 10 минут для токенов
+  private readonly CREATOR_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 часа для creator analysis
   
   // 🛡️ КОНСТАНТЫ ДЛЯ ФИЛЬТРАЦИИ
   private readonly MAJOR_TOKENS = new Set([
@@ -143,11 +172,19 @@ export class LargeTransactionMonitor {
     '9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM',
   ]);
   
+  // 🆕 ФАЗА 1: Token Program IDs
+  private readonly TOKEN_PROGRAMS = {
+    TOKEN_PROGRAM: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+    TOKEN_2022_PROGRAM: 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb',
+    ASSOCIATED_TOKEN_PROGRAM: 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL'
+  };
+  
+  // 🆕 ФАЗА 1: Enhanced Filter Thresholds
   private readonly FILTER_THRESHOLDS = {
-    SCAM_AUTO_BLOCK: 100,    // Мгновенная блокировка без уведомлений
-    HIGH_RISK_BLOCK: 70,     // Блокировать с уведомлением  
-    SUSPICIOUS_WARNING: 30,   // Отправить с предупреждением
-    LEGITIMATE_THRESHOLD: 0   // Отправить как обычно
+    SCAM_AUTO_BLOCK: 100,        // Мгновенная блокировка без уведомлений
+    HIGH_RISK_BLOCK: 70,         // Блокировать с уведомлением  
+    SUSPICIOUS_WARNING: 30,       // Отправить с предупреждением
+    LEGITIMATE_THRESHOLD: 0       // Отправить как обычно
   };
 
   constructor(
@@ -163,7 +200,7 @@ export class LargeTransactionMonitor {
     this.logger = Logger.getInstance();
     
     this.startCacheCleanup();
-    this.logger.info('🚨 LargeTransactionMonitor initialized with MEGA FILTERING system');
+    this.logger.info('🚨 LargeTransactionMonitor initialized with ФАЗА 1 ENHANCED FILTERING (Token-2022 + Advanced Creator Detection)');
   }
 
   /**
@@ -196,17 +233,22 @@ export class LargeTransactionMonitor {
       }, this.SCAN_INTERVAL_MS);
 
       await this.telegramNotifier.sendCycleLog(
-        `🚨 <b>Large Transaction Monitor Started</b>\n\n` +
+        `🚨 <b>Large Transaction Monitor Started (ФАЗА 1 ENHANCED)</b>\n\n` +
         `💰 <b>Threshold:</b> <code>$${this.TRANSACTION_THRESHOLD_USD.toLocaleString()}</code>\n` +
         `⏰ <b>Scan Interval:</b> <code>${this.SCAN_INTERVAL_MS / 1000}s</code>\n` +
         `📡 <b>Data Source:</b> <code>MultiProvider (QuickNode + Alchemy)</code>\n` +
         `🏷️ <b>Token Metadata:</b> <code>TokenMetadataService (Jupiter + Birdeye)</code>\n` +
-        `🛡️ <b>Filtering:</b> <code>MEGA SCAM DETECTION + Exchange + Genius Check</code>\n\n` +
+        `🛡️ <b>ФАЗА 1 Filtering:</b>\n` +
+        `  • Enhanced Honeypot Detection (Token-2022)\n` +
+        `  • Advanced Creator Analysis\n` +
+        `  • Jupiter Sell Simulation\n` +
+        `  • Smart Money Genius Check (-100 score)\n` +
+        `  • Exchange Internal Transfer Detection\n\n` +
         `🎯 <b>Starting Slot:</b> <code>${this.lastProcessedSlot}</code>\n` +
         `⏰ <code>${new Date().toLocaleString()}</code>`
       );
 
-      this.logger.info('✅ Large transaction monitoring started successfully');
+      this.logger.info('✅ Large transaction monitoring started successfully with ФАЗА 1 enhancements');
 
     } catch (error) {
       this.logger.error('❌ Error starting large transaction monitoring:', error);
@@ -238,7 +280,11 @@ export class LargeTransactionMonitor {
       `• Large TXs Found: <code>${this.stats.largeTransactionsFound}</code>\n` +
       `• Filtered Out: <code>${this.stats.filtered}</code>\n` +
       `• Alerts Sent: <code>${this.stats.alertsSent}</code>\n\n` +
-      `⏰ <code>${new Date().toLocaleString()}</code>`
+      `🔬 <b>ФАЗА 1 Filter Performance:</b>\n` +
+      Object.entries(this.stats.filterReasons).map(([reason, count]) => 
+        `• ${reason}: <code>${count}</code>`
+      ).join('\n') +
+      `\n\n⏰ <code>${new Date().toLocaleString()}</code>`
     );
 
     this.logger.info('✅ Large transaction monitoring stopped');
@@ -419,8 +465,8 @@ export class LargeTransactionMonitor {
       this.stats.largeTransactionsFound++;
       this.logger.info(`💰 Found large transaction: $${swapInfo.amountUSD.toLocaleString()} - ${swapInfo.tokenSymbol} ${swapInfo.tokenPrice ? `@ $${swapInfo.tokenPrice}` : ''}`);
 
-      // 🛡️ ПРИМЕНЯЕМ МЕГА-ФИЛЬТРЫ
-      const filterResult = await this.applyMegaFilters(swapInfo);
+      // 🛡️ ПРИМЕНЯЕМ ФАЗА 1 МЕГА-ФИЛЬТРЫ
+      const filterResult = await this.applyPhase1MegaFilters(swapInfo);
       
       if (filterResult.shouldFilter) {
         this.stats.filtered++;
@@ -428,7 +474,7 @@ export class LargeTransactionMonitor {
         
         // Логируем только если это не автоблокировка скама
         if (filterResult.reason !== 'SCAM_AUTO_BLOCKED') {
-          this.logger.info(`🚫 Filtered large transaction: ${filterResult.reason}`);
+          this.logger.info(`🚫 Filtered large transaction: ${filterResult.reason} (score: ${filterResult.riskScore})`);
         }
         return;
       }
@@ -571,18 +617,16 @@ export class LargeTransactionMonitor {
       }
 
       // Получаем через TokenMetadataService
-      const tokenInfo = await this.tokenMetadataService.getTokenInfo(tokenAddress);
+      const tokenInfo = await this.tokenMetadataService.getTokenMetadata(tokenAddress);
       
       let enrichedInfo: TokenMetadata;
       
       if (tokenInfo) {
+        const price = await this.tokenMetadataService.getTokenPrice(tokenAddress);
         enrichedInfo = {
           symbol: tokenInfo.symbol || this.generateFallbackSymbol(tokenAddress),
           name: tokenInfo.name || this.generateFallbackName(tokenAddress),
-          price: tokenInfo.price || this.getTokenFallbackPrice(tokenAddress),
-          marketCap: tokenInfo.marketCap,
-          volume24h: tokenInfo.volume24h,
-          liquidity: tokenInfo.liquidity
+          price: price || this.getTokenFallbackPrice(tokenAddress)
         };
       } else {
         // Fallback
@@ -614,9 +658,9 @@ export class LargeTransactionMonitor {
   }
 
   /**
-   * 🛡️ МЕГА-ФИЛЬТРАЦИЯ С ПОЭТАПНЫМ ВНЕДРЕНИЕМ
+   * 🛡️ ФАЗА 1: МЕГА-ФИЛЬТРАЦИЯ С УЛУЧШЕНИЯМИ
    */
-  private async applyMegaFilters(transaction: LargeTransaction): Promise<FilterResult> {
+  private async applyPhase1MegaFilters(transaction: LargeTransaction): Promise<FilterResult> {
     let riskScore = 0;
     const reasons: string[] = [];
     
@@ -630,13 +674,13 @@ export class LargeTransactionMonitor {
       
       // 2. 🔥 УРОВЕНЬ 1: КРИТИЧЕСКИЕ ПРОВЕРКИ (мгновенная блокировка при 100 баллов)
       
-      // 2.1 Honeypot Detection
-      const honeypotScore = await this.calculateHoneypotScore(transaction);
+      // 2.1 ФАЗА 1: Enhanced Honeypot Detection
+      const honeypotScore = await this.calculateEnhancedHoneypotScore(transaction);
       riskScore += honeypotScore;
       if (honeypotScore > 0) reasons.push(`Honeypot(${honeypotScore})`);
       
-      // 2.2 Token Creator Detection  
-      const creatorScore = await this.calculateCreatorScore(transaction);
+      // 2.2 ФАЗА 1: Advanced Token Creator Detection  
+      const creatorScore = await this.calculateAdvancedCreatorScore(transaction);
       riskScore += creatorScore;
       if (creatorScore > 0) reasons.push(`Creator(${creatorScore})`);
       
@@ -693,75 +737,139 @@ export class LargeTransactionMonitor {
       }
       
     } catch (error) {
-      this.logger.error('Error applying mega filters:', error);
+      this.logger.error('Error applying ФАЗА 1 mega filters:', error);
       return { shouldFilter: false, riskScore: 0 };
     }
   }
 
   /**
-   * 🍯 HONEYPOT SCORE CALCULATION
+   * 🍯 ФАЗА 1: ENHANCED HONEYPOT SCORE CALCULATION
    */
-  private async calculateHoneypotScore(transaction: LargeTransaction): Promise<number> {
+  private async calculateEnhancedHoneypotScore(transaction: LargeTransaction): Promise<number> {
     let score = 0;
     
     try {
-      // Получаем mint info
-      const mintInfo = await this.getMintInfo(transaction.tokenAddress);
+      // Получаем enhanced mint info с Token-2022 поддержкой
+      const mintInfo = await this.getEnhancedMintInfo(transaction.tokenAddress);
       
-      // Активный freeze authority
+      // ✅ ФАЗА 1: Активный freeze authority
       if (mintInfo.freezeAuthority !== null) {
         score += 40;
+        this.logger.debug(`🔒 Token has freeze authority: ${mintInfo.freezeAuthority}`);
       }
       
-      // Активный mint authority
+      // ✅ ФАЗА 1: Активный mint authority
       if (mintInfo.mintAuthority !== null) {
         score += 35;
+        this.logger.debug(`🏭 Token has mint authority: ${mintInfo.mintAuthority}`);
       }
       
-      // Симуляция продажи через Jupiter
+      // ✅ ФАЗА 1: Token-2022 Extensions (НОВОЕ!)
+      if (mintInfo.isToken2022) {
+        if (mintInfo.hasTransferFeeConfig) {
+          score += 25; // Transfer fees могут блокировать продажи
+          this.logger.debug(`💸 Token-2022 has transfer fee config`);
+        }
+        
+        if (mintInfo.hasTransferHook) {
+          score += 30; // Transfer hooks могут блокировать транзакции
+          this.logger.debug(`🪝 Token-2022 has transfer hook`);
+        }
+        
+        if (mintInfo.hasNonTransferable) {
+          score += 100; // Нетрансферабельные токены = мгновенная блокировка
+          this.logger.debug(`🚫 Token-2022 is non-transferable`);
+        }
+        
+        if (mintInfo.hasPermanentDelegate) {
+          score += 20; // Permanent delegate может контролировать токены
+          this.logger.debug(`👤 Token-2022 has permanent delegate`);
+        }
+        
+        // Дополнительная проверка неизвестных расширений
+        if (mintInfo.extensionTypes.length > 2) {
+          score += 15; // Много расширений подозрительно
+          this.logger.debug(`⚠️ Token-2022 has many extensions: ${mintInfo.extensionTypes.join(', ')}`);
+        }
+      }
+      
+      // ✅ ФАЗА 1: Симуляция продажи через Jupiter
       const canSell = await this.simulateJupiterSell(transaction.tokenAddress, 1000);
       if (!canSell.success) {
         score += 30;
+        this.logger.debug(`💔 Jupiter sell simulation failed: ${canSell.reason}`);
       }
       
-      // Проверка кастомной программы токена (базовая проверка)
-      // const isCustomProgram = await this.checkCustomTokenProgram(transaction.tokenAddress);
-      // if (isCustomProgram) score += 25;
+      // ✅ ФАЗА 1: Проверка кастомной программы токена (НОВОЕ!)
+      const isCustomProgram = await this.checkCustomTokenProgram(transaction.tokenAddress);
+      if (isCustomProgram) {
+        score += 25;
+        this.logger.debug(`🛠️ Token uses custom program`);
+      }
       
     } catch (error) {
-      this.logger.debug('Error calculating honeypot score:', error);
+      this.logger.debug('Error calculating enhanced honeypot score:', error);
     }
     
     return Math.min(score, 100); // Максимум 100
   }
 
   /**
-   * 👨‍💻 TOKEN CREATOR SCORE CALCULATION
+   * 👨‍💻 ФАЗА 1: ADVANCED TOKEN CREATOR SCORE CALCULATION
    */
-  private async calculateCreatorScore(transaction: LargeTransaction): Promise<number> {
+  private async calculateAdvancedCreatorScore(transaction: LargeTransaction): Promise<number> {
     let score = 0;
     
     try {
-      const mintInfo = await this.getMintInfo(transaction.tokenAddress);
+      // Получаем enhanced creator analysis
+      const creatorAnalysis = await this.analyzeTokenCreator(transaction.walletAddress, transaction.tokenAddress);
       
-      // Кошелек = mint authority
-      if (mintInfo.mintAuthority === transaction.walletAddress) {
+      // ✅ ФАЗА 1: Кошелек = mint authority
+      if (creatorAnalysis.isMintAuthority) {
         score += 40;
+        this.logger.debug(`🏭 Wallet is mint authority`);
       }
       
-      // Кошелек = freeze authority
-      if (mintInfo.freezeAuthority === transaction.walletAddress) {
+      // ✅ ФАЗА 1: Кошелек = freeze authority
+      if (creatorAnalysis.isFreezeAuthority) {
         score += 35;
+        this.logger.debug(`🔒 Wallet is freeze authority`);
       }
       
-      // Проверка первых транзакций токена (упрощенная)
-      const isDeployer = await this.checkIfTokenDeployer(transaction.walletAddress, transaction.tokenAddress);
-      if (isDeployer) {
-        score += 30;
+      // ✅ ФАЗА 1: Detailed deployer analysis (НОВОЕ!)
+      if (creatorAnalysis.isDeployer) {
+        score += Math.min(creatorAnalysis.deployerConfidence, 30);
+        this.logger.debug(`🚀 Wallet is token deployer (confidence: ${creatorAnalysis.deployerConfidence}%)`);
+      }
+      
+      // ✅ ФАЗА 1: Роль в первых транзакциях (НОВОЕ!)
+      switch (creatorAnalysis.firstTransactionRole) {
+        case 'creator':
+          score += 25;
+          this.logger.debug(`👨‍💻 Wallet is token creator`);
+          break;
+        case 'liquidity_provider':
+          score += 15; // Добавление ликвидности сразу после создания подозрительно
+          this.logger.debug(`💧 Wallet added initial liquidity`);
+          break;
+        case 'early_buyer':
+          // Раннее покупатели не всегда плохо, но очень близко к созданию подозрительно
+          if (creatorAnalysis.creationTimeDistance < 5) { // Менее 5 минут
+            score += 20;
+            this.logger.debug(`⚡ Wallet bought within ${creatorAnalysis.creationTimeDistance} minutes of creation`);
+          }
+          break;
+      }
+      
+      // ✅ ФАЗА 1: Временная близость к созданию токена (НОВОЕ!)
+      if (creatorAnalysis.creationTimeDistance < 60) { // Менее часа
+        const proximityScore = Math.max(0, 20 - (creatorAnalysis.creationTimeDistance / 3));
+        score += proximityScore;
+        this.logger.debug(`⏱️ Transaction within ${creatorAnalysis.creationTimeDistance} minutes of token creation`);
       }
       
     } catch (error) {
-      this.logger.debug('Error calculating creator score:', error);
+      this.logger.debug('Error calculating advanced creator score:', error);
     }
     
     return Math.min(score, 100);
@@ -920,12 +1028,12 @@ export class LargeTransactionMonitor {
     return Math.max(bonus, -50);
   }
 
-  // ========== ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ==========
+  // ========== ФАЗА 1: НОВЫЕ ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ==========
 
   /**
-   * 📊 ПОЛУЧЕНИЕ MINT INFO
+   * 📊 ФАЗА 1: ENHANCED MINT INFO with Token-2022 Support
    */
-  private async getMintInfo(tokenAddress: string): Promise<MintInfo> {
+  private async getEnhancedMintInfo(tokenAddress: string): Promise<EnhancedMintInfo> {
     try {
       // Проверяем кеш
       const cached = this.mintInfoCache.get(tokenAddress);
@@ -933,19 +1041,27 @@ export class LargeTransactionMonitor {
         return cached.mintInfo;
       }
 
-      // Получаем через RPC
+      // Получаем raw account info через RPC
       const response = await this.multiProvider.getAccountInfo(tokenAddress);
       
       if (!response.success || !response.data) {
         throw new Error('Failed to get mint info');
       }
 
-      const mintInfo: MintInfo = {
-        mintAuthority: response.data.mintAuthority || null,
-        freezeAuthority: response.data.freezeAuthority || null,
-        decimals: response.data.decimals || 9,
-        supply: response.data.supply || 0
-      };
+      const accountData = response.data;
+      let mintInfo: EnhancedMintInfo;
+
+      // Определяем тип программы токена
+      const tokenProgram = accountData.owner || '';
+      const isToken2022 = tokenProgram === this.TOKEN_PROGRAMS.TOKEN_2022_PROGRAM;
+
+      if (isToken2022) {
+        // ✅ ФАЗА 1: Парсим Token-2022 с расширениями
+        mintInfo = await this.parseToken2022MintInfo(accountData);
+      } else {
+        // Обычный токен программы
+        mintInfo = await this.parseStandardMintInfo(accountData);
+      }
 
       // Кешируем
       this.mintInfoCache.set(tokenAddress, {
@@ -953,17 +1069,439 @@ export class LargeTransactionMonitor {
         timestamp: Date.now()
       });
 
+      this.logger.debug(`📊 Parsed mint info for ${tokenAddress}: Token-2022=${isToken2022}, Extensions=${mintInfo.extensionTypes.length}`);
       return mintInfo;
 
     } catch (error) {
-      this.logger.debug('Error getting mint info:', error);
+      this.logger.debug('Error getting enhanced mint info:', error);
       // Fallback
       return {
         mintAuthority: null,
         freezeAuthority: null,
         decimals: 9,
-        supply: 0
+        supply: 0,
+        isInitialized: false,
+        hasTransferFeeConfig: false,
+        hasTransferHook: false,
+        hasPermanentDelegate: false,
+        hasNonTransferable: false,
+        extensionTypes: [],
+        tokenProgram: this.TOKEN_PROGRAMS.TOKEN_PROGRAM,
+        isToken2022: false
       };
+    }
+  }
+
+  /**
+   * 🆕 ФАЗА 1: Parse Token-2022 Mint Info (SAFE PARSING)
+   */
+  private async parseToken2022MintInfo(accountData: any): Promise<EnhancedMintInfo> {
+    try {
+      // ✅ БЕЗОПАСНЫЙ парсинг с fallback значениями
+      const parsed = accountData?.parsed?.info || {};
+      const extensions = parsed?.extensions || [];
+      
+      let mintInfo: EnhancedMintInfo = {
+        mintAuthority: this.safeGetStringValue(parsed.mintAuthority),
+        freezeAuthority: this.safeGetStringValue(parsed.freezeAuthority),
+        decimals: this.safeGetNumberValue(parsed.decimals, 9),
+        supply: this.safeGetNumberValue(parsed.supply, 0),
+        isInitialized: parsed.isInitialized === true,
+        hasTransferFeeConfig: false,
+        hasTransferHook: false,
+        hasPermanentDelegate: false,
+        hasNonTransferable: false,
+        extensionTypes: [],
+        tokenProgram: this.TOKEN_PROGRAMS.TOKEN_2022_PROGRAM,
+        isToken2022: true
+      };
+
+      // ✅ ФАЗА 1: БЕЗОПАСНЫЙ парсинг Token-2022 расширений
+      if (Array.isArray(extensions)) {
+        for (const extension of extensions) {
+          try {
+            const extensionType = extension?.extension || extension?.type || 'unknown';
+            if (typeof extensionType === 'string') {
+              mintInfo.extensionTypes.push(extensionType);
+              
+              switch (extensionType.toLowerCase()) {
+                case 'transferfeeconfig':
+                case 'transfer_fee_config':
+                  mintInfo.hasTransferFeeConfig = true;
+                  this.logger.debug(`💸 Found transfer fee config in Token-2022`);
+                  break;
+                case 'transferhook':
+                case 'transfer_hook':
+                  mintInfo.hasTransferHook = true;
+                  this.logger.debug(`🪝 Found transfer hook in Token-2022`);
+                  break;
+                case 'permanentdelegate':
+                case 'permanent_delegate':
+                  mintInfo.hasPermanentDelegate = true;
+                  this.logger.debug(`👤 Found permanent delegate in Token-2022`);
+                  break;
+                case 'nontransferable':
+                case 'non_transferable':
+                  mintInfo.hasNonTransferable = true;
+                  this.logger.debug(`🚫 Found non-transferable extension in Token-2022`);
+                  break;
+                default:
+                  this.logger.debug(`❓ Unknown Token-2022 extension: ${extensionType}`);
+              }
+            }
+          } catch (extError) {
+            this.logger.debug('Error parsing individual extension:', extError);
+            continue; // Пропускаем проблемные расширения
+          }
+        }
+      }
+
+      return mintInfo;
+
+    } catch (error) {
+      this.logger.debug('Error parsing Token-2022 mint info:', error);
+      // Возвращаем базовую структуру даже при ошибке
+      return {
+        mintAuthority: null,
+        freezeAuthority: null,
+        decimals: 9,
+        supply: 0,
+        isInitialized: false,
+        hasTransferFeeConfig: false,
+        hasTransferHook: false,
+        hasPermanentDelegate: false,
+        hasNonTransferable: false,
+        extensionTypes: [],
+        tokenProgram: this.TOKEN_PROGRAMS.TOKEN_2022_PROGRAM,
+        isToken2022: true
+      };
+    }
+  }
+
+  /**
+   * 🆕 ФАЗА 1: Parse Standard Token Mint Info (SAFE PARSING)
+   */
+  private async parseStandardMintInfo(accountData: any): Promise<EnhancedMintInfo> {
+    try {
+      const parsed = accountData?.parsed?.info || {};
+      
+      return {
+        mintAuthority: this.safeGetStringValue(parsed.mintAuthority),
+        freezeAuthority: this.safeGetStringValue(parsed.freezeAuthority),
+        decimals: this.safeGetNumberValue(parsed.decimals, 9),
+        supply: this.safeGetNumberValue(parsed.supply, 0),
+        isInitialized: parsed.isInitialized === true,
+        hasTransferFeeConfig: false,
+        hasTransferHook: false,
+        hasPermanentDelegate: false,
+        hasNonTransferable: false,
+        extensionTypes: [],
+        tokenProgram: this.TOKEN_PROGRAMS.TOKEN_PROGRAM,
+        isToken2022: false
+      };
+    } catch (error) {
+      this.logger.debug('Error parsing standard mint info:', error);
+      // Безопасный fallback
+      return {
+        mintAuthority: null,
+        freezeAuthority: null,
+        decimals: 9,
+        supply: 0,
+        isInitialized: false,
+        hasTransferFeeConfig: false,
+        hasTransferHook: false,
+        hasPermanentDelegate: false,
+        hasNonTransferable: false,
+        extensionTypes: [],
+        tokenProgram: this.TOKEN_PROGRAMS.TOKEN_PROGRAM,
+        isToken2022: false
+      };
+    }
+  }
+
+  // ========== БЕЗОПАСНЫЕ ПАРСИНГ МЕТОДЫ ==========
+
+  private safeGetStringValue(value: any): string | null {
+    if (typeof value === 'string' && value.length > 0) {
+      return value;
+    }
+    return null;
+  }
+
+  private safeGetNumberValue(value: any, defaultValue: number = 0): number {
+    if (typeof value === 'number' && !isNaN(value)) {
+      return value;
+    }
+    if (typeof value === 'string') {
+      const parsed = parseInt(value);
+      if (!isNaN(parsed)) {
+        return parsed;
+      }
+    }
+    return defaultValue;
+  }
+
+  /**
+   * 🆕 ФАЗА 1: Advanced Token Creator Analysis (API OPTIMIZED)
+   */
+  private async analyzeTokenCreator(walletAddress: string, tokenAddress: string): Promise<TokenCreatorAnalysis> {
+    try {
+      // Проверяем кеш
+      const cacheKey = `${walletAddress}_${tokenAddress}`;
+      const cached = this.tokenCreatorCache.get(cacheKey);
+      if (cached && Date.now() - cached.timestamp < this.CREATOR_CACHE_TTL) {
+        return cached.analysis;
+      }
+
+      // ✅ ОПТИМИЗАЦИЯ: Сначала проверяем mint info (быстро)
+      const mintInfo = await this.getEnhancedMintInfo(tokenAddress);
+      const isMintAuthority = mintInfo.mintAuthority === walletAddress;
+      const isFreezeAuthority = mintInfo.freezeAuthority === walletAddress;
+      
+      // ✅ КОНСЕРВАТИВНЫЙ подход: если уже есть прямые доказательства - не делаем дорогой анализ
+      if (isMintAuthority || isFreezeAuthority) {
+        const analysis: TokenCreatorAnalysis = {
+          isDeployer: true,
+          isMintAuthority,
+          isFreezeAuthority,
+          deployerConfidence: isMintAuthority ? 70 : 50, // Консервативные значения
+          firstTransactionRole: 'creator',
+          creationTimeDistance: 0
+        };
+        
+        // Кешируем результат
+        this.tokenCreatorCache.set(cacheKey, {
+          analysis,
+          timestamp: Date.now()
+        });
+        
+        this.logger.debug(`🔍 Creator analysis (FAST): deployer=true, mint=${isMintAuthority}, freeze=${isFreezeAuthority}`);
+        return analysis;
+      }
+      
+      // ✅ УСЛОВНЫЙ дорогой анализ: только если нет прямых доказательств
+      // ✅ ИСПРАВЛЕНО: Явная типизация для firstTxAnalysis
+      let firstTxAnalysis: { 
+        role: 'creator' | 'early_buyer' | 'liquidity_provider' | 'unknown'; 
+        timeDistance: number; 
+      } = { role: 'unknown', timeDistance: 9999 };
+      
+      // Только для подозрительных случаев делаем дорогой анализ транзакций
+      try {
+        // ✅ ИСПРАВЛЕНО: Результат analyzeFirstTokenTransactions теперь совместим по типу
+        const analysisResult = await this.analyzeFirstTokenTransactions(walletAddress, tokenAddress);
+        firstTxAnalysis = analysisResult; 
+      } catch (error) {
+        this.logger.debug('Failed first tx analysis, using conservative fallback:', error);
+        // firstTxAnalysis останется { role: 'unknown', timeDistance: 9999 }
+      }
+      
+      // ✅ КОНСЕРВАТИВНЫЙ расчет confidence score
+      let deployerConfidence = 0;
+      if (isMintAuthority) deployerConfidence += 40; // Предполагается, что isMintAuthority определена ранее
+      if (isFreezeAuthority) deployerConfidence += 30; // Предполагается, что isFreezeAuthority определена ранее
+      
+      // ✅ Теперь это сравнение корректно
+      if (firstTxAnalysis.role === 'creator') deployerConfidence += 20; 
+      
+      const analysis: TokenCreatorAnalysis = {
+        isDeployer: deployerConfidence >= 40, // Повысили порог с 50 до 40
+        isMintAuthority,
+        isFreezeAuthority,
+        deployerConfidence,
+        firstTransactionRole: firstTxAnalysis.role,
+        creationTimeDistance: firstTxAnalysis.timeDistance
+      };
+
+      // Кешируем результат
+      this.tokenCreatorCache.set(cacheKey, {
+        analysis,
+        timestamp: Date.now()
+      });
+
+      this.logger.debug(`🔍 Creator analysis for ${walletAddress}: deployer=${analysis.isDeployer} (${deployerConfidence}%), role=${analysis.firstTransactionRole}`);
+      return analysis;
+
+    } catch (error) {
+      this.logger.debug('Error analyzing token creator:', error);
+      // ✅ БЕЗОПАСНЫЙ fallback
+      return {
+        isDeployer: false,
+        isMintAuthority: false,
+        isFreezeAuthority: false,
+        deployerConfidence: 0,
+        firstTransactionRole: 'unknown',
+        creationTimeDistance: 9999
+      };
+    }
+  }
+
+  /**
+   * 🆕 ФАЗА 1: Analyze First Token Transactions (API OPTIMIZED)
+   */
+  private async analyzeFirstTokenTransactions(walletAddress: string, tokenAddress: string): Promise<{
+    role: 'creator' | 'early_buyer' | 'liquidity_provider' | 'unknown';
+    timeDistance: number;
+  }> {
+    try {
+      // ✅ ОПТИМИЗАЦИЯ: Получаем только 5 первых транзакций вместо 10
+      const signaturesResponse = await this.multiProvider.getSignaturesForAddress(tokenAddress, { 
+        limit: 5  // Уменьшили лимит для экономии API credits
+      });
+      
+      if (!signaturesResponse.success || !signaturesResponse.data || signaturesResponse.data.length === 0) {
+        return { role: 'unknown', timeDistance: 9999 };
+      }
+
+      const signatures = signaturesResponse.data;
+      const tokenCreationTime = signatures[signatures.length - 1].blockTime * 1000; // Самая старая транзакция
+      
+      // ✅ ОПТИМИЗАЦИЯ: Анализируем максимум 3 транзакции вместо всех
+      const maxTransactionsToAnalyze = Math.min(signatures.length, 3);
+      
+      // Ищем первые транзакции с участием нашего кошелька
+      for (let i = signatures.length - 1; i >= signatures.length - maxTransactionsToAnalyze; i--) {
+        const sig = signatures[i];
+        
+        try {
+          const txResponse = await this.multiProvider.getTransaction(sig.signature);
+          if (!txResponse.success || !txResponse.data) continue;
+          
+          const transaction = txResponse.data;
+          const accountKeys = transaction.transaction?.message?.accountKeys || [];
+          
+          // Проверяем участие кошелька в транзакции
+          const walletInvolved = accountKeys.some((key: any) => 
+            (typeof key === 'string' ? key : key.pubkey) === walletAddress
+          );
+          
+          if (walletInvolved) {
+            const txTime = sig.blockTime * 1000;
+            const timeDistance = Math.floor((txTime - tokenCreationTime) / (60 * 1000)); // В минутах
+            
+            // ✅ КОНСЕРВАТИВНЫЙ анализ типа транзакции (меньше false positives)
+            const instructions = transaction.transaction?.message?.instructions || [];
+            const role = this.determineTransactionRoleConservative(instructions, walletAddress);
+            
+            this.logger.debug(`🕒 Found wallet ${walletAddress} in token ${tokenAddress} transaction: role=${role}, distance=${timeDistance}min`);
+            return { role, timeDistance: Math.max(0, timeDistance) };
+          }
+        } catch (error) {
+          this.logger.debug(`Error analyzing transaction ${sig.signature}:`, error);
+          continue;
+        }
+        
+        // ✅ Небольшая пауза между getTransaction вызовами
+        await this.sleep(50);
+      }
+      
+      return { role: 'unknown', timeDistance: 9999 };
+
+    } catch (error) {
+      this.logger.debug('Error analyzing first token transactions:', error);
+      return { role: 'unknown', timeDistance: 9999 };
+    }
+  }
+
+  /**
+   * 🆕 ФАЗА 1: Determine Transaction Role (CONSERVATIVE VERSION)
+   */
+  private determineTransactionRoleConservative(instructions: any[], walletAddress: string): 'creator' | 'early_buyer' | 'liquidity_provider' | 'unknown' {
+    try {
+      let hasTokenCreation = false;
+      let hasLiquidityAction = false;
+      let hasTransfer = false;
+      
+      for (const instruction of instructions) {
+        try {
+          const programId = instruction?.programId;
+          if (!programId) continue;
+          
+          // ✅ КОНСЕРВАТИВНАЯ проверка создания токена/mint
+          if (programId === this.TOKEN_PROGRAMS.TOKEN_PROGRAM || 
+              programId === this.TOKEN_PROGRAMS.TOKEN_2022_PROGRAM) {
+            
+            const instructionType = instruction?.parsed?.type;
+            if (instructionType === 'initializeMint' || 
+                instructionType === 'createAccount' ||
+                instructionType === 'initializeAccount') {
+              hasTokenCreation = true;
+            }
+          }
+          
+          // ✅ КОНСЕРВАТИВНАЯ проверка добавления ликвидности (только известные программы)
+          if (programId === '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8' || // Raydium AMM
+              programId === '9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM') {   // Raydium V4
+            
+            const accounts = instruction?.accounts || [];
+            if (Array.isArray(accounts) && accounts.includes(walletAddress)) {
+              hasLiquidityAction = true;
+            }
+          }
+          
+          // ✅ КОНСЕРВАТИВНАЯ проверка переводов токенов
+          if (instruction?.parsed?.type === 'transfer' || 
+              instruction?.parsed?.type === 'transferChecked') {
+            hasTransfer = true;
+          }
+        } catch (instructionError) {
+          // Пропускаем проблемные инструкции
+          continue;
+        }
+      }
+      
+      // ✅ КОНСЕРВАТИВНАЯ логика определения роли
+      if (hasTokenCreation) {
+        return 'creator';
+      }
+      
+      if (hasLiquidityAction) {
+        return 'liquidity_provider';
+      }
+      
+      if (hasTransfer) {
+        return 'early_buyer';
+      }
+      
+      return 'unknown';
+
+    } catch (error) {
+      this.logger.debug('Error determining transaction role:', error);
+      return 'unknown';
+    }
+  }
+
+  /**
+   * 🆕 ФАЗА 1: Check Custom Token Program (CONSERVATIVE)
+   */
+  private async checkCustomTokenProgram(tokenAddress: string): Promise<boolean> {
+    try {
+      const response = await this.multiProvider.getAccountInfo(tokenAddress);
+      
+      if (!response.success || !response.data) {
+        return false; // Консервативно возвращаем false при ошибке
+      }
+
+      const owner = response.data?.owner;
+      if (!owner || typeof owner !== 'string') {
+        return false;
+      }
+      
+      // ✅ КОНСЕРВАТИВНАЯ проверка: только явно НЕ стандартные программы
+      const isStandardProgram = owner === this.TOKEN_PROGRAMS.TOKEN_PROGRAM || 
+                               owner === this.TOKEN_PROGRAMS.TOKEN_2022_PROGRAM ||
+                               owner === this.TOKEN_PROGRAMS.ASSOCIATED_TOKEN_PROGRAM;
+      
+      if (!isStandardProgram) {
+        this.logger.debug(`🛠️ Token ${tokenAddress} uses custom program: ${owner}`);
+        return true;
+      }
+      
+      return false;
+
+    } catch (error) {
+      this.logger.debug('Error checking custom token program:', error);
+      return false; // Консервативно возвращаем false при ошибке
     }
   }
 
@@ -974,19 +1512,24 @@ export class LargeTransactionMonitor {
     try {
       const testAmount = Math.floor(testAmountUSD * 1000000); // Примерное количество токенов
       
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      
       const quoteResponse = await fetch(
         `https://quote-api.jup.ag/v6/quote?inputMint=${tokenAddress}&outputMint=So11111111111111111111111111111111111111112&amount=${testAmount}&slippageBps=300`,
-        { timeout: 5000 } as any
+        { signal: controller.signal }
       );
+      
+      clearTimeout(timeoutId);
       
       if (!quoteResponse.ok) {
         return { success: false, reason: 'No sell route available' };
       }
       
-      const quote: JupiterQuoteResponse = await quoteResponse.json();
+      const quoteData: any = await quoteResponse.json();
       
       // Проверяем, есть ли разумный выход
-      if (!quote.outAmount || parseInt(quote.outAmount) === 0) {
+      if (!quoteData.outAmount || parseInt(quoteData.outAmount || '0') === 0) {
         return { success: false, reason: 'Zero output amount' };
       }
       
@@ -1002,7 +1545,13 @@ export class LargeTransactionMonitor {
    */
   private async getTokenAgeHours(tokenAddress: string): Promise<number> {
     try {
-      // Упрощенная реализация - получаем первые транзакции
+      // Проверяем кеш
+      const cached = this.tokenAgeCache.get(tokenAddress);
+      if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
+        return cached.ageHours;
+      }
+
+      // Получаем первые транзакции
       const signaturesResponse = await this.multiProvider.getSignaturesForAddress(tokenAddress, { limit: 1 });
       
       if (!signaturesResponse.success || !signaturesResponse.data || signaturesResponse.data.length === 0) {
@@ -1012,8 +1561,15 @@ export class LargeTransactionMonitor {
       const firstSignature = signaturesResponse.data[0];
       const firstTime = firstSignature.blockTime * 1000;
       const ageMs = Date.now() - firstTime;
+      const ageHours = ageMs / (1000 * 60 * 60);
       
-      return ageMs / (1000 * 60 * 60); // Часы
+      // Кешируем
+      this.tokenAgeCache.set(tokenAddress, {
+        ageHours,
+        timestamp: Date.now()
+      });
+      
+      return ageHours;
       
     } catch (error) {
       this.logger.debug('Error getting token age:', error);
@@ -1026,6 +1582,12 @@ export class LargeTransactionMonitor {
    */
   private async getWalletAgeHours(walletAddress: string): Promise<number> {
     try {
+      // Проверяем кеш
+      const cached = this.walletHistoryCache.get(walletAddress);
+      if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
+        return cached.ageHours;
+      }
+
       // Получаем самые старые транзакции кошелька
       const signaturesResponse = await this.multiProvider.getSignaturesForAddress(walletAddress, { 
         limit: 1000 // Больше лимит для получения старых транзакций
@@ -1039,8 +1601,16 @@ export class LargeTransactionMonitor {
       const oldestSignature = signaturesResponse.data[signaturesResponse.data.length - 1];
       const firstTime = oldestSignature.blockTime * 1000;
       const ageMs = Date.now() - firstTime;
+      const ageHours = ageMs / (1000 * 60 * 60);
       
-      return ageMs / (1000 * 60 * 60); // Часы
+      // Кешируем
+      this.walletHistoryCache.set(walletAddress, {
+        ageHours,
+        txCount: signaturesResponse.data.length,
+        timestamp: Date.now()
+      });
+      
+      return ageHours;
       
     } catch (error) {
       this.logger.debug('Error getting wallet age:', error);
@@ -1068,20 +1638,6 @@ export class LargeTransactionMonitor {
   }
 
   // ========== ПРОСТЫЕ ПРОВЕРКИ ==========
-
-  private async checkIfTokenDeployer(walletAddress: string, tokenAddress: string): Promise<boolean> {
-    // Упрощенная проверка - можно расширить
-    try {
-      const signatures = await this.multiProvider.getSignaturesForAddress(tokenAddress, { limit: 5 });
-      if (signatures.success && signatures.data && signatures.data.length > 0) {
-        // Проверяем первые транзакции
-        return signatures.data.some((sig: any) => sig.memo?.includes(walletAddress));
-      }
-    } catch (error) {
-      this.logger.debug('Error checking token deployer:', error);
-    }
-    return false;
-  }
 
   private isRoundAmount(amount: number): boolean {
     const roundAmounts = [1000000, 2000000, 5000000, 10000000, 20000000, 50000000, 100000000];
@@ -1192,7 +1748,7 @@ export class LargeTransactionMonitor {
       statusLine = '\n🚨 UNKNOWN LARGE TRADER';
     }
 
-    return `🚨 <b>Large Transaction Alert!</b>\n\n` +
+    return `🚨 <b>Large Transaction Alert! (ФАЗА 1 FILTERED)</b>\n\n` +
            `${emoji} <b>${action}:</b> <code>$${transaction.amountUSD.toLocaleString()}</code>\n\n` +
            `🪙 <b>Token:</b> <code>${transaction.tokenSymbol}</code> (${transaction.tokenName})\n` +
            `💰 <b>Price:</b> <code>$${transaction.tokenPrice ? transaction.tokenPrice.toFixed(6) : 'Unknown'}</code>\n` +
@@ -1226,6 +1782,9 @@ export class LargeTransactionMonitor {
       this.cleanExpiredCache(this.ownerAddressCache, this.CACHE_TTL);
       this.cleanExpiredCache(this.enrichedTokenCache, this.TOKEN_CACHE_TTL);
       this.cleanExpiredCache(this.mintInfoCache, this.CACHE_TTL);
+      this.cleanExpiredCache(this.tokenCreatorCache, this.CREATOR_CACHE_TTL);
+      this.cleanExpiredCache(this.tokenAgeCache, this.CACHE_TTL);
+      this.cleanExpiredCache(this.walletHistoryCache, this.CACHE_TTL);
       
       if (cleanedSignatures > 0) {
         this.logger.debug(`🧹 Cache cleanup: ${cleanedSignatures} signatures removed`);
@@ -1261,7 +1820,10 @@ export class LargeTransactionMonitor {
     this.ownerAddressCache.clear();
     this.enrichedTokenCache.clear();
     this.mintInfoCache.clear();
+    this.tokenCreatorCache.clear();
+    this.tokenAgeCache.clear();
+    this.walletHistoryCache.clear();
     
-    this.logger.info('✅ LargeTransactionMonitor shutdown completed');
+    this.logger.info('✅ LargeTransactionMonitor shutdown completed (ФАЗА 1 ENHANCED)');
   }
 }
