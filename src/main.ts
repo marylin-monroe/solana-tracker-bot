@@ -1,4 +1,4 @@
-// src/main.ts - ИСПРАВЛЕНО: убран жестко прописанный путь Dragon + все функции сохранены
+// src/main.ts - ИСПРАВЛЕНО: убраны все упоминания HELIUS + все функции сохранены
 import * as dotenv from 'dotenv';
 import { TelegramNotifier } from './services/TelegramNotifier';
 import { Database } from './services/Database';
@@ -85,7 +85,7 @@ class SmartMoneyBotRunner {
       this.multiProviderService
     );
 
-    this.logger.info('✅ Smart Money Bot services initialized (SIMPLIFIED + DRAGON INTEGRATION + MODULE B)');
+    this.logger.info('✅ Smart Money Bot services initialized (NO HELIUS + DRAGON INTEGRATION + MODULE B)');
   }
 
   private validateEnvironment(): void {
@@ -103,7 +103,7 @@ class SmartMoneyBotRunner {
       process.exit(1);
     }
 
-    this.logger.info('✅ Environment variables validated');
+    this.logger.info('✅ Environment variables validated (QuickNode + Alchemy only)');
   }
 
   private formatNumber(num: number): string {
@@ -382,6 +382,8 @@ class SmartMoneyBotRunner {
         `• Large transaction alerts ($2M+)\n` +
         `• Multi-provider API failover\n` +
         `• Advanced scam filtering\n\n` +
+        `📡 <b>Data Sources:</b> QuickNode + Alchemy + Jupiter\n` +
+        `🚫 <b>NOT USING:</b> Helius API (removed)\n\n` +
         `⏰ <code>${new Date().toLocaleString()}</code>`
       );
 
@@ -393,7 +395,7 @@ class SmartMoneyBotRunner {
 
   async start(): Promise<void> {
     try {
-      this.logger.info('🚀 Starting Smart Money Bot (FULL STACK + MODULE B)...');
+      this.logger.info('🚀 Starting Smart Money Bot (NO HELIUS + FULL STACK + MODULE B)...');
 
       await this.database.init();
       await this.smDatabase.init();
@@ -407,7 +409,7 @@ class SmartMoneyBotRunner {
       this.setupTelegramCommands();
 
       await this.webhookServer.start();
-      this.logger.info('✅ Webhook server started');
+      this.logger.info('✅ Webhook server started (NO HELIUS endpoints)');
 
       this.webhookManager.setDependencies(this.smDatabase, this.telegramNotifier);
 
@@ -422,7 +424,7 @@ class SmartMoneyBotRunner {
       this.startPeriodicAnalysis();
       this.startDragonProcessing(); // 🆕 DRAGON PROCESSING
 
-      this.logger.info('✅ Smart Money Bot started successfully (FULL STACK + MODULE B)!');
+      this.logger.info('✅ Smart Money Bot started successfully (NO HELIUS + FULL STACK + MODULE B)!');
 
     } catch (error) {
       this.logger.error('❌ Error starting Smart Money Bot:', error);
@@ -436,9 +438,10 @@ class SmartMoneyBotRunner {
       let webhookURL: string;
       
       if (process.env.NODE_ENV === 'production' || process.env.PORT) {
-        webhookURL = `${this.detectRenderURL()}/webhook/helius`;
+        // ✅ ИСПРАВЛЕНО: теперь используем /webhook/solana вместо /webhook/helius
+        webhookURL = `${this.detectRenderURL()}/webhook/solana`;
       } else {
-        webhookURL = process.env.WEBHOOK_URL || 'http://localhost:3000/webhook/helius';
+        webhookURL = process.env.WEBHOOK_URL || 'http://localhost:3000/webhook/solana';
       }
 
       this.logger.info(`🔗 Setting up QuickNode monitoring with webhook: ${webhookURL}`);
@@ -446,7 +449,7 @@ class SmartMoneyBotRunner {
       // Пробуем создать webhook
       try {
         this.webhookId = await this.webhookManager.createSmartMoneyWebhook(webhookURL);
-        this.logger.info('🎯 Smart Money webhook created successfully');
+        this.logger.info('🎯 Smart Money webhook created successfully (NO HELIUS)');
         this.logger.info(`📡 Webhook URL: ${webhookURL}`);
         this.logger.info(`🆔 Stream ID: ${this.webhookId}`);
       } catch (webhookError) {
@@ -489,6 +492,8 @@ class SmartMoneyBotRunner {
         `• Large TX Alerts ($2M+)\n` +
         `• Multi-Provider Failover\n` +
         `• Advanced Scam Filtering\n\n` +
+        `📡 <b>APIs:</b> QuickNode + Alchemy + Jupiter\n` +
+        `🚫 <b>NO HELIUS:</b> Removed for stability\n\n` +
         `⏰ <code>${new Date().toLocaleString()}</code>`
       );
 
@@ -710,11 +715,12 @@ class SmartMoneyBotRunner {
         `🛑 <b>Smart Money Bot Stopped</b>\n\n` +
         `🚨 Large TX Monitor: <code>Stopped</code>\n` +
         `🔧 Multi-Provider: <code>Shutdown</code>\n` +
-        `📊 All Services: <code>Gracefully Stopped</code>\n\n` +
+        `📊 All Services: <code>Gracefully Stopped</code>\n` +
+        `🚫 APIs Used: <code>QuickNode + Alchemy (NO HELIUS)</code>\n\n` +
         `⏰ <code>${new Date().toLocaleString()}</code>`
       );
 
-      this.logger.info('✅ Smart Money Bot stopped successfully');
+      this.logger.info('✅ Smart Money Bot stopped successfully (NO HELIUS)');
 
     } catch (error) {
       this.logger.error('❌ Error stopping Smart Money Bot:', error);

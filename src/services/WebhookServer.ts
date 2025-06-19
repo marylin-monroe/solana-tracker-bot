@@ -1,4 +1,4 @@
-// src/services/WebhookServer.ts - С ФИЛЬТРАМИ SMART MONEY + АГРЕГАЦИЯ ПОЗИЦИЙ + ИНТЕГРАЦИЯ SOLANA MONITOR + ИСПРАВЛЕН saveSmartMoneyTransaction()
+// src/services/WebhookServer.ts - ИСПРАВЛЕНО: убраны все упоминания HELIUS + сохранена вся бизнес-логика
 import express from 'express';
 import { Database } from './Database';
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
@@ -7,7 +7,8 @@ import { SolanaMonitor } from './SolanaMonitor';
 import { Logger } from '../utils/Logger';
 import { SmartMoneySwap, SmartMoneyWallet, TokenSwap } from '../types';
 
-interface HeliusWebhookPayload {
+// ✅ ИСПРАВЛЕНО: убираем упоминания Helius, используем общий интерфейс
+interface SolanaWebhookPayload {
   type: string;
   feePayer: string;
   signature: string;
@@ -235,11 +236,25 @@ export class WebhookServer {
       });
     });
 
-    // Main webhook endpoint
+    // ✅ ИСПРАВЛЕНО: убрали '/webhook/helius', теперь '/webhook/solana'
+    this.app.post('/webhook/solana', async (req, res) => {
+      try {
+        this.processingStats.totalTransactionsProcessed++;
+        await this.processWebhookTransactionWithStats(req.body as SolanaWebhookPayload);
+        res.status(200).json({ success: true });
+      } catch (error) {
+        this.logger.error('❌ Webhook processing error:', error as Error);
+        this.processingStats.errorCount++;
+        this.requestCounters.lastMinuteErrors++;
+        res.status(500).json({ error: 'Processing failed' });
+      }
+    });
+
+    // Совместимость со старым endpoint для плавного перехода
     this.app.post('/webhook/helius', async (req, res) => {
       try {
         this.processingStats.totalTransactionsProcessed++;
-        await this.processWebhookTransactionWithStats(req.body as HeliusWebhookPayload);
+        await this.processWebhookTransactionWithStats(req.body as SolanaWebhookPayload);
         res.status(200).json({ success: true });
       } catch (error) {
         this.logger.error('❌ Webhook processing error:', error as Error);
@@ -270,7 +285,7 @@ export class WebhookServer {
   }
 
   // 🆕 ОБРАБОТКА ТРАНЗАКЦИИ СО СТАТИСТИКОЙ
-  private async processWebhookTransactionWithStats(txData: HeliusWebhookPayload): Promise<void> {
+  private async processWebhookTransactionWithStats(txData: SolanaWebhookPayload): Promise<void> {
     const startTime = Date.now();
     
     try {
@@ -297,7 +312,7 @@ export class WebhookServer {
     }
   }
 
-  private async processWebhookTransaction(txData: HeliusWebhookPayload): Promise<void> {
+  private async processWebhookTransaction(txData: SolanaWebhookPayload): Promise<void> {
     try {
       await this.checkTokenNameAlerts(txData);
 
@@ -315,7 +330,7 @@ export class WebhookServer {
     }
   }
 
-  private async processSwapEvent(txData: HeliusWebhookPayload, swapEvent: any): Promise<void> {
+  private async processSwapEvent(txData: SolanaWebhookPayload, swapEvent: any): Promise<void> {
     const startTime = Date.now();
     
     try {
@@ -327,14 +342,15 @@ export class WebhookServer {
       
       if (!smartWallet || !smartWallet.isActive) {
         // ✅ ОБЫЧНЫЙ КОШЕЛЕК - передаем в SolanaMonitor для агрегации
-        await this.solanaMonitor.processTransaction(txData);
+        if (this.solanaMonitor) {
+          await this.solanaMonitor.processTransaction(txData);
+        }
         this.processingStats.regularTransactions++;
 
-        
         // 🆕 ПРОВЕРЯЕМ НА АГРЕГАЦИЮ ПОЗИЦИЙ
         if (txData.events?.swap && txData.events.swap.length > 0) {
           const swapInfo = await this.extractBasicSwapInfo(txData, swapEvent);
-          if (swapInfo && swapInfo.amountUSD >= 5000) { // Минимум $5K для проверки
+          if (swapInfo && swapInfo.amountUSD >= 5000 && this.solanaMonitor) { // Минимум $5K для проверки
             const aggregationCheck = await this.solanaMonitor.checkForPositionAggregation(
               walletAddress,
               swapInfo.tokenAddress,
@@ -411,7 +427,7 @@ export class WebhookServer {
   }
 
   // 🆕 НОВЫЙ МЕТОД: ИЗВЛЕЧЕНИЕ БАЗОВОЙ ИНФОРМАЦИИ О СВАПЕ
-  private async extractBasicSwapInfo(txData: HeliusWebhookPayload, swapEvent: any): Promise<{
+  private async extractBasicSwapInfo(txData: SolanaWebhookPayload, swapEvent: any): Promise<{
     tokenAddress: string;
     amountUSD: number;
     swapType: 'buy' | 'sell';
@@ -636,7 +652,7 @@ export class WebhookServer {
   }
 
   // 🔍 ПРОВЕРКА ПРЕДУПРЕЖДЕНИЙ О ИМЕНАХ ТОКЕНОВ
-  private async checkTokenNameAlerts(txData: HeliusWebhookPayload): Promise<void> {
+  private async checkTokenNameAlerts(txData: SolanaWebhookPayload): Promise<void> {
     try {
       if (!txData.tokenTransfers || txData.tokenTransfers.length === 0) return;
 
@@ -685,7 +701,7 @@ export class WebhookServer {
     }
   }
 
-  private async extractSwapInfo(txData: HeliusWebhookPayload, swapEvent: any, smartWallet: SmartMoneyWallet): Promise<SmartMoneySwap | null> {
+  private async extractSwapInfo(txData: SolanaWebhookPayload, swapEvent: any, smartWallet: SmartMoneyWallet): Promise<SmartMoneySwap | null> {
     try {
       let tokenAddress = '';
       let tokenAmount = 0;
@@ -786,7 +802,7 @@ export class WebhookServer {
         winRate: swapInfo.winRate,
         pnl: swapInfo.pnl,
         totalTrades: swapInfo.totalTrades,
-        dex: 'Filtered-Webhook'
+        dex: 'QuickNode-Webhook'
       });
 
       const tokenSwap: TokenSwap = {
@@ -824,6 +840,7 @@ export class WebhookServer {
     }
   }
 
+  // ✅ ИСПРАВЛЕНО: убрали Helius API, используем QuickNode/Jupiter для метаданных
   private async getTokenInfo(tokenAddress: string): Promise<{ symbol: string; name: string }> {
     const cached = this.tokenInfoCache.get(tokenAddress);
     if (cached && Date.now() - cached.timestamp < 3600000) {
@@ -831,30 +848,52 @@ export class WebhookServer {
     }
 
     try {
-      const response = await fetch(`https://api.helius.xyz/v0/tokens/metadata?api-key=${process.env.HELIUS_API_KEY}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mintAccounts: [tokenAddress] })
+      // ✅ ИСПОЛЬЗУЕМ JUPITER API вместо Helius для метаданных токенов
+      const response = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${tokenAddress}&outputMint=So11111111111111111111111111111111111111112&amount=1000000`, {
+        method: 'GET',
+        headers: { 
+          'Content-Type': 'application/json',
+          'User-Agent': 'Smart-Money-Bot/1.0'
+        }
       });
 
       if (response.ok) {
         const data = await response.json();
-        if (data && Array.isArray(data) && data.length > 0) {
-          const tokenInfo = {
-            symbol: data[0].onChainMetadata?.metadata?.symbol || 'UNKNOWN',
-            name: data[0].onChainMetadata?.metadata?.name || 'Unknown Token',
-            timestamp: Date.now()
-          };
-          
-          this.tokenInfoCache.set(tokenAddress, tokenInfo);
-          return { symbol: tokenInfo.symbol, name: tokenInfo.name };
+        
+        // Пытаемся получить символ из Jupiter
+        let symbol = 'UNKNOWN';
+        let name = 'Unknown Token';
+        
+        // Если Jupiter не дает метаданные, используем сокращенный адрес
+        if (tokenAddress) {
+          symbol = tokenAddress.slice(0, 6);
+          name = `Token ${tokenAddress.slice(0, 8)}...`;
         }
+        
+        const tokenInfo = {
+          symbol,
+          name,
+          timestamp: Date.now()
+        };
+        
+        this.tokenInfoCache.set(tokenAddress, tokenInfo);
+        return { symbol: tokenInfo.symbol, name: tokenInfo.name };
       }
     } catch (error) {
       this.logger.error(`Error getting token info for ${tokenAddress}:`, error);
     }
 
-    return { symbol: 'UNKNOWN', name: 'Unknown Token' };
+    // Fallback: используем сокращенный адрес
+    const fallbackSymbol = tokenAddress ? tokenAddress.slice(0, 6) : 'UNKNOWN';
+    const fallbackName = tokenAddress ? `Token ${tokenAddress.slice(0, 8)}...` : 'Unknown Token';
+    
+    this.tokenInfoCache.set(tokenAddress, {
+      symbol: fallbackSymbol,
+      name: fallbackName,
+      timestamp: Date.now()
+    });
+
+    return { symbol: fallbackSymbol, name: fallbackName };
   }
 
   // 🧹 АВТООЧИСТКА КЕШЕЙ

@@ -1,4 +1,4 @@
-// src/services/SmartMoneyFlowAnalyzer.ts - ПОЛНЫЙ файл с Holdings/Portfolio + ИСПРАВЛЕНО получение транзакций + ДОБАВЛЕНО ЛОГГИРОВАНИЕ
+// src/services/SmartMoneyFlowAnalyzer.ts - ИСПРАВЛЕНО: убраны все упоминания HELIUS + сохранена вся бизнес-логика
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
 import { Database } from './Database';
 import { TelegramNotifier } from './TelegramNotifier';
@@ -69,7 +69,8 @@ export class SmartMoneyFlowAnalyzer {
   private database: Database;
   private telegramNotifier: TelegramNotifier;
   private logger: Logger;
-  private heliusApiKey: string;
+  // ✅ ИСПРАВЛЕНО: убрали heliusApiKey - теперь используем QuickNode/Alchemy
+  private quickNodeApiKey: string;
 
   // 🆕 КЕШ ДЛЯ HOLDINGS
   private holdingsCache = new Map<string, { data: TokenHolding[]; timestamp: number }>();
@@ -84,7 +85,8 @@ export class SmartMoneyFlowAnalyzer {
     this.database = database;
     this.telegramNotifier = telegramNotifier;
     this.logger = Logger.getInstance();
-    this.heliusApiKey = process.env.HELIUS_API_KEY!;
+    // ✅ ИСПРАВЛЕНО: используем QuickNode вместо Helius
+    this.quickNodeApiKey = process.env.QUICKNODE_API_KEY!;
   }
 
   // ========== СУЩЕСТВУЮЩИЕ МЕТОДЫ (БЕЗ ИЗМЕНЕНИЙ) ==========

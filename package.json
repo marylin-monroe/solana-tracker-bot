@@ -1,13 +1,33 @@
 {
-  "name": "solana-insider-tracker-bot",
+  "name": "solana-smart-money-tracker-bot",
   "version": "3.0.0",
-  "description": "Advanced Telegram bot with real-time Helius webhooks for tracking smart money and sleeping insiders on Solana",
+  "description": "Advanced Telegram bot with real-time QuickNode and Alchemy APIs for tracking smart money and monitoring large transactions on Solana. Features Dragon project integration, multi-provider failover, and comprehensive scam filtering.",
   "main": "dist/main.js",
   "scripts": {
     "build": "npm rebuild better-sqlite3 && tsc",
     "start": "node dist/main.js",
-    "dev": "ts-node-dev --respawn --transpile-only src/main.ts"
+    "dev": "ts-node-dev --respawn --transpile-only src/main.ts",
+    "clean": "rm -rf dist",
+    "rebuild": "npm run clean && npm run build",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
+  "keywords": [
+    "solana",
+    "telegram",
+    "bot",
+    "smart-money",
+    "crypto",
+    "trading",
+    "blockchain",
+    "quicknode",
+    "alchemy",
+    "jupiter",
+    "dragon",
+    "large-transactions",
+    "monitoring"
+  ],
+  "author": "Smart Money Bot Team",
+  "license": "MIT",
   "dependencies": {
     "@solana/spl-token": "^0.1.8",
     "@solana/web3.js": "^1.91.0",
@@ -34,5 +54,13 @@
   },
   "engines": {
     "node": "20.x"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/marylin-monroe/solana-smart-money-tracker.git"
+  },
+  "bugs": {
+    "url": "https://github.com/marylin-monroe/solana-smart-money-tracker/issues"
+  },
+  "homepage": "https://github.com/marylin-monroe/solana-smart-money-tracker#readme"
 }

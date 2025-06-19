@@ -1,4 +1,4 @@
-// src/services/MultiProviderService.ts - МОЩНАЯ СИСТЕМА БАЛАНСИРОВКИ ПРОВАЙДЕРОВ
+// src/services/MultiProviderService.ts - УБРАНЫ ВСЕ УПОМИНАНИЯ HELIUS
 import { Logger } from '../utils/Logger';
 import {
   ProviderConfig,
@@ -26,7 +26,7 @@ interface RPCResponse {
 
 /**
  * Мощная система управления множественными RPC провайдерами
- * Поддерживает QuickNode, Alchemy, Helius, GenesysGo, Triton
+ * Поддерживает QuickNode, Alchemy, GenesysGo, Triton (HELIUS УДАЛЕН)
  * Автоматическая балансировка нагрузки, failover, кеширование
  */
 export class MultiProviderService {
@@ -102,11 +102,11 @@ export class MultiProviderService {
     // Запуск фоновых процессов
     this.startBackgroundTasks();
     
-    this.logger.info('🚀 MultiProviderService initialized with advanced load balancing');
+    this.logger.info('🚀 MultiProviderService initialized with advanced load balancing (NO HELIUS)');
   }
 
   /**
-   * Инициализация всех доступных провайдеров
+   * Инициализация всех доступных провайдеров (БЕЗ HELIUS)
    */
   private initializeProviders(): void {
     const providerConfigs: ProviderConfig[] = [
@@ -142,23 +142,6 @@ export class MultiProviderService {
         timeout: 10000,
         retryAttempts: 3,
         retryDelay: 500
-      },
-      
-      // Helius - Специализированный
-      {
-        name: 'Helius-Specialized',
-        type: 'helius',
-        baseUrl: 'https://mainnet.helius-rpc.com',
-        apiKey: process.env.HELIUS_API_KEY || '',
-        requestsPerMinute: 100,
-        requestsPerDay: 200000,
-        requestsPerMonth: 8000000,
-        priority: 4,
-        reliability: 90,
-        specialties: ['rpc', 'metadata', 'enhanced', 'analytics'],
-        timeout: 12000,
-        retryAttempts: 2,
-        retryDelay: 1500
       },
       
       // GenesysGo - Резервный
@@ -238,14 +221,14 @@ export class MultiProviderService {
       maxResponseTime: 0,
       responseTimeHistory: [],
       
-      // 🔧 НЕДОСТАЮЩИЕ ПОЛЯ для совместимости со старым интерфейсом
+      // НЕДОСТАЮЩИЕ ПОЛЯ для совместимости со старым интерфейсом
       dailyUsage: 0,
       hourlyUsage: 0, 
       totalUsage: 0,
       lastReset: new Date(),
       isAvailable: true,
       
-      // 🔧 ОПЦИОНАЛЬНЫЕ ПОЛЯ ДЛЯ ОШИБОК
+      // ОПЦИОНАЛЬНЫЕ ПОЛЯ ДЛЯ ОШИБОК
       lastError: undefined,
       lastErrorTime: undefined
     });
@@ -559,7 +542,7 @@ export class MultiProviderService {
   }
 
   /**
-   * 🔗 ПОСТРОЕНИЕ URL ПРОВАЙДЕРА
+   * 🔗 ПОСТРОЕНИЕ URL ПРОВАЙДЕРА (БЕЗ HELIUS)
    */
   private buildProviderUrl(provider: ProviderConfig): string {
     switch (provider.type) {
@@ -571,9 +554,6 @@ export class MultiProviderService {
           provider.baseUrl : 
           `${provider.baseUrl}/${provider.apiKey}`;
       
-      case 'helius':
-        return `${provider.baseUrl}/?api-key=${provider.apiKey}`;
-      
       case 'genesysgo':
       case 'triton':
       default:
@@ -582,7 +562,7 @@ export class MultiProviderService {
   }
 
   /**
-   * 🔐 ДОБАВЛЕНИЕ ЗАГОЛОВКОВ АВТОРИЗАЦИИ
+   * 🔐 ДОБАВЛЕНИЕ ЗАГОЛОВКОВ АВТОРИЗАЦИИ (БЕЗ HELIUS)
    */
   private addAuthHeaders(provider: ProviderConfig, headers: Record<string, string>): void {
     switch (provider.type) {
@@ -595,10 +575,6 @@ export class MultiProviderService {
       
       case 'alchemy':
         // Alchemy обычно использует API key в URL
-        break;
-      
-      case 'helius':
-        // Helius использует API key в query параметре
         break;
       
       case 'genesysgo':
@@ -696,7 +672,7 @@ export class MultiProviderService {
       stats.dayUsage = (stats.currentDayRequests / provider.requestsPerDay) * 100;
       stats.monthUsage = (stats.currentMonthRequests / provider.requestsPerMonth) * 100;
       
-      // 🔧 ОБНОВЛЯЕМ ДОПОЛНИТЕЛЬНЫЕ ПОЛЯ
+      // ОБНОВЛЯЕМ ДОПОЛНИТЕЛЬНЫЕ ПОЛЯ
       stats.dailyUsage = stats.dayUsage;
       stats.hourlyUsage = stats.minuteUsage * 60; // Приблизительно
       stats.totalUsage = (stats.dayUsage + stats.monthUsage) / 2;

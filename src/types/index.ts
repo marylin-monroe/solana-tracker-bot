@@ -1,6 +1,6 @@
-// src/types/index.ts - АККУРАТНО ДОБАВЛЕНЫ ТИПЫ ДЛЯ ВНЕШНЕГО ПОИСКА + ВСЕ СУЩЕСТВУЮЩИЕ ТИПЫ СОХРАНЕНЫ + ИСПРАВЛЕНЫ ТИПЫ ДЛЯ MULTIPROVIDER
+// src/types/index.ts - ФИНАЛЬНАЯ ВЕРСИЯ: убраны все упоминания Helius + все типы сохранены
 
-// ===== СУЩЕСТВУЮЩИЕ ТИПЫ (БЕЗ ИЗМЕНЕНИЙ) =====
+// ===== ОСНОВНЫЕ ТИПЫ ТРАНЗАКЦИЙ =====
 
 export interface TokenSwap {
   transactionId: string;
@@ -22,7 +22,7 @@ export interface TokenSwap {
   winrate?: number;
   timeToTarget?: string;
   swapType?: 'buy' | 'sell';
-  // 🆕 НОВЫЕ ПОЛЯ ДЛЯ POSITION AGGREGATION
+  // 🆕 ПОЛЯ ДЛЯ POSITION AGGREGATION
   isAggregated?: boolean;
   aggregationId?: number;
   suspicionScore?: number;
@@ -104,7 +104,8 @@ export interface InsiderAlert {
   tradingHistory: TradingHistory;
 }
 
-export interface HeliusTransaction {
+// ✅ ИСПРАВЛЕНО: убрали упоминание Helius, теперь общий интерфейс для Solana транзакций
+export interface SolanaTransaction {
   signature: string;
   timestamp: number;
   slot: number;
@@ -119,7 +120,8 @@ export interface HeliusTransaction {
   transactionError?: any;
 }
 
-// Smart Money типы - БЕЗ Family Detection
+// ===== SMART MONEY ТИПЫ =====
+
 export interface SmartMoneyWallet {
   address: string;
   category: 'sniper' | 'hunter' | 'trader';
@@ -209,9 +211,8 @@ export interface SmartMoneySwap {
   familyId?: undefined; // всегда undefined
 }
 
-// 🎯 НОВЫЕ ТИПЫ ДЛЯ АГРЕГАЦИИ ПОЗИЦИЙ
+// ===== ТИПЫ ДЛЯ АГРЕГАЦИИ ПОЗИЦИЙ =====
 
-// Покупка в составе позиции
 export interface PositionPurchase {
   transactionId: string;
   amountUSD: number;
@@ -220,7 +221,6 @@ export interface PositionPurchase {
   timestamp: Date;
 }
 
-// Агрегированная позиция
 export interface AggregatedPosition {
   walletAddress: string;
   tokenAddress: string;
@@ -252,7 +252,6 @@ export interface AggregatedPosition {
   suspicionScore: number; // 0-100
 }
 
-// 🆕 НОВЫЙ ИНТЕРФЕЙС ДЛЯ ДЕТЕКЦИИ ИНСАЙДЕРОВ
 export interface PositionAggregation {
   id: number;
   walletAddress: string;
@@ -285,7 +284,6 @@ export interface PositionAggregation {
   alertSent: boolean;
 }
 
-// Алерт о разбивке позиции
 export interface PositionSplittingAlert {
   walletAddress: string;
   tokenAddress: string;
@@ -306,7 +304,6 @@ export interface PositionSplittingAlert {
   }>;
 }
 
-// Сохраненная агрегация в БД
 export interface SavedPositionAggregation {
   id: number;
   walletAddress: string;
@@ -329,7 +326,6 @@ export interface SavedPositionAggregation {
   }>;
 }
 
-// Статистика агрегации
 export interface PositionAggregationStats {
   totalPositions: number;
   highSuspicionPositions: number; // score >= 75
@@ -340,7 +336,6 @@ export interface PositionAggregationStats {
     positionCount: number;
     totalValueUSD: number;
   }>;
-  // 🆕 ДОПОЛНИТЕЛЬНАЯ СТАТИСТИКА
   unprocessedPositions: number;
   alertsSent: number;
   riskDistribution: {
@@ -350,7 +345,6 @@ export interface PositionAggregationStats {
   };
 }
 
-// Группа похожих покупок
 export interface SimilarPurchaseGroup {
   count: number;
   avgAmount: number;
@@ -358,30 +352,19 @@ export interface SimilarPurchaseGroup {
   amounts: number[];
 }
 
-// 🎯 КОНФИГУРАЦИЯ ДЕТЕКЦИИ АГРЕГАЦИИ
 export interface PositionDetectionConfig {
-  // Временное окно для агрегации
   timeWindowMinutes: number;        // 90 минут по умолчанию
-  
-  // Критерии разбивки позиции
   minPurchaseCount: number;         // Минимум 3 покупки
   minTotalUSD: number;              // Минимум $10K общая сумма
   maxIndividualUSD: number;         // Максимум $8K за одну покупку
-  
-  // Детекция похожих сумм
   similarSizeTolerance: number;     // 2% отклонение считается "одинаковой суммой"
   minSimilarPurchases: number;      // Минимум 3 похожие покупки
-  
-  // Другие фильтры
   positionTimeoutMinutes: number;   // 180 минут таймаут для закрытия позиции
   minSuspicionScore: number;        // Минимальный score для алерта
-  
-  // Фильтры кошельков
   minWalletAge: number;            // Минимум 7 дней возраст кошелька
   maxWalletActivity: number;       // Максимум 100 транзакций за день (анти-бот)
 }
 
-// 🎯 РЕЗУЛЬТАТ ФИЛЬТРАЦИИ КОШЕЛЬКА
 export interface WalletFilterResult {
   passed: boolean;
   reason?: string;
@@ -390,32 +373,11 @@ export interface WalletFilterResult {
   lastSuccessTime?: Date;
 }
 
-// Кеш для API ответов
-export interface CacheEntry<T = any> {
-  data: T;
-  timestamp: number;
-  expiresAt: number;
-  provider: string;
-  hitCount: number;
-}
+// ===== ТИПЫ ДЛЯ MULTIPROVIDER SERVICE =====
 
-// Настройки кеширования
-export interface CacheConfig {
-  enabled: boolean;
-  defaultTTL: number; // секунды
-  maxSize: number; // максимальное количество записей
-  cleanupInterval: number; // секунды
-  
-  // TTL для разных типов запросов
-  methodTTL: Record<string, number>;
-}
-
-// ===== 🆕 НЕДОСТАЮЩИЕ ТИПЫ ДЛЯ MULTIPROVIDER SERVICE =====
-
-// Конфигурация провайдера
 export interface ProviderConfig {
   name: string;
-  type: 'quicknode' | 'alchemy' | 'helius' | 'genesysgo' | 'triton';
+  type: 'quicknode' | 'alchemy' | 'genesysgo' | 'triton'; // ✅ ИСПРАВЛЕНО: убрали 'helius'
   baseUrl: string;
   apiKey: string;
   
@@ -437,7 +399,6 @@ export interface ProviderConfig {
   retryDelay: number;
 }
 
-// Ответ от API провайдера
 export interface APIResponse<T = any> {
   success: boolean;
   data?: T;
@@ -450,7 +411,6 @@ export interface APIResponse<T = any> {
   rateLimitReset?: number;
 }
 
-// 🔧 ИСПРАВЛЕННАЯ статистика провайдера (совместимая с MultiProviderService)
 export interface ProviderStats {
   name: string;
   type: string;
@@ -466,7 +426,7 @@ export interface ProviderStats {
   currentDayRequests: number;
   currentMonthRequests: number;
   minuteUsage: number; // процент
-  dayUsage: number; // процент (было dayUsage в ошибках - исправлено на dailyUsage)
+  dayUsage: number; // процент
   monthUsage: number; // процент
   
   // Ошибки
@@ -487,7 +447,6 @@ export interface ProviderStats {
   isAvailable: boolean;
 }
 
-// Результат балансировки нагрузки
 export interface LoadBalancingResult {
   provider: ProviderConfig;
   fallbackUsed: boolean;
@@ -497,7 +456,6 @@ export interface LoadBalancingResult {
   retries: number;
 }
 
-// Конфигурация retry логики
 export interface RetryConfig {
   maxAttempts: number;
   baseDelay: number; // миллисекунды
@@ -508,7 +466,6 @@ export interface RetryConfig {
   retryOnRateLimit: boolean;
 }
 
-// Health check результат
 export interface HealthCheckResult {
   provider: string;
   isHealthy: boolean;
@@ -519,7 +476,6 @@ export interface HealthCheckResult {
   lastSuccessTime?: Date;
 }
 
-// Метрики MultiProvider системы
 export interface MultiProviderMetrics {
   totalRequests: number;
   successfulRequests: number;
@@ -545,16 +501,35 @@ export interface MultiProviderMetrics {
   providerDistribution: Record<string, number>;
 }
 
-// 🆕 РАСШИРЕНИЕ DatabaseStats С POSITION AGGREGATION
+// ===== ТИПЫ ДЛЯ КЕШИРОВАНИЯ =====
+
+export interface CacheEntry<T = any> {
+  data: T;
+  timestamp: number;
+  expiresAt: number;
+  provider: string;
+  hitCount: number;
+}
+
+export interface CacheConfig {
+  enabled: boolean;
+  defaultTTL: number; // секунды
+  maxSize: number; // максимальное количество записей
+  cleanupInterval: number; // секунды
+  
+  // TTL для разных типов запросов
+  methodTTL: Record<string, number>;
+}
+
+// ===== СТАТИСТИКА И МОНИТОРИНГ =====
+
 export interface DatabaseStats {
   totalTransactions: number;
   totalWallets: number;
   last24hTransactions: number;
   avgTransactionSize: number;
-  // 🆕 НОВОЕ ПОЛЕ
   positionAggregations: number;
   highSuspicionPositions: number;
-  // 🆕 ДОПОЛНИТЕЛЬНАЯ СТАТИСТИКА
   aggregatedTransactions: number;
   insiderAlerts: number;
   unprocessedAlerts: number;
@@ -566,12 +541,10 @@ export interface DatabaseStats {
   }>;
 }
 
-// 🆕 РАСШИРЕННАЯ СТАТИСТИКА ОБРАБОТКИ С POSITION AGGREGATION
 export interface ProcessingStats {
   totalTransactionsProcessed: number;
   smartMoneyTransactions: number;
   regularTransactions: number;
-  // 🆕 НОВЫЕ ПОЛЯ
   positionAggregations: number;
   suspiciousPositions: number;
   alertsSent: number;
@@ -587,7 +560,7 @@ export interface ProcessingStats {
     other: number;
   };
   
-  // 🆕 УРОВНИ РИСКА
+  // Уровни риска
   riskLevels: {
     high: number;
     medium: number;
@@ -595,7 +568,7 @@ export interface ProcessingStats {
   };
 }
 
-// ===== 🆕 НОВЫЕ ТИПЫ ДЛЯ ВНЕШНЕГО ПОИСКА КОШЕЛЬКОВ =====
+// ===== ТИПЫ ДЛЯ ВНЕШНЕГО ПОИСКА КОШЕЛЬКОВ =====
 
 export interface WalletPerformanceMetrics {
   totalPnL: number;
@@ -620,7 +593,6 @@ export interface WalletAnalysisResult {
   category?: 'sniper' | 'hunter' | 'trader';
   metrics: WalletPerformanceMetrics;
   disqualificationReasons: string[];
-  // 🆕 НОВОЕ поле для дополнительного анализа
   analysis?: {
     totalTransactions: number;
     analyzedPeriod: string;
@@ -629,8 +601,6 @@ export interface WalletAnalysisResult {
   // Family поля БЛОКИРОВАНЫ - всегда пустой массив
   familyConnections: []; // всегда пустой массив
 }
-
-// 🆕 ТИПЫ ДЛЯ ВНЕШНИХ API
 
 export interface ExternalTokenCandidate {
   address: string;
@@ -652,10 +622,8 @@ export interface ExternalWalletCandidate {
   source: 'token_holders' | 'recent_traders' | 'high_volume';
 }
 
-// 🆕 ТИПЫ ДЛЯ КРЕДИТНОГО МЕНЕДЖЕРА
-
 export interface ApiCreditUsage {
-  provider: 'quicknode' | 'alchemy';
+  provider: 'quicknode' | 'alchemy'; // ✅ ИСПРАВЛЕНО: убрали 'helius'
   operation: string;
   credits: number;
   timestamp: Date;
@@ -670,8 +638,6 @@ export interface CreditManagerStats {
   hourlyRate: number;
   projectedDailyUsage: number;
 }
-
-// 🆕 РАСШИРЕННАЯ СТАТИСТИКА DISCOVERY
 
 export interface DiscoveryStats {
   isRunning: boolean;
@@ -688,9 +654,6 @@ export interface DiscoveryStats {
   };
 }
 
-// ===== ОСТАЛЬНЫЕ СУЩЕСТВУЮЩИЕ ТИПЫ (БЕЗ ИЗМЕНЕНИЙ) =====
-
-// Провайдер здоровья
 export interface ProviderHealth {
   name: string;
   isHealthy: boolean;
@@ -701,14 +664,12 @@ export interface ProviderHealth {
   lastSuccessTime?: Date;
 }
 
-// 🆕 СТАТИСТИКА ПРОВАЙДЕРОВ
 export interface ProviderStatsExtended {
   quicknode: ProviderStats;
   alchemy: ProviderStats;
   [key: string]: ProviderStats;
 }
 
-// 🆕 ТИПЫ ДЛЯ ADVANCED POSITION ANALYSIS
 export interface AdvancedPositionAnalysis {
   walletAddress: string;
   analysisType: 'position_splitting' | 'coordinated_buying' | 'wash_trading';
@@ -727,7 +688,6 @@ export interface AdvancedPositionAnalysis {
   shouldBlock: boolean;
 }
 
-// 🆕 CONFIGURATION FOR POSITION MONITORING
 export interface PositionMonitoringConfig {
   enabled: boolean;
   
@@ -752,7 +712,6 @@ export interface PositionMonitoringConfig {
   networkAnalysis: boolean;
 }
 
-// 🆕 WALLET RISK PROFILE
 export interface WalletRiskProfile {
   address: string;
   overallRisk: number; // 0-100
@@ -783,7 +742,6 @@ export interface WalletRiskProfile {
   };
 }
 
-// 🆕 SMART MONEY DETECTION RESULT
 export interface SmartMoneyDetectionResult {
   isSmartMoney: boolean;
   confidence: number;
