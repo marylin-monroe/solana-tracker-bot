@@ -87,11 +87,12 @@ class SmartMoneyBotRunner {
     // 🚨 MODULE B: MULTI-PROVIDER SERVICE INITIALIZATION
     this.multiProviderService = new MultiProviderService();
 
-    // ✅ ИСПРАВЛЕНО: Добавлен TokenMetadataService в конструктор (3-й аргумент)
+    // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Добавлен SmartMoneyDatabase в конструктор (4-й аргумент)
     this.largeTransactionMonitor = new LargeTransactionMonitor(
       this.telegramNotifier,
       this.multiProviderService,
-      this.tokenMetadataService // 🆕 ДОБАВЛЕНО
+      this.tokenMetadataService,
+      this.smDatabase // 🔥 ДОБАВЛЕНО: SmartMoneyDatabase для проверки наших гениев
     );
 
     this.logger.info('✅ Smart Money Bot services initialized (PROFIT-FIRST + TokenMetadataService)');

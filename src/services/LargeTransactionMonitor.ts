@@ -1,7 +1,8 @@
-// src/services/LargeTransactionMonitor.ts - ИСПРАВЛЕНО: добавлена полная интеграция TokenMetadataService
+// src/services/LargeTransactionMonitor.ts - ПОЛНЫЙ ИСПРАВЛЕННЫЙ ФАЙЛ с мега-фильтрацией
 import { TelegramNotifier } from './TelegramNotifier';
 import { MultiProviderService } from './MultiProviderService';
-import { TokenMetadataService } from './TokenMetadataService'; // 🆕 ДОБАВЛЕНО
+import { TokenMetadataService } from './TokenMetadataService';
+import { SmartMoneyDatabase } from './SmartMoneyDatabase';
 import { Logger } from '../utils/Logger';
 
 interface LargeTransaction {
@@ -16,7 +17,7 @@ interface LargeTransaction {
   dex?: string;
   isFiltered: boolean;
   filterReason?: string;
-  tokenPrice?: number; // 🆕 ДОБАВЛЕНО
+  tokenPrice?: number;
 }
 
 interface FilterResult {
@@ -36,28 +37,50 @@ interface MonitoringStats {
   filterReasons: Record<string, number>;
 }
 
-interface ScamDetectionResult {
-  isScam: boolean;
-  confidence: number;
-  reasons: string[];
+interface MintInfo {
+  mintAuthority: string | null;
+  freezeAuthority: string | null;
+  decimals: number;
+  supply: number;
 }
 
-interface OwnerDetectionResult {
-  isOwner: boolean;
-  confidence: number;
-  reasons: string[];
+interface TokenMetadata {
+  symbol: string;
+  name: string;
+  price: number | null;
+  marketCap?: number;
+  volume24h?: number;
+  liquidity?: number;
+}
+
+interface JupiterQuoteResponse {
+  inputMint: string;
+  inAmount: string;
+  outputMint: string;
+  outAmount: string;
+  otherAmountThreshold: string;
+  swapMode: string;
+  slippageBps: number;
+  platformFee: null | any;
+  priceImpactPct: string;
+  routePlan: any[];
 }
 
 export class LargeTransactionMonitor {
   private telegramNotifier: TelegramNotifier;
   private multiProvider: MultiProviderService;
-  private readonly tokenMetadataService: TokenMetadataService; // 🆕 ДОБАВЛЕНО
+  private tokenMetadataService: TokenMetadataService;
+  private smDatabase: SmartMoneyDatabase;
   private logger: Logger;
   
   // Мониторинг
   private isMonitoring: boolean = false;
   private monitoringInterval: NodeJS.Timeout | null = null;
   private lastProcessedSlot: number = 0;
+  
+  // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Дедупликация транзакций
+  private processedSignatures = new Map<string, number>(); // signature -> timestamp
+  private readonly DUPLICATE_WINDOW = 30 * 60 * 1000; // 30 минут
   
   // Конфигурация
   private readonly TRANSACTION_THRESHOLD_USD = 2_000_000; // $2M+
@@ -79,30 +102,68 @@ export class LargeTransactionMonitor {
   // Кеши для оптимизации
   private scamAddressCache = new Map<string, { isScam: boolean; timestamp: number }>();
   private ownerAddressCache = new Map<string, { isOwner: boolean; timestamp: number }>();
-  
-  // 🆕 КЕШ ДЛЯ ОБОГАЩЕННОЙ ИНФОРМАЦИИ О ТОКЕНАХ
   private enrichedTokenCache = new Map<string, { 
     symbol: string; 
     name: string; 
     price: number | null;
     timestamp: number; 
   }>();
+  private mintInfoCache = new Map<string, { mintInfo: MintInfo; timestamp: number }>();
   
   // Время жизни кешей
   private readonly CACHE_TTL = 60 * 60 * 1000; // 1 час
   private readonly TOKEN_CACHE_TTL = 10 * 60 * 1000; // 10 минут для токенов
+  
+  // 🛡️ КОНСТАНТЫ ДЛЯ ФИЛЬТРАЦИИ
+  private readonly MAJOR_TOKENS = new Set([
+    'So11111111111111111111111111111111111111112', // SOL
+    'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+    'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
+    'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263', // BONK
+    'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm', // WIF
+    'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn', // JitoSOL
+    'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So',  // mSOL
+  ]);
+  
+  private readonly KNOWN_EXCHANGES = new Set([
+    // Binance
+    '5tzFkiKscXHK5ZXCGbXZxdw7gTjjD1mBwuoFbhUvuAi9',
+    'AnH4zG6TBB8irVZLJ3ASoRhWLNBvFLekKqnH7fWfnrsY',
+    'AC5RDfQFmDS1deWZos921JfqscXdByf8BKHs5ACWjtW2',
+    
+    // Coinbase
+    'GJRs4FwHtemZ5ZE9x3FNvJ8TMwitKTh21yxdRPqn7npE',
+    'H8sMJSCQxfKiFTCfDR3DUMLPwcRbM61LGFJ8N4dK3WjS',
+    
+    // OKX
+    'AC5RDfQFmDS1deWZos921JfqscXdByf8BKHs5ACWjtW2',
+    
+    // Raydium программы
+    '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8',
+    '9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM',
+  ]);
+  
+  private readonly FILTER_THRESHOLDS = {
+    SCAM_AUTO_BLOCK: 100,    // Мгновенная блокировка без уведомлений
+    HIGH_RISK_BLOCK: 70,     // Блокировать с уведомлением  
+    SUSPICIOUS_WARNING: 30,   // Отправить с предупреждением
+    LEGITIMATE_THRESHOLD: 0   // Отправить как обычно
+  };
 
   constructor(
     telegramNotifier: TelegramNotifier,
     multiProvider: MultiProviderService,
-    tokenMetadataService: TokenMetadataService // 🆕 ДОБАВЛЕНО
+    tokenMetadataService: TokenMetadataService,
+    smDatabase: SmartMoneyDatabase
   ) {
     this.telegramNotifier = telegramNotifier;
     this.multiProvider = multiProvider;
-    this.tokenMetadataService = tokenMetadataService; // 🆕 ДОБАВЛЕНО
+    this.tokenMetadataService = tokenMetadataService;
+    this.smDatabase = smDatabase;
     this.logger = Logger.getInstance();
     
-    this.logger.info('🚨 LargeTransactionMonitor initialized with TokenMetadataService integration');
+    this.startCacheCleanup();
+    this.logger.info('🚨 LargeTransactionMonitor initialized with MEGA FILTERING system');
   }
 
   /**
@@ -140,7 +201,7 @@ export class LargeTransactionMonitor {
         `⏰ <b>Scan Interval:</b> <code>${this.SCAN_INTERVAL_MS / 1000}s</code>\n` +
         `📡 <b>Data Source:</b> <code>MultiProvider (QuickNode + Alchemy)</code>\n` +
         `🏷️ <b>Token Metadata:</b> <code>TokenMetadataService (Jupiter + Birdeye)</code>\n` +
-        `🛡️ <b>Filtering:</b> <code>Scams + Token Owners + Exchange</code>\n\n` +
+        `🛡️ <b>Filtering:</b> <code>MEGA SCAM DETECTION + Exchange + Genius Check</code>\n\n` +
         `🎯 <b>Starting Slot:</b> <code>${this.lastProcessedSlot}</code>\n` +
         `⏰ <code>${new Date().toLocaleString()}</code>`
       );
@@ -155,46 +216,86 @@ export class LargeTransactionMonitor {
   }
 
   /**
-   * 🔍 СКАНИРОВАНИЕ БОЛЬШИХ ТРАНЗАКЦИЙ
+   * 🛑 ОСТАНОВКА МОНИТОРИНГА
+   */
+  async stopMonitoring(): Promise<void> {
+    if (!this.isMonitoring) {
+      this.logger.warn('⚠️ Large transaction monitoring is not running');
+      return;
+    }
+
+    this.isMonitoring = false;
+    
+    if (this.monitoringInterval) {
+      clearInterval(this.monitoringInterval);
+      this.monitoringInterval = null;
+    }
+
+    await this.telegramNotifier.sendCycleLog(
+      `🚨 <b>Large Transaction Monitor Stopped</b>\n\n` +
+      `📊 <b>Final Stats:</b>\n` +
+      `• Total Scanned: <code>${this.stats.totalScanned}</code>\n` +
+      `• Large TXs Found: <code>${this.stats.largeTransactionsFound}</code>\n` +
+      `• Filtered Out: <code>${this.stats.filtered}</code>\n` +
+      `• Alerts Sent: <code>${this.stats.alertsSent}</code>\n\n` +
+      `⏰ <code>${new Date().toLocaleString()}</code>`
+    );
+
+    this.logger.info('✅ Large transaction monitoring stopped');
+  }
+
+  /**
+   * 📊 ПОЛУЧЕНИЕ СТАТИСТИКИ
+   */
+  getStats(): MonitoringStats {
+    return { ...this.stats };
+  }
+
+  /**
+   * 🔍 ОСНОВНОЕ СКАНИРОВАНИЕ ТРАНЗАКЦИЙ
    */
   private async scanForLargeTransactions(): Promise<void> {
+    if (!this.isMonitoring) return;
+
     const startTime = Date.now();
     
     try {
       // Получаем текущий слот
       const currentSlotResponse = await this.multiProvider.getSlot();
       if (!currentSlotResponse.success || !currentSlotResponse.data) {
-        this.logger.error('❌ Failed to get current slot');
-        this.stats.errorCount++;
+        this.logger.warn('⚠️ Failed to get current slot, skipping scan');
         return;
       }
 
       const currentSlot = currentSlotResponse.data;
-      const slotsToScan = Math.min(currentSlot - this.lastProcessedSlot, this.MAX_SLOTS_PER_SCAN);
-      
-      if (slotsToScan <= 0) {
-        return; // Нет новых слотов для сканирования
+      const startSlot = this.lastProcessedSlot + 1;
+      const endSlot = Math.min(currentSlot, startSlot + this.MAX_SLOTS_PER_SCAN - 1);
+
+      if (startSlot > endSlot) {
+        return; // Нет новых слотов для обработки
       }
 
-      this.logger.debug(`🔍 Scanning ${slotsToScan} slots (${this.lastProcessedSlot} -> ${currentSlot})`);
+      this.logger.debug(`🔍 Scanning slots ${startSlot} to ${endSlot}`);
 
-      // Получаем блоки в диапазоне слотов
-      const blocks = await this.getBlocksInRange(this.lastProcessedSlot, currentSlot);
+      // Получаем блоки
+      const blocks = await this.getBlocksInRange(startSlot, endSlot);
       
+      // Обрабатываем блоки
       for (const block of blocks) {
+        if (!this.isMonitoring) break;
         await this.processBlock(block);
       }
 
-      this.lastProcessedSlot = currentSlot;
-      this.stats.totalScanned += slotsToScan;
-      this.stats.lastScanTime = new Date();
+      // Обновляем последний обработанный слот
+      this.lastProcessedSlot = endSlot;
       
-      // Обновляем среднее время сканирования
+      // Обновляем статистику
       const scanTime = Date.now() - startTime;
       this.stats.avgScanTime = (this.stats.avgScanTime + scanTime) / 2;
+      this.stats.lastScanTime = new Date();
 
     } catch (error) {
-      this.logger.error('❌ Error during large transaction scan:', error);
+      this.logger.error('Error scanning for large transactions:', error);
       this.stats.errorCount++;
     }
   }
@@ -203,15 +304,16 @@ export class LargeTransactionMonitor {
    * 📦 ПОЛУЧЕНИЕ БЛОКОВ В ДИАПАЗОНЕ
    */
   private async getBlocksInRange(startSlot: number, endSlot: number): Promise<any[]> {
+    const blocks: any[] = [];
+    
     try {
-      const blocks = [];
-      
-      // Получаем блоки пакетами для оптимизации
-      const batchSize = 10;
-      for (let slot = startSlot + 1; slot <= endSlot && slot <= startSlot + this.MAX_SLOTS_PER_SCAN; slot += batchSize) {
-        const batchEnd = Math.min(slot + batchSize - 1, endSlot, startSlot + this.MAX_SLOTS_PER_SCAN);
+      // Обрабатываем блоки пакетами по 20
+      for (let slot = startSlot; slot <= endSlot; slot += 20) {
+        if (!this.isMonitoring) break;
         
+        const batchEnd = Math.min(slot + 19, endSlot);
         const batchPromises = [];
+        
         for (let s = slot; s <= batchEnd; s++) {
           batchPromises.push(this.getBlock(s));
         }
@@ -246,7 +348,7 @@ export class LargeTransactionMonitor {
         transactionDetails: 'full',
         rewards: false,
         commitment: 'confirmed',
-        maxSupportedTransactionVersion: 0 // ✅ ИСПРАВЛЕНО: добавлено для совместимости
+        maxSupportedTransactionVersion: 0
       }]);
 
       if (response.success && response.data) {
@@ -271,7 +373,9 @@ export class LargeTransactionMonitor {
       }
 
       for (const transaction of block.transactions) {
+        if (!this.isMonitoring) break;
         await this.processTransaction(transaction);
+        this.stats.totalScanned++;
       }
 
     } catch (error) {
@@ -293,6 +397,14 @@ export class LargeTransactionMonitor {
         return;
       }
 
+      // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Проверка дубликатов ПЕРВЫМ ДЕЛОМ
+      if (this.isAlreadyProcessed(signature)) {
+        return;
+      }
+
+      // Помечаем как обработанную
+      this.markAsProcessed(signature);
+
       // Анализируем инструкции для поиска свапов
       const swapInfo = await this.extractSwapInfoWithEnrichment(transaction);
       if (!swapInfo) {
@@ -307,14 +419,17 @@ export class LargeTransactionMonitor {
       this.stats.largeTransactionsFound++;
       this.logger.info(`💰 Found large transaction: $${swapInfo.amountUSD.toLocaleString()} - ${swapInfo.tokenSymbol} ${swapInfo.tokenPrice ? `@ $${swapInfo.tokenPrice}` : ''}`);
 
-      // Применяем фильтры
-      const filterResult = await this.applyFilters(swapInfo);
+      // 🛡️ ПРИМЕНЯЕМ МЕГА-ФИЛЬТРЫ
+      const filterResult = await this.applyMegaFilters(swapInfo);
       
       if (filterResult.shouldFilter) {
         this.stats.filtered++;
         this.stats.filterReasons[filterResult.reason || 'unknown'] = (this.stats.filterReasons[filterResult.reason || 'unknown'] || 0) + 1;
         
-        this.logger.info(`🚫 Filtered large transaction: ${filterResult.reason}`);
+        // Логируем только если это не автоблокировка скама
+        if (filterResult.reason !== 'SCAM_AUTO_BLOCKED') {
+          this.logger.info(`🚫 Filtered large transaction: ${filterResult.reason}`);
+        }
         return;
       }
 
@@ -328,13 +443,46 @@ export class LargeTransactionMonitor {
   }
 
   /**
-   * 🔍 ИЗВЛЕЧЕНИЕ ИНФОРМАЦИИ О СВАПЕ С ОБОГАЩЕНИЕМ ЧЕРЕЗ TokenMetadataService
+   * 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Проверка дубликатов
+   */
+  private isAlreadyProcessed(signature: string): boolean {
+    const now = Date.now();
+    const processedTime = this.processedSignatures.get(signature);
+    
+    if (processedTime && (now - processedTime) < this.DUPLICATE_WINDOW) {
+      return true;
+    }
+    
+    return false;
+  }
+
+  /**
+   * 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Отметка как обработанной
+   */
+  private markAsProcessed(signature: string): void {
+    this.processedSignatures.set(signature, Date.now());
+  }
+
+  /**
+   * 🔍 ИЗВЛЕЧЕНИЕ ИНФОРМАЦИИ О СВАПЕ С ОБОГАЩЕНИЕМ
    */
   private async extractSwapInfoWithEnrichment(transaction: any): Promise<LargeTransaction | null> {
     try {
       // Извлекаем базовую информацию
       const signature = transaction.transaction?.signatures?.[0];
-      const timestamp = new Date(transaction.blockTime * 1000);
+      
+      // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Правильная обработка timestamp
+      let timestamp: Date;
+      if (transaction.blockTime) {
+        timestamp = new Date(transaction.blockTime * 1000);
+        
+        // Проверяем валидность даты
+        if (isNaN(timestamp.getTime())) {
+          timestamp = new Date(); // Fallback to current time
+        }
+      } else {
+        timestamp = new Date();
+      }
       
       // Анализируем инструкции для поиска токен трансферов
       const instructions = transaction.transaction?.message?.instructions || [];
@@ -370,105 +518,607 @@ export class LargeTransactionMonitor {
         }
       }
 
-      if (!tokenAddress || tokenAmount < 1000) {
+      if (!tokenAddress || !walletAddress || tokenAmount === 0) {
         return null;
       }
 
-      // 🆕 ОБОГАЩАЕМ ИНФОРМАЦИЮ ЧЕРЕЗ TokenMetadataService
-      const enrichedTokenInfo = await this.getEnrichedTokenInfo(tokenAddress);
+      // 🆕 ОБОГАЩЕНИЕ ЧЕРЕЗ TokenMetadataService
+      const enrichedInfo = await this.getEnrichedTokenInfo(tokenAddress);
       
-      // 🆕 УЛУЧШЕННЫЙ РАСЧЕТ USD стоимости через токен-цену
-      if (enrichedTokenInfo.price && enrichedTokenInfo.price > 0) {
-        amountUSD = tokenAmount * enrichedTokenInfo.price;
-        this.logger.debug(`💰 USD calculation: ${tokenAmount} * $${enrichedTokenInfo.price} = $${amountUSD.toLocaleString()}`);
+      // Рассчитываем USD сумму
+      if (enrichedInfo.price) {
+        amountUSD = tokenAmount * enrichedInfo.price;
       } else {
-        // Fallback к примерной оценке
-        amountUSD = tokenAmount * this.getTokenFallbackPrice(tokenAddress);
-        this.logger.debug(`⚠️ Using fallback price calculation for ${enrichedTokenInfo.symbol}`);
+        // Fallback расчет для неизвестных токенов
+        amountUSD = tokenAmount * 0.001; // Очень низкая цена
       }
+
+      const dex = this.detectDexFromTransaction(transaction);
 
       return {
         signature,
         timestamp,
         walletAddress,
         tokenAddress,
-        tokenSymbol: enrichedTokenInfo.symbol,
-        tokenName: enrichedTokenInfo.name,
+        tokenSymbol: enrichedInfo.symbol,
+        tokenName: enrichedInfo.name,
         amountUSD,
         transactionType,
-        dex: this.detectDexFromTransaction(transaction),
+        dex,
         isFiltered: false,
-        tokenPrice: enrichedTokenInfo.price || undefined // 🆕 ДОБАВЛЕНО
+        tokenPrice: enrichedInfo.price
       };
 
     } catch (error) {
-      this.logger.debug('Error extracting swap info:', error);
+      this.logger.error('Error extracting swap info:', error);
       return null;
     }
   }
 
   /**
-   * 🆕 НОВЫЙ МЕТОД: Получение обогащенной информации о токене
+   * 🔍 ПОЛУЧЕНИЕ ОБОГАЩЕННОЙ ИНФОРМАЦИИ О ТОКЕНЕ
    */
-  private async getEnrichedTokenInfo(tokenAddress: string): Promise<{
-    symbol: string;
-    name: string;
-    price: number | null;
-  }> {
-    // Проверяем кеш
-    const cached = this.enrichedTokenCache.get(tokenAddress);
-    if (cached && Date.now() - cached.timestamp < this.TOKEN_CACHE_TTL) {
-      return {
-        symbol: cached.symbol,
-        name: cached.name,
-        price: cached.price
-      };
-    }
-
+  private async getEnrichedTokenInfo(tokenAddress: string): Promise<TokenMetadata> {
     try {
-      // Получаем метаданные и цену через TokenMetadataService
-      const [metadata, price] = await Promise.all([
-        this.tokenMetadataService.getTokenMetadata(tokenAddress),
-        this.tokenMetadataService.getTokenPrice(tokenAddress)
-      ]);
+      // Проверяем кеш
+      const cached = this.enrichedTokenCache.get(tokenAddress);
+      if (cached && Date.now() - cached.timestamp < this.TOKEN_CACHE_TTL) {
+        return {
+          symbol: cached.symbol,
+          name: cached.name,
+          price: cached.price
+        };
+      }
 
-      const enrichedInfo = {
-        symbol: metadata?.symbol || this.generateFallbackSymbol(tokenAddress),
-        name: metadata?.name || this.generateFallbackName(tokenAddress),
-        price: price || null
-      };
+      // Получаем через TokenMetadataService
+      const tokenInfo = await this.tokenMetadataService.getTokenInfo(tokenAddress);
+      
+      let enrichedInfo: TokenMetadata;
+      
+      if (tokenInfo) {
+        enrichedInfo = {
+          symbol: tokenInfo.symbol || this.generateFallbackSymbol(tokenAddress),
+          name: tokenInfo.name || this.generateFallbackName(tokenAddress),
+          price: tokenInfo.price || this.getTokenFallbackPrice(tokenAddress),
+          marketCap: tokenInfo.marketCap,
+          volume24h: tokenInfo.volume24h,
+          liquidity: tokenInfo.liquidity
+        };
+      } else {
+        // Fallback
+        enrichedInfo = {
+          symbol: this.generateFallbackSymbol(tokenAddress),
+          name: this.generateFallbackName(tokenAddress),
+          price: this.getTokenFallbackPrice(tokenAddress)
+        };
+      }
 
       // Кешируем результат
       this.enrichedTokenCache.set(tokenAddress, {
-        ...enrichedInfo,
+        symbol: enrichedInfo.symbol,
+        name: enrichedInfo.name,
+        price: enrichedInfo.price,
         timestamp: Date.now()
       });
 
-      this.logger.debug(`🏷️ Enriched token ${tokenAddress}: ${enrichedInfo.symbol} @ $${enrichedInfo.price || 'N/A'}`);
       return enrichedInfo;
 
     } catch (error) {
-      this.logger.error(`Error getting enriched token info for ${tokenAddress}:`, error);
-      
-      // Fallback
-      const fallbackInfo = {
+      this.logger.error('Error getting enriched token info:', error);
+      return {
         symbol: this.generateFallbackSymbol(tokenAddress),
         name: this.generateFallbackName(tokenAddress),
-        price: null
+        price: this.getTokenFallbackPrice(tokenAddress)
       };
-
-      this.enrichedTokenCache.set(tokenAddress, {
-        ...fallbackInfo,
-        timestamp: Date.now()
-      });
-
-      return fallbackInfo;
     }
   }
 
   /**
-   * 🔧 ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ДЛЯ FALLBACK
+   * 🛡️ МЕГА-ФИЛЬТРАЦИЯ С ПОЭТАПНЫМ ВНЕДРЕНИЕМ
    */
+  private async applyMegaFilters(transaction: LargeTransaction): Promise<FilterResult> {
+    let riskScore = 0;
+    const reasons: string[] = [];
+    
+    try {
+      // 1. 🔥 ПЕРВАЯ ПРОВЕРКА: НАШ ГЕНИЙ ИЗ БАЗЫ
+      const ourGenius = await this.smDatabase.getSmartWallet(transaction.walletAddress);
+      if (ourGenius && ourGenius.isActive) {
+        transaction.filterReason = `✅ VERIFIED GENIUS (${ourGenius.category.toUpperCase()}, PnL: $${ourGenius.totalPnL.toLocaleString()})`;
+        return { shouldFilter: false, riskScore: -100 }; // Наш гений всегда проходит
+      }
+      
+      // 2. 🔥 УРОВЕНЬ 1: КРИТИЧЕСКИЕ ПРОВЕРКИ (мгновенная блокировка при 100 баллов)
+      
+      // 2.1 Honeypot Detection
+      const honeypotScore = await this.calculateHoneypotScore(transaction);
+      riskScore += honeypotScore;
+      if (honeypotScore > 0) reasons.push(`Honeypot(${honeypotScore})`);
+      
+      // 2.2 Token Creator Detection  
+      const creatorScore = await this.calculateCreatorScore(transaction);
+      riskScore += creatorScore;
+      if (creatorScore > 0) reasons.push(`Creator(${creatorScore})`);
+      
+      // 2.3 Exchange Detection
+      const exchangeScore = await this.calculateExchangeScore(transaction);
+      riskScore += exchangeScore;
+      if (exchangeScore > 0) reasons.push(`Exchange(${exchangeScore})`);
+      
+      // Если уже набрали 100+ баллов - мгновенная блокировка
+      if (riskScore >= this.FILTER_THRESHOLDS.SCAM_AUTO_BLOCK) {
+        return { shouldFilter: true, reason: 'SCAM_AUTO_BLOCKED', riskScore };
+      }
+      
+      // 3. 🔥 УРОВЕНЬ 2: ПОДОЗРИТЕЛЬНЫЕ ПАТТЕРНЫ
+      
+      // 3.1 Rug Pull Indicators  
+      const rugPullScore = await this.calculateRugPullScore(transaction);
+      riskScore += rugPullScore;
+      if (rugPullScore > 0) reasons.push(`RugPull(${rugPullScore})`);
+      
+      // 3.2 Bot Detection
+      const botScore = await this.calculateBotScore(transaction);
+      riskScore += botScore;
+      if (botScore > 0) reasons.push(`Bot(${botScore})`);
+      
+      // 4. 🔥 УРОВЕНЬ 3: ПОЗИТИВНЫЕ ИНДИКАТОРЫ (снижение баллов)
+      
+      // 4.1 Legitimate Whale Indicators
+      const whaleBonus = await this.calculateWhalePositives(transaction);
+      riskScore += whaleBonus; // Может быть отрицательным
+      if (whaleBonus < 0) reasons.push(`Whale(${Math.abs(whaleBonus)})`);
+      
+      // 4.2 Smart Money Traits
+      const smartMoneyBonus = await this.calculateSmartMoneyTraits(transaction);
+      riskScore += smartMoneyBonus; // Может быть отрицательным
+      if (smartMoneyBonus < 0) reasons.push(`Smart(${Math.abs(smartMoneyBonus)})`);
+      
+      // 5. 🎯 ФИНАЛЬНОЕ РЕШЕНИЕ
+      if (riskScore >= this.FILTER_THRESHOLDS.HIGH_RISK_BLOCK) {
+        return { 
+          shouldFilter: true, 
+          reason: `High risk (${riskScore}/100): ${reasons.join(', ')}`, 
+          riskScore 
+        };
+      } else if (riskScore >= this.FILTER_THRESHOLDS.SUSPICIOUS_WARNING) {
+        transaction.filterReason = `⚠️ SUSPICIOUS (${riskScore}/100): ${reasons.join(', ')}`;
+        return { shouldFilter: false, riskScore };
+      } else {
+        // Хороший кит
+        if (riskScore < 0) {
+          transaction.filterReason = `🐳 POTENTIAL WHALE (confidence: ${Math.abs(riskScore)})`;
+        }
+        return { shouldFilter: false, riskScore };
+      }
+      
+    } catch (error) {
+      this.logger.error('Error applying mega filters:', error);
+      return { shouldFilter: false, riskScore: 0 };
+    }
+  }
+
+  /**
+   * 🍯 HONEYPOT SCORE CALCULATION
+   */
+  private async calculateHoneypotScore(transaction: LargeTransaction): Promise<number> {
+    let score = 0;
+    
+    try {
+      // Получаем mint info
+      const mintInfo = await this.getMintInfo(transaction.tokenAddress);
+      
+      // Активный freeze authority
+      if (mintInfo.freezeAuthority !== null) {
+        score += 40;
+      }
+      
+      // Активный mint authority
+      if (mintInfo.mintAuthority !== null) {
+        score += 35;
+      }
+      
+      // Симуляция продажи через Jupiter
+      const canSell = await this.simulateJupiterSell(transaction.tokenAddress, 1000);
+      if (!canSell.success) {
+        score += 30;
+      }
+      
+      // Проверка кастомной программы токена (базовая проверка)
+      // const isCustomProgram = await this.checkCustomTokenProgram(transaction.tokenAddress);
+      // if (isCustomProgram) score += 25;
+      
+    } catch (error) {
+      this.logger.debug('Error calculating honeypot score:', error);
+    }
+    
+    return Math.min(score, 100); // Максимум 100
+  }
+
+  /**
+   * 👨‍💻 TOKEN CREATOR SCORE CALCULATION
+   */
+  private async calculateCreatorScore(transaction: LargeTransaction): Promise<number> {
+    let score = 0;
+    
+    try {
+      const mintInfo = await this.getMintInfo(transaction.tokenAddress);
+      
+      // Кошелек = mint authority
+      if (mintInfo.mintAuthority === transaction.walletAddress) {
+        score += 40;
+      }
+      
+      // Кошелек = freeze authority
+      if (mintInfo.freezeAuthority === transaction.walletAddress) {
+        score += 35;
+      }
+      
+      // Проверка первых транзакций токена (упрощенная)
+      const isDeployer = await this.checkIfTokenDeployer(transaction.walletAddress, transaction.tokenAddress);
+      if (isDeployer) {
+        score += 30;
+      }
+      
+    } catch (error) {
+      this.logger.debug('Error calculating creator score:', error);
+    }
+    
+    return Math.min(score, 100);
+  }
+
+  /**
+   * 🏪 EXCHANGE SCORE CALCULATION
+   */
+  private async calculateExchangeScore(transaction: LargeTransaction): Promise<number> {
+    let score = 0;
+    
+    try {
+      // Известный адрес биржи
+      if (this.KNOWN_EXCHANGES.has(transaction.walletAddress)) {
+        score += 100; // Мгновенная блокировка
+      }
+      
+      // Паттерны биржевых переводов
+      if (this.isRoundAmount(transaction.amountUSD)) {
+        score += 30;
+      }
+      
+      // Высокочастотная торговля (упрощенная проверка)
+      const isHighFrequency = await this.checkHighFrequency(transaction.walletAddress);
+      if (isHighFrequency) {
+        score += 40;
+      }
+      
+    } catch (error) {
+      this.logger.debug('Error calculating exchange score:', error);
+    }
+    
+    return Math.min(score, 100);
+  }
+
+  /**
+   * 📈 RUG PULL SCORE CALCULATION
+   */
+  private async calculateRugPullScore(transaction: LargeTransaction): Promise<number> {
+    let score = 0;
+    
+    try {
+      // Возраст токена vs размер сделки
+      const tokenAgeHours = await this.getTokenAgeHours(transaction.tokenAddress);
+      
+      if (tokenAgeHours < 1 && transaction.amountUSD > 5_000_000) {
+        score += 25;
+      } else if (tokenAgeHours < 6 && transaction.amountUSD > 10_000_000) {
+        score += 20;
+      } else if (tokenAgeHours < 24 && transaction.amountUSD > 20_000_000) {
+        score += 15;
+      }
+      
+      // Ликвидность vs размер сделки (если есть данные)
+      const enrichedInfo = await this.getEnrichedTokenInfo(transaction.tokenAddress);
+      if (enrichedInfo.liquidity && transaction.amountUSD > enrichedInfo.liquidity * 0.5) {
+        score += 20;
+      }
+      
+    } catch (error) {
+      this.logger.debug('Error calculating rug pull score:', error);
+    }
+    
+    return Math.min(score, 40);
+  }
+
+  /**
+   * 🤖 BOT SCORE CALCULATION
+   */
+  private async calculateBotScore(transaction: LargeTransaction): Promise<number> {
+    let score = 0;
+    
+    try {
+      // Возраст кошелька (упрощенная проверка)
+      const walletAgeHours = await this.getWalletAgeHours(transaction.walletAddress);
+      
+      if (walletAgeHours < 1) {
+        score += 35;
+      } else if (walletAgeHours < 24) {
+        score += 20;
+      } else if (walletAgeHours < 168) { // 1 неделя
+        score += 10;
+      }
+      
+      // Проверка на "идеальные" суммы
+      if (this.hasRepeatingAmounts(transaction.amountUSD)) {
+        score += 20;
+      }
+      
+    } catch (error) {
+      this.logger.debug('Error calculating bot score:', error);
+    }
+    
+    return Math.min(score, 40);
+  }
+
+  /**
+   * 🐳 WHALE POSITIVES CALCULATION (снижение баллов)
+   */
+  private async calculateWhalePositives(transaction: LargeTransaction): Promise<number> {
+    let bonus = 0;
+    
+    try {
+      // Торговля major токенами
+      if (this.MAJOR_TOKENS.has(transaction.tokenAddress)) {
+        bonus -= 25;
+      }
+      
+      // Возраст токена
+      const tokenAgeHours = await this.getTokenAgeHours(transaction.tokenAddress);
+      if (tokenAgeHours > 72) { // 3 дня
+        bonus -= 15;
+      }
+      
+      // Пропорциональность сделки (упрощенная)
+      const walletBalance = await this.getWalletTotalBalance(transaction.walletAddress);
+      if (walletBalance > 0 && transaction.amountUSD < walletBalance * 0.3) {
+        bonus -= 15;
+      }
+      
+    } catch (error) {
+      this.logger.debug('Error calculating whale positives:', error);
+    }
+    
+    return Math.max(bonus, -50); // Максимальное снижение -50
+  }
+
+  /**
+   * 🧠 SMART MONEY TRAITS CALCULATION (снижение баллов)  
+   */
+  private async calculateSmartMoneyTraits(transaction: LargeTransaction): Promise<number> {
+    let bonus = 0;
+    
+    try {
+      // Возраст кошелька
+      const walletAgeHours = await this.getWalletAgeHours(transaction.walletAddress);
+      
+      if (walletAgeHours > 8760) { // 1 год
+        bonus -= 30;
+      } else if (walletAgeHours > 4380) { // 6 месяцев
+        bonus -= 20;
+      } else if (walletAgeHours > 720) { // 1 месяц
+        bonus -= 10;
+      }
+      
+      // Разнообразие торговли (упрощенная проверка)
+      const hasDiverseActivity = await this.checkDiverseActivity(transaction.walletAddress);
+      if (hasDiverseActivity) {
+        bonus -= 20;
+      }
+      
+    } catch (error) {
+      this.logger.debug('Error calculating smart money traits:', error);
+    }
+    
+    return Math.max(bonus, -50);
+  }
+
+  // ========== ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ==========
+
+  /**
+   * 📊 ПОЛУЧЕНИЕ MINT INFO
+   */
+  private async getMintInfo(tokenAddress: string): Promise<MintInfo> {
+    try {
+      // Проверяем кеш
+      const cached = this.mintInfoCache.get(tokenAddress);
+      if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
+        return cached.mintInfo;
+      }
+
+      // Получаем через RPC
+      const response = await this.multiProvider.getAccountInfo(tokenAddress);
+      
+      if (!response.success || !response.data) {
+        throw new Error('Failed to get mint info');
+      }
+
+      const mintInfo: MintInfo = {
+        mintAuthority: response.data.mintAuthority || null,
+        freezeAuthority: response.data.freezeAuthority || null,
+        decimals: response.data.decimals || 9,
+        supply: response.data.supply || 0
+      };
+
+      // Кешируем
+      this.mintInfoCache.set(tokenAddress, {
+        mintInfo,
+        timestamp: Date.now()
+      });
+
+      return mintInfo;
+
+    } catch (error) {
+      this.logger.debug('Error getting mint info:', error);
+      // Fallback
+      return {
+        mintAuthority: null,
+        freezeAuthority: null,
+        decimals: 9,
+        supply: 0
+      };
+    }
+  }
+
+  /**
+   * 🔄 СИМУЛЯЦИЯ ПРОДАЖИ ЧЕРЕЗ JUPITER
+   */
+  private async simulateJupiterSell(tokenAddress: string, testAmountUSD: number): Promise<{success: boolean, reason?: string}> {
+    try {
+      const testAmount = Math.floor(testAmountUSD * 1000000); // Примерное количество токенов
+      
+      const quoteResponse = await fetch(
+        `https://quote-api.jup.ag/v6/quote?inputMint=${tokenAddress}&outputMint=So11111111111111111111111111111111111111112&amount=${testAmount}&slippageBps=300`,
+        { timeout: 5000 } as any
+      );
+      
+      if (!quoteResponse.ok) {
+        return { success: false, reason: 'No sell route available' };
+      }
+      
+      const quote: JupiterQuoteResponse = await quoteResponse.json();
+      
+      // Проверяем, есть ли разумный выход
+      if (!quote.outAmount || parseInt(quote.outAmount) === 0) {
+        return { success: false, reason: 'Zero output amount' };
+      }
+      
+      return { success: true };
+      
+    } catch (error) {
+      return { success: false, reason: 'Jupiter quote failed' };
+    }
+  }
+
+  /**
+   * ⏰ ПОЛУЧЕНИЕ ВОЗРАСТА ТОКЕНА В ЧАСАХ
+   */
+  private async getTokenAgeHours(tokenAddress: string): Promise<number> {
+    try {
+      // Упрощенная реализация - получаем первые транзакции
+      const signaturesResponse = await this.multiProvider.getSignaturesForAddress(tokenAddress, { limit: 1 });
+      
+      if (!signaturesResponse.success || !signaturesResponse.data || signaturesResponse.data.length === 0) {
+        return 0;
+      }
+      
+      const firstSignature = signaturesResponse.data[0];
+      const firstTime = firstSignature.blockTime * 1000;
+      const ageMs = Date.now() - firstTime;
+      
+      return ageMs / (1000 * 60 * 60); // Часы
+      
+    } catch (error) {
+      this.logger.debug('Error getting token age:', error);
+      return 24; // Fallback - считаем "старым"
+    }
+  }
+
+  /**
+   * 👤 ПОЛУЧЕНИЕ ВОЗРАСТА КОШЕЛЬКА В ЧАСАХ
+   */
+  private async getWalletAgeHours(walletAddress: string): Promise<number> {
+    try {
+      // Получаем самые старые транзакции кошелька
+      const signaturesResponse = await this.multiProvider.getSignaturesForAddress(walletAddress, { 
+        limit: 1000 // Больше лимит для получения старых транзакций
+      });
+      
+      if (!signaturesResponse.success || !signaturesResponse.data || signaturesResponse.data.length === 0) {
+        return 0;
+      }
+      
+      // Берем самую старую транзакцию
+      const oldestSignature = signaturesResponse.data[signaturesResponse.data.length - 1];
+      const firstTime = oldestSignature.blockTime * 1000;
+      const ageMs = Date.now() - firstTime;
+      
+      return ageMs / (1000 * 60 * 60); // Часы
+      
+    } catch (error) {
+      this.logger.debug('Error getting wallet age:', error);
+      return 168; // Fallback - считаем "старым" (неделя)
+    }
+  }
+
+  /**
+   * 💰 ПОЛУЧЕНИЕ ОБЩЕГО БАЛАНСА КОШЕЛЬКА
+   */
+  private async getWalletTotalBalance(walletAddress: string): Promise<number> {
+    try {
+      const balanceResponse = await this.multiProvider.getBalance(walletAddress);
+      
+      if (balanceResponse.success && balanceResponse.data) {
+        return balanceResponse.data.value / 1000000000; // Конвертируем в SOL
+      }
+      
+      return 0;
+      
+    } catch (error) {
+      this.logger.debug('Error getting wallet balance:', error);
+      return 0;
+    }
+  }
+
+  // ========== ПРОСТЫЕ ПРОВЕРКИ ==========
+
+  private async checkIfTokenDeployer(walletAddress: string, tokenAddress: string): Promise<boolean> {
+    // Упрощенная проверка - можно расширить
+    try {
+      const signatures = await this.multiProvider.getSignaturesForAddress(tokenAddress, { limit: 5 });
+      if (signatures.success && signatures.data && signatures.data.length > 0) {
+        // Проверяем первые транзакции
+        return signatures.data.some((sig: any) => sig.memo?.includes(walletAddress));
+      }
+    } catch (error) {
+      this.logger.debug('Error checking token deployer:', error);
+    }
+    return false;
+  }
+
+  private isRoundAmount(amount: number): boolean {
+    const roundAmounts = [1000000, 2000000, 5000000, 10000000, 20000000, 50000000, 100000000];
+    return roundAmounts.some(round => Math.abs(amount - round) < round * 0.01);
+  }
+
+  private async checkHighFrequency(walletAddress: string): Promise<boolean> {
+    try {
+      const signatures = await this.multiProvider.getSignaturesForAddress(walletAddress, { limit: 100 });
+      if (signatures.success && signatures.data) {
+        // Если больше 50 транзакций в последних 100 - высокочастотная торговля
+        return signatures.data.length > 50;
+      }
+    } catch (error) {
+      this.logger.debug('Error checking high frequency:', error);
+    }
+    return false;
+  }
+
+  private hasRepeatingAmounts(amount: number): boolean {
+    // Проверяем на повторяющиеся цифры или "идеальные" суммы
+    const amountStr = amount.toString();
+    return /(\d)\1{2,}/.test(amountStr) || amount % 1000000 === 0;
+  }
+
+  private async checkDiverseActivity(walletAddress: string): Promise<boolean> {
+    // Упрощенная проверка разнообразия активности
+    try {
+      const signatures = await this.multiProvider.getSignaturesForAddress(walletAddress, { limit: 50 });
+      return signatures.success && signatures.data && signatures.data.length > 20;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  // ========== FALLBACK МЕТОДЫ ==========
+
   private generateFallbackSymbol(tokenAddress: string): string {
     return `TOKEN_${tokenAddress.slice(0, 6)}`;
   }
@@ -508,316 +1158,89 @@ export class LargeTransactionMonitor {
   }
 
   /**
-   * 🛡️ ПРИМЕНЕНИЕ ФИЛЬТРОВ
-   */
-  private async applyFilters(transaction: LargeTransaction): Promise<FilterResult> {
-    try {
-      let riskScore = 0;
-      
-      // 1. Фильтр скам адресов
-      const scamCheck = await this.checkScamAddress(transaction.walletAddress);
-      if (scamCheck.isScam) {
-        return {
-          shouldFilter: true,
-          reason: `Scam address (confidence: ${scamCheck.confidence}%)`,
-          riskScore: 100
-        };
-      }
-      riskScore += scamCheck.confidence * 0.5;
-
-      // 2. Фильтр создателей токенов
-      const ownerCheck = await this.checkTokenOwner(transaction.walletAddress, transaction.tokenAddress);
-      if (ownerCheck.isOwner) {
-        return {
-          shouldFilter: true,
-          reason: `Token owner/creator (confidence: ${ownerCheck.confidence}%)`,
-          riskScore: 100
-        };
-      }
-      riskScore += ownerCheck.confidence * 0.3;
-
-      // 3. Фильтр биржевых адресов
-      if (await this.isExchangeAddress(transaction.walletAddress)) {
-        return {
-          shouldFilter: true,
-          reason: 'Exchange internal transfer',
-          riskScore: 90
-        };
-      }
-
-      // 4. Фильтр подозрительных паттернов
-      const patternCheck = await this.checkSuspiciousPatterns(transaction);
-      riskScore += patternCheck;
-
-      // Если общий риск-скор слишком высокий
-      if (riskScore > 75) {
-        return {
-          shouldFilter: true,
-          reason: `High risk score (${riskScore.toFixed(1)})`,
-          riskScore
-        };
-      }
-
-      return {
-        shouldFilter: false,
-        riskScore
-      };
-
-    } catch (error) {
-      this.logger.error('Error applying filters:', error);
-      return {
-        shouldFilter: false,
-        riskScore: 0
-      };
-    }
-  }
-
-  /**
-   * 🔍 ПРОВЕРКА НА СКАМ АДРЕС
-   */
-  private async checkScamAddress(address: string): Promise<ScamDetectionResult> {
-    try {
-      // Проверяем кеш
-      const cached = this.scamAddressCache.get(address);
-      if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
-        return {
-          isScam: cached.isScam,
-          confidence: cached.isScam ? 100 : 0,
-          reasons: cached.isScam ? ['Cached scam address'] : []
-        };
-      }
-
-      // Простая проверка через известные скам листы (заглушка)
-      const knownScamPatterns = [
-        /^11111111111111111111111111111111$/, // Null address
-        /^22222222222222222222222222222222$/, // Pattern address
-      ];
-
-      const isScam = knownScamPatterns.some(pattern => pattern.test(address));
-      
-      // Кешируем результат
-      this.scamAddressCache.set(address, {
-        isScam,
-        timestamp: Date.now()
-      });
-
-      return {
-        isScam,
-        confidence: isScam ? 100 : 0,
-        reasons: isScam ? ['Matches known scam pattern'] : []
-      };
-
-    } catch (error) {
-      this.logger.error('Error checking scam address:', error);
-      return {
-        isScam: false,
-        confidence: 0,
-        reasons: []
-      };
-    }
-  }
-
-  /**
-   * 🔍 ПРОВЕРКА НА СОЗДАТЕЛЯ ТОКЕНА
-   */
-  private async checkTokenOwner(walletAddress: string, tokenAddress: string): Promise<OwnerDetectionResult> {
-    try {
-      const cacheKey = `${walletAddress}:${tokenAddress}`;
-      const cached = this.ownerAddressCache.get(cacheKey);
-      
-      if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
-        return {
-          isOwner: cached.isOwner,
-          confidence: cached.isOwner ? 100 : 0,
-          reasons: cached.isOwner ? ['Cached owner check'] : []
-        };
-      }
-
-      // Заглушка - в реальности нужно проверить через Solana API
-      // Можно проверить mint authority, freeze authority и т.д.
-      const isOwner = false;
-      
-      this.ownerAddressCache.set(cacheKey, {
-        isOwner,
-        timestamp: Date.now()
-      });
-
-      return {
-        isOwner,
-        confidence: 0,
-        reasons: []
-      };
-
-    } catch (error) {
-      this.logger.error('Error checking token owner:', error);
-      return {
-        isOwner: false,
-        confidence: 0,
-        reasons: []
-      };
-    }
-  }
-
-  /**
-   * 🏦 ПРОВЕРКА НА БИРЖЕВОЙ АДРЕС
-   */
-  private async isExchangeAddress(address: string): Promise<boolean> {
-    // Список известных биржевых адресов (заглушка)
-    const knownExchangeAddresses = new Set([
-      // Binance
-      '2ojv9BAiHUrvsm9gxDe7fJSzbNZSJcxZvf8dqmWGHG8S',
-      // FTX
-      '5tzFkiKscXHK5ZXCGbXZxdw7gTjjD1mBwuoFbhUvuAi9',
-      // Coinbase
-      'GVXRSBjFk6e6J3NbVPXohDJetcTjaeeuykUpbQF8UoMU'
-    ]);
-
-    return knownExchangeAddresses.has(address);
-  }
-
-  /**
-   * 🔍 ПРОВЕРКА ПОДОЗРИТЕЛЬНЫХ ПАТТЕРНОВ
-   */
-  private async checkSuspiciousPatterns(transaction: LargeTransaction): Promise<number> {
-    let suspicionScore = 0;
-
-    // Очень новый токен (< 24 часов)
-    // Заглушка - в реальности нужно проверить возраст токена
-    
-    // Очень крупная сделка (> $10M)
-    if (transaction.amountUSD > 10_000_000) {
-      suspicionScore += 20;
-    }
-
-    // Необычное время (3-5 AM UTC - время бóльшего количества скамов)
-    const hour = transaction.timestamp.getUTCHours();
-    if (hour >= 3 && hour <= 5) {
-      suspicionScore += 10;
-    }
-
-    return suspicionScore;
-  }
-
-  /**
-   * 📬 ОТПРАВКА АЛЕРТА О БОЛЬШОЙ ТРАНЗАКЦИИ С РАСШИРЕННОЙ ИНФОРМАЦИЕЙ
+   * 📢 ОТПРАВКА АЛЕРТА О КРУПНОЙ ТРАНЗАКЦИИ
    */
   private async sendLargeTransactionAlert(transaction: LargeTransaction): Promise<void> {
     try {
-      const typeEmoji = transaction.transactionType === 'buy' ? '💰' : '🔴';
-      const amountFormatted = this.formatNumber(transaction.amountUSD);
+      const alertMessage = this.formatLargeTransactionMessage(transaction);
+      await this.telegramNotifier.sendCycleLog(alertMessage);
       
-      // 🆕 РАСШИРЕННОЕ СООБЩЕНИЕ С ЦЕНОЙ ТОКЕНА
-      let message = 
-        `🚨 <b>Large Transaction Alert!</b>\n\n` +
-        `${typeEmoji} <b>Type:</b> <code>${transaction.transactionType.toUpperCase()}</code>\n` +
-        `💰 <b>Amount:</b> <code>$${amountFormatted}</code>\n` +
-        `🪙 <b>Token:</b> <code>${transaction.tokenSymbol}</code>\n` +
-        `📄 <b>Name:</b> <code>${transaction.tokenName}</code>\n`;
-
-      // Добавляем цену токена если доступна
-      if (transaction.tokenPrice && transaction.tokenPrice > 0) {
-        message += `💵 <b>Token Price:</b> <code>$${transaction.tokenPrice.toFixed(6)}</code>\n`;
-        const tokenAmount = transaction.amountUSD / transaction.tokenPrice;
-        message += `🎯 <b>Token Amount:</b> <code>${this.formatNumber(tokenAmount)}</code>\n`;
-      }
-
-      message += 
-        `👤 <b>Wallet:</b> <code>${transaction.walletAddress.slice(0, 8)}...${transaction.walletAddress.slice(-4)}</code>\n` +
-        `🏪 <b>DEX:</b> <code>${transaction.dex || 'Unknown'}</code>\n` +
-        `⏰ <b>Time:</b> <code>${transaction.timestamp.toLocaleString()}</code>\n\n` +
-        `🔗 <b>Links:</b>\n` +
-        `<a href="https://solscan.io/tx/${transaction.signature}">Transaction</a> | ` +
-        `<a href="https://solscan.io/token/${transaction.tokenAddress}">Token</a> | ` +
-        `<a href="https://solscan.io/account/${transaction.walletAddress}">Wallet</a>\n\n` +
-        `🛡️ <b>Passed all filters</b> ✅`;
-
-      await this.telegramNotifier.sendCycleLog(message);
-
-      this.logger.info(`📤 Large transaction alert sent: ${transaction.tokenSymbol} - $${amountFormatted}`);
-
+      this.logger.info(`📢 Sent large transaction alert: ${transaction.tokenSymbol} - $${transaction.amountUSD.toLocaleString()}`);
+      
     } catch (error) {
       this.logger.error('Error sending large transaction alert:', error);
     }
   }
 
   /**
-   * 📊 ПОЛУЧЕНИЕ СТАТИСТИКИ
+   * 📝 ФОРМАТИРОВАНИЕ СООБЩЕНИЯ О КРУПНОЙ ТРАНЗАКЦИИ
    */
-  getStats(): MonitoringStats {
-    return { ...this.stats };
-  }
-
-  /**
-   * 🛑 ОСТАНОВКА МОНИТОРИНГА
-   */
-  async stopMonitoring(): Promise<void> {
-    if (!this.isMonitoring) {
-      this.logger.warn('⚠️ Large transaction monitoring not running');
-      return;
+  private formatLargeTransactionMessage(transaction: LargeTransaction): string {
+    const emoji = transaction.transactionType === 'buy' ? '🟢' : '🔴';
+    const action = transaction.transactionType === 'buy' ? 'BOUGHT' : 'SOLD';
+    
+    let statusLine = '';
+    if (transaction.filterReason) {
+      if (transaction.filterReason.includes('GENIUS')) {
+        statusLine = `\n${transaction.filterReason}`;
+      } else if (transaction.filterReason.includes('WHALE')) {
+        statusLine = `\n${transaction.filterReason}`;
+      } else if (transaction.filterReason.includes('SUSPICIOUS')) {
+        statusLine = `\n${transaction.filterReason}`;
+      }
+    } else {
+      statusLine = '\n🚨 UNKNOWN LARGE TRADER';
     }
 
-    this.logger.info('🛑 Stopping large transaction monitoring...');
-    
-    this.isMonitoring = false;
-    
-    if (this.monitoringInterval) {
-      clearInterval(this.monitoringInterval);
-      this.monitoringInterval = null;
-    }
-
-    await this.telegramNotifier.sendCycleLog(
-      `🛑 <b>Large Transaction Monitor Stopped</b>\n\n` +
-      `📊 <b>Final Stats:</b>\n` +
-      `• Total Scanned: <code>${this.stats.totalScanned}</code>\n` +
-      `• Large TXs Found: <code>${this.stats.largeTransactionsFound}</code>\n` +
-      `• Filtered Out: <code>${this.stats.filtered}</code>\n` +
-      `• Alerts Sent: <code>${this.stats.alertsSent}</code>\n` +
-      `• Errors: <code>${this.stats.errorCount}</code>\n\n` +
-      `⏰ <code>${new Date().toLocaleString()}</code>`
-    );
-
-    this.logger.info('✅ Large transaction monitoring stopped');
-  }
-
-  /**
-   * 🔄 СБРОС СТАТИСТИКИ
-   */
-  resetStats(): void {
-    this.stats = {
-      totalScanned: 0,
-      largeTransactionsFound: 0,
-      filtered: 0,
-      alertsSent: 0,
-      lastScanTime: new Date(),
-      avgScanTime: 0,
-      errorCount: 0,
-      filterReasons: {}
-    };
-    
-    this.logger.info('🔄 Large transaction monitor stats reset');
+    return `🚨 <b>Large Transaction Alert!</b>\n\n` +
+           `${emoji} <b>${action}:</b> <code>$${transaction.amountUSD.toLocaleString()}</code>\n\n` +
+           `🪙 <b>Token:</b> <code>${transaction.tokenSymbol}</code> (${transaction.tokenName})\n` +
+           `💰 <b>Price:</b> <code>$${transaction.tokenPrice ? transaction.tokenPrice.toFixed(6) : 'Unknown'}</code>\n` +
+           `🏪 <b>DEX:</b> <code>${transaction.dex || 'Unknown'}</code>\n` +
+           `👤 <b>Wallet:</b> <code>${transaction.walletAddress.slice(0, 8)}...${transaction.walletAddress.slice(-4)}</code>\n` +
+           `⏰ <b>Time:</b> <code>${transaction.timestamp.toLocaleString()}</code>\n` +
+           statusLine + '\n\n' +
+           `<a href="https://solscan.io/tx/${transaction.signature}">📊 View Transaction</a> | ` +
+           `<a href="https://solscan.io/account/${transaction.walletAddress}">👤 View Wallet</a> | ` +
+           `<a href="https://solscan.io/token/${transaction.tokenAddress}">🪙 View Token</a>`;
   }
 
   /**
    * 🧹 ОЧИСТКА КЕШЕЙ
    */
-  clearCaches(): void {
-    this.scamAddressCache.clear();
-    this.ownerAddressCache.clear();
-    this.enrichedTokenCache.clear();
-    
-    this.logger.info('🧹 Large transaction monitor caches cleared');
+  private startCacheCleanup(): void {
+    setInterval(() => {
+      const now = Date.now();
+      
+      // Очистка processed signatures
+      let cleanedSignatures = 0;
+      for (const [signature, timestamp] of this.processedSignatures) {
+        if (now - timestamp > this.DUPLICATE_WINDOW) {
+          this.processedSignatures.delete(signature);
+          cleanedSignatures++;
+        }
+      }
+      
+      // Очистка других кешей
+      this.cleanExpiredCache(this.scamAddressCache, this.CACHE_TTL);
+      this.cleanExpiredCache(this.ownerAddressCache, this.CACHE_TTL);
+      this.cleanExpiredCache(this.enrichedTokenCache, this.TOKEN_CACHE_TTL);
+      this.cleanExpiredCache(this.mintInfoCache, this.CACHE_TTL);
+      
+      if (cleanedSignatures > 0) {
+        this.logger.debug(`🧹 Cache cleanup: ${cleanedSignatures} signatures removed`);
+      }
+      
+    }, 5 * 60 * 1000); // Каждые 5 минут
   }
 
-  /**
-   * 🛠️ ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
-   */
-  private formatNumber(num: number): string {
-    if (num >= 1_000_000) {
-      return `${(num / 1_000_000).toFixed(1)}M`;
-    } else if (num >= 1_000) {
-      return `${(num / 1_000).toFixed(1)}K`;
+  private cleanExpiredCache(cache: Map<string, any>, ttl: number): void {
+    const now = Date.now();
+    for (const [key, value] of cache) {
+      if (value.timestamp && now - value.timestamp > ttl) {
+        cache.delete(key);
+      }
     }
-    return num.toFixed(0);
   }
 
   private sleep(ms: number): Promise<void> {
@@ -825,66 +1248,20 @@ export class LargeTransactionMonitor {
   }
 
   /**
-   * 📊 ПОЛУЧЕНИЕ ДЕТАЛЬНОЙ СТАТИСТИКИ
+   * 🛑 ЗАВЕРШЕНИЕ РАБОТЫ
    */
-  getDetailedStats(): MonitoringStats & {
-    cacheStats: {
-      scamAddressCache: number;
-      ownerAddressCache: number;
-      enrichedTokenCache: number;
-    };
-    isMonitoring: boolean;
-    lastProcessedSlot: number;
-    enrichmentStats: {
-      tokensEnriched: number;
-      pricesFound: number;
-      metadataFound: number;
-    };
-  } {
-    const enrichedTokens = Array.from(this.enrichedTokenCache.values());
+  async shutdown(): Promise<void> {
+    this.logger.info('🔴 Shutting down LargeTransactionMonitor...');
     
-    return {
-      ...this.stats,
-      cacheStats: {
-        scamAddressCache: this.scamAddressCache.size,
-        ownerAddressCache: this.ownerAddressCache.size,
-        enrichedTokenCache: this.enrichedTokenCache.size
-      },
-      isMonitoring: this.isMonitoring,
-      lastProcessedSlot: this.lastProcessedSlot,
-      enrichmentStats: {
-        tokensEnriched: enrichedTokens.length,
-        pricesFound: enrichedTokens.filter(t => t.price !== null).length,
-        metadataFound: enrichedTokens.filter(t => t.symbol !== `TOKEN_${this.enrichedTokenCache.keys().next().value?.slice(0, 6) || ''}`).length
-      }
-    };
-  }
-
-  /**
-   * 🆕 ПОЛУЧЕНИЕ СТАТИСТИКИ ПО КЕШУ ТОКЕНОВ
-   */
-  getTokenCacheStats(): {
-    totalCachedTokens: number;
-    tokensWithPrices: number;
-    tokensWithMetadata: number;
-    avgCacheAge: number;
-    cacheHitRate: number;
-  } {
-    const cachedTokens = Array.from(this.enrichedTokenCache.values());
-    const now = Date.now();
+    await this.stopMonitoring();
     
-    const tokensWithPrices = cachedTokens.filter(t => t.price !== null).length;
-    const tokensWithMetadata = cachedTokens.filter(t => !t.symbol.startsWith('TOKEN_')).length;
-    const avgCacheAge = cachedTokens.length > 0 
-      ? cachedTokens.reduce((sum, t) => sum + (now - t.timestamp), 0) / cachedTokens.length / 1000 / 60 // в минутах
-      : 0;
-
-    return {
-      totalCachedTokens: cachedTokens.length,
-      tokensWithPrices,
-      tokensWithMetadata,
-      avgCacheAge: Math.round(avgCacheAge),
-      cacheHitRate: 0 // Заглушка - можно добавить отслеживание
-    };
+    // Очищаем кеши
+    this.processedSignatures.clear();
+    this.scamAddressCache.clear();
+    this.ownerAddressCache.clear();
+    this.enrichedTokenCache.clear();
+    this.mintInfoCache.clear();
+    
+    this.logger.info('✅ LargeTransactionMonitor shutdown completed');
   }
 }
