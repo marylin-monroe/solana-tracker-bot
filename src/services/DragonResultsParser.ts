@@ -1,4 +1,4 @@
-// src/services/DragonResultsParser.ts - ИСПРАВЛЕНО: улучшена стабильность Git синхронизации + сохранены все функции
+// src/services/DragonResultsParser.ts - PROFIT-FIRST OPTIMIZED: Максимальная прибыльность за счет умной фильтрации
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
 import { TelegramNotifier } from './TelegramNotifier';
 import { Logger } from '../utils/Logger';
@@ -19,22 +19,31 @@ interface DragonWallet {
   last_active: number;
   sol_balance: number;
   score?: number;
+  profitFactor?: number; // 🆕 ДОБАВЛЕНО для приоритизации
+  tier?: 'whale' | 'genius' | 'quality' | 'filter_out'; // 🆕 НОВАЯ КЛАССИФИКАЦИЯ
 }
 
 interface DragonConfig {
-  // 🔧 ЕДИНСТВЕННОЕ что нужно - путь к файлам Dragon
   dragonOutputPath: string;
   
-  // Критерии фильтрации (работают превосходно - 11 из 100!)
-  minPnl: number;
-  minWinrate: number;
-  minTrades: number;
+  // 🚀 PROFIT-FIRST КРИТЕРИИ (реалистичные для заработка)
+  minPnl: number;           // Увеличено до $50K
+  minWinrate: number;       // Снижено до 35%
+  minTrades: number;        // Снижено до 10
   maxDaysInactive: number;
   
-  // Веса для scoring
+  // 🆕 WHALE DETECTION (автопроходы)
+  whaleThresholds: {
+    megaWhale: number;      // $1M+ автопроходы
+    whale: number;          // $500K+ автопроходы  
+    bigPlayer: number;      // $200K+ с 40% WR
+    quality: number;        // $100K+ с 45% WR
+  };
+  
+  // 🔧 СКОРРЕКТИРОВАННЫЕ ВЕСА (PnL приоритет)
   scoreWeights: {
-    pnl: number;
-    winrate: number;
+    pnl: number;           // Увеличен до 0.5
+    winrate: number;       // Снижен до 0.2
     volume: number;
     trades: number;
     activity: number;
@@ -49,6 +58,17 @@ interface DragonParseResult {
   skipped: number;
   categories: { snipers: number; hunters: number; traders: number };
   topPerformers: DragonWallet[];
+  
+  // 🆕 PROFIT ANALYTICS
+  profitDistribution: {
+    megaWhales: number;    // $1M+
+    whales: number;        // $500K+
+    bigPlayers: number;    // $200K+
+    quality: number;       // $100K+
+    regular: number;       // <$100K
+  };
+  averagePnL: number;
+  totalValue: number;
 }
 
 export class DragonResultsParser {
@@ -66,67 +86,64 @@ export class DragonResultsParser {
     this.telegramNotifier = telegramNotifier;
     this.logger = Logger.getInstance();
     
-    // 🔧 ИСПРАВЛЕНО: Только путь к файлам Dragon
+    // 🚀 PROFIT-FIRST КОНФИГУРАЦИЯ
     this.config = {
       dragonOutputPath: this.resolveDragonPath(config?.dragonOutputPath),
       
-      // Сохраняем отличные настройки фильтрации!
-      minPnl: config?.minPnl || 10000,
-      minWinrate: config?.minWinrate || 65,
-      minTrades: config?.minTrades || 15,
+      // ✅ НОВЫЕ РЕАЛИСТИЧНЫЕ КРИТЕРИИ (для заработка)
+      minPnl: config?.minPnl || 50000,        // $50K (было $10K)
+      minWinrate: config?.minWinrate || 35,   // 35% (было 65%)
+      minTrades: config?.minTrades || 10,     // 10 (было 15)
       maxDaysInactive: config?.maxDaysInactive || 7,
       
+      // 🐳 WHALE DETECTION THRESHOLDS
+      whaleThresholds: {
+        megaWhale: 1_000_000,  // $1M+ 
+        whale: 500_000,        // $500K+
+        bigPlayer: 200_000,    // $200K+
+        quality: 100_000,      // $100K+
+        ...config?.whaleThresholds
+      },
+      
+      // 🔧 PnL-ПРИОРИТЕТНЫЕ ВЕСА
       scoreWeights: {
-        pnl: 0.3,
-        winrate: 0.25,
-        volume: 0.2,
-        trades: 0.15,
-        activity: 0.1,
+        pnl: 0.5,           // Увеличен с 0.3 до 0.5
+        winrate: 0.2,       // Снижен с 0.25 до 0.2
+        volume: 0.15,       // Снижен с 0.2 до 0.15
+        trades: 0.1,        // Снижен с 0.15 до 0.1
+        activity: 0.05,     // Снижен с 0.1 до 0.05
         ...config?.scoreWeights
       }
     };
 
-    this.logger.info(`🐲 Dragon Results Parser initialized`);
-    this.logger.info(`📁 Output path: ${this.config.dragonOutputPath}`);
-    this.logger.info(`🎯 Filters: PnL≥$${this.config.minPnl}, WR≥${this.config.minWinrate}%, Trades≥${this.config.minTrades}`);
+    this.logger.info(`🐲 Dragon Results Parser initialized (PROFIT-FIRST MODE)`);
+    this.logger.info(`💰 NEW THRESHOLDS: PnL≥$${this.config.minPnl/1000}K, WR≥${this.config.minWinrate}%, Trades≥${this.config.minTrades}`);
+    this.logger.info(`🐳 WHALE DETECTION: $${this.config.whaleThresholds.whale/1000}K+ auto-pass`);
   }
 
   /**
-   * 🔧 КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Автоматическое определение Dragon paths
+   * 🔧 Автоматическое определение Dragon paths (без изменений)
    */
   private resolveDragonPath(customPath?: string): string {
     if (customPath) {
       return customPath;
     }
 
-    // 1. Environment variable (для Render и Git)
     if (process.env.DRAGON_OUTPUT_PATH) {
       this.logger.info(`📁 Using DRAGON_OUTPUT_PATH: ${process.env.DRAGON_OUTPUT_PATH}`);
       return process.env.DRAGON_OUTPUT_PATH;
     }
 
-    // 2. Проверяем стандартные локации
     const possiblePaths = [
-      // Render/Production (с Git)
       '/opt/render/project/src/data/dragon-output',
       '/app/data/dragon/output',
-      
-      // Local development (с Git)  
       './data/dragon-output',
       './dragon-git/dragon-files',
-      
-      // Windows Git папка (ваша новая)
       'C:\\Users\\ibm\\OneDrive\\Документы\\dragon-git\\dragon-files',
-      
-      // Старый Windows путь (fallback)
       'C:\\Users\\ibm\\OneDrive\\Документы\\Dragon-main\\Dragon\\data\\Solana\\TopTraders\\',
-      
-      // Alternative paths
       './Dragon/data/Solana/TopTraders',
       'C:\\Dragon\\data\\Solana\\TopTraders\\',
       'D:\\Dragon\\data\\Solana\\TopTraders\\',
-      
-      // macOS/Linux
       path.join(os.homedir(), 'dragon-git/dragon-files'),
       path.join(os.homedir(), 'Dragon/data/Solana/TopTraders'),
       '/opt/dragon/data/Solana/TopTraders'
@@ -139,7 +156,6 @@ export class DragonResultsParser {
       }
     }
 
-    // Fallback - создаем локальную папку
     const fallbackPath = path.join(process.cwd(), 'data', 'dragon', 'output');
     if (!fs.existsSync(fallbackPath)) {
       fs.mkdirSync(fallbackPath, { recursive: true });
@@ -150,7 +166,7 @@ export class DragonResultsParser {
   }
 
   /**
-   * 🔄 УЛУЧШЕННАЯ СИНХРОНИЗАЦИЯ С GIT РЕПОЗИТОРИЕМ
+   * 🔄 Git синхронизация (без изменений)
    */
   private async syncFromGit(): Promise<void> {
     try {
@@ -163,10 +179,8 @@ export class DragonResultsParser {
         return;
       }
 
-      // 🔧 ИСПРАВЛЕНО: Более безопасная подготовка URL с токеном
       let authUrl = repoUrl;
       if (githubToken && repoUrl.includes('github.com')) {
-        // Проверяем, что токен не пустой
         if (githubToken.trim().length > 0) {
           authUrl = repoUrl.replace('https://github.com/', `https://${githubToken}@github.com/`);
         } else {
@@ -177,14 +191,11 @@ export class DragonResultsParser {
       this.logger.info(`🔄 Syncing Dragon files from Git...`);
       this.logger.info(`📁 Target path: ${outputPath}`);
 
-      // Проверяем, существует ли Git репозиторий
       const gitPath = path.join(outputPath, '.git');
       
       if (!fs.existsSync(gitPath)) {
-        // Первый запуск - клонируем репозиторий
         this.logger.info('🆕 First run - cloning Dragon repository...');
         
-        // Создаем родительскую папку если нужно
         const parentDir = path.dirname(outputPath);
         if (!fs.existsSync(parentDir)) {
           fs.mkdirSync(parentDir, { recursive: true });
@@ -195,7 +206,6 @@ export class DragonResultsParser {
           this.logger.info('✅ Dragon repository cloned successfully');
         } catch (cloneError) {
           this.logger.error('❌ Failed to clone Dragon repository:', cloneError);
-          // Создаем пустую папку чтобы не ломать логику
           if (!fs.existsSync(outputPath)) {
             fs.mkdirSync(outputPath, { recursive: true });
           }
@@ -203,11 +213,9 @@ export class DragonResultsParser {
         }
         
       } else {
-        // Обновляем существующий репозиторий
         this.logger.info('🔄 Updating existing Dragon repository...');
         
         try {
-          // 🔧 ИСПРАВЛЕНО: Более надежная логика git pull
           const { stdout, stderr } = await execAsync(`cd "${outputPath}" && git pull`);
           if (stderr && !stderr.includes('Already up to date')) {
             this.logger.warn('⚠️ Git pull warnings:', stderr);
@@ -217,38 +225,32 @@ export class DragonResultsParser {
           this.logger.warn('⚠️ Git pull failed, trying to reset and pull again...');
           
           try {
-            // Пытаемся сбросить и подтянуть заново
             await execAsync(`cd "${outputPath}" && git reset --hard HEAD`);
             await execAsync(`cd "${outputPath}" && git pull`);
             this.logger.info('✅ Dragon repository reset and updated');
           } catch (resetError) {
             this.logger.error('❌ Failed to reset and pull repository:', resetError);
-            // Не бросаем ошибку - продолжаем с локальными файлами
           }
         }
       }
 
-      // Проверяем наличие JSON файлов
       const files = await this.findLatestDragonFiles();
       this.logger.info(`📄 Found ${files.length} Dragon JSON files after sync`);
 
     } catch (error) {
       this.logger.error('❌ Error syncing from Git:', error);
-      // Не бросаем ошибку - продолжаем работать с локальными файлами
     }
   }
 
   /**
-   * ✅ ОСНОВНОЙ МЕТОД: Парсинг последних результатов Dragon
+   * ✅ ОСНОВНОЙ МЕТОД: Парсинг с profit-first логикой
    */
   async parseLatestDragonResults(): Promise<DragonParseResult> {
     try {
-      this.logger.info('🐲 Starting Dragon results parsing...');
+      this.logger.info('🐲 Starting PROFIT-FIRST Dragon results parsing...');
 
-      // 🆕 1. Синхронизируемся с Git репозиторием
       await this.syncFromGit();
 
-      // 2. Поиск новых файлов Dragon (теперь после Git sync)
       const files = await this.findLatestDragonFiles();
       if (files.length === 0) {
         this.logger.warn('⚠️ No Dragon files found after Git sync');
@@ -257,7 +259,7 @@ export class DragonResultsParser {
 
       this.logger.info(`📄 Found ${files.length} Dragon files to process`);
 
-      // 3. Парсинг JSON файлов
+      // Парсинг JSON файлов
       const allWallets: DragonWallet[] = [];
       for (const filePath of files) {
         const wallets = await this.parseDragonJsonFile(filePath);
@@ -265,27 +267,30 @@ export class DragonResultsParser {
         this.logger.info(`📊 Parsed ${wallets.length} wallets from ${path.basename(filePath)}`);
       }
 
-      // 4. Дедупликация по адресу
+      // Дедупликация
       const uniqueWallets = this.deduplicateWallets(allWallets);
       this.logger.info(`🔄 After deduplication: ${uniqueWallets.length} unique wallets`);
 
-      // 5. Фильтрация по критериям (ВАША ОТЛИЧНАЯ ЛОГИКА!)
-      const filteredWallets = this.filterWallets(uniqueWallets);
-      this.logger.info(`✅ After filtering: ${filteredWallets.length} quality wallets (${((filteredWallets.length / uniqueWallets.length) * 100).toFixed(1)}% selected)`);
+      // 🚀 НОВАЯ PROFIT-FIRST ФИЛЬТРАЦИЯ
+      const filteredWallets = this.applyProfitFirstFiltering(uniqueWallets);
+      this.logger.info(`💰 After PROFIT-FIRST filtering: ${filteredWallets.length} high-quality wallets (${((filteredWallets.length / uniqueWallets.length) * 100).toFixed(1)}% selected)`);
 
-      // 6. Расчет рейтингов
-      const scoredWallets = this.calculateScores(filteredWallets);
+      // Расчет новых рейтингов
+      const scoredWallets = this.calculateProfitFirstScores(filteredWallets);
       
-      // 7. Сортировка по рейтингу
-      scoredWallets.sort((a, b) => (b.score || 0) - (a.score || 0));
+      // Сортировка по новой логике (PnL приоритет)
+      scoredWallets.sort((a, b) => this.compareProfitPriority(a, b));
 
-      // 8. Добавление в базу данных
+      // Добавление в базу данных
       const dbResult = await this.addWalletsToDatabase(scoredWallets);
 
-      // 9. Отправка уведомления
-      await this.sendDragonImportNotification(dbResult, scoredWallets.slice(0, 10));
+      // Расширенная аналитика
+      const enrichedResult = this.enrichResultWithProfitAnalytics(dbResult, scoredWallets);
 
-      return dbResult;
+      // Отправка уведомления с profit-аналитикой
+      await this.sendProfitFirstNotification(enrichedResult, scoredWallets.slice(0, 10));
+
+      return enrichedResult;
 
     } catch (error) {
       this.logger.error('❌ Error parsing Dragon results:', error);
@@ -294,7 +299,7 @@ export class DragonResultsParser {
   }
 
   /**
-   * 🔍 УЛУЧШЕННЫЙ поиск последних JSON файлов Dragon (игнорирует Git файлы)
+   * 🔍 Поиск файлов (без изменений)
    */
   private async findLatestDragonFiles(): Promise<string[]> {
     try {
@@ -305,17 +310,14 @@ export class DragonResultsParser {
 
       const files = fs.readdirSync(this.config.dragonOutputPath);
       
-      // ✅ ИСПРАВЛЕНО: Более точная фильтрация Dragon файлов
       const jsonFiles = files
         .filter(file => {
-          // Игнорируем Git служебные файлы
           if (file.startsWith('.git')) return false;
           if (file === 'README.md') return false;
           if (file === '.gitignore') return false;
           if (file === 'package.json') return false;
           if (file === 'package-lock.json') return false;
           
-          // Только JSON файлы Dragon
           return file.endsWith('.json') && (
             file.includes('topTraders') || 
             file.includes('TopTraders') ||
@@ -332,7 +334,7 @@ export class DragonResultsParser {
             mtime = fs.statSync(filePath).mtime;
           } catch (error) {
             this.logger.warn(`⚠️ Could not get mtime for ${file}:`, error);
-            mtime = new Date(0); // Очень старая дата
+            mtime = new Date(0);
           }
           return {
             name: file,
@@ -340,8 +342,8 @@ export class DragonResultsParser {
             mtime
           };
         })
-        .sort((a, b) => b.mtime.getTime() - a.mtime.getTime()) // новые файлы первыми
-        .slice(0, 5) // берем только 5 последних файлов
+        .sort((a, b) => b.mtime.getTime() - a.mtime.getTime())
+        .slice(0, 5)
         .map(file => file.path);
 
       this.logger.info(`🔍 Dragon files found: ${jsonFiles.map(f => path.basename(f)).join(', ')}`);
@@ -354,7 +356,7 @@ export class DragonResultsParser {
   }
 
   /**
-   * 📄 УЛУЧШЕННЫЙ парсинг отдельного JSON файла Dragon
+   * 📄 Парсинг JSON файла (без изменений)
    */
   private async parseDragonJsonFile(filePath: string): Promise<DragonWallet[]> {
     try {
@@ -362,7 +364,6 @@ export class DragonResultsParser {
       
       const fileContent = fs.readFileSync(filePath, 'utf8');
       
-      // 🔧 ИСПРАВЛЕНО: Более надежный парсинг JSON
       let jsonData: any;
       try {
         jsonData = JSON.parse(fileContent);
@@ -373,7 +374,6 @@ export class DragonResultsParser {
 
       const dragonWallets: DragonWallet[] = [];
 
-      // Dragon создает объект где ключ = адрес кошелька, значение = метрики
       for (const [walletAddress, metrics] of Object.entries(jsonData)) {
         if (!metrics || typeof metrics !== 'object' || Object.keys(metrics).length === 0) {
           continue;
@@ -381,24 +381,21 @@ export class DragonResultsParser {
 
         const data = metrics as any;
 
-        // Парсим данные Dragon
         const boughtUsd = this.parseUsdString(data.boughtUsd || '0');
         const totalProfit = this.parseUsdString(data.totalProfit || '0');
         const buys = parseInt(data.buys || '0');
         const sells = parseInt(data.sells || '0');
         const totalTrades = buys + sells;
 
-        // Рассчитываем winrate - ИСПРАВЛЕНО: более точная формула
         const winrate = totalTrades > 0 ? 
           (data.winRate !== undefined ? parseFloat(data.winRate) : 
            (sells > 0 ? (sells / totalTrades) * 100 : 0)) : 0;
 
-        // 🔧 ИСПРАВЛЕНО: Более строгая валидация адреса Solana
         if (this.isValidSolanaAddress(walletAddress) && totalTrades > 0 && boughtUsd > 0) {
           dragonWallets.push({
             wallet: walletAddress,
             pnl: totalProfit,
-            winrate: Math.min(winrate, 100), // Ограничиваем winrate до 100%
+            winrate: Math.min(winrate, 100),
             trades: totalTrades,
             volume: boughtUsd,
             last_active: Date.now() / 1000,
@@ -417,30 +414,26 @@ export class DragonResultsParser {
   }
 
   /**
-   * 🔍 НОВЫЙ МЕТОД: Валидация адреса Solana
+   * 🔍 Валидация адреса (без изменений)
    */
   private isValidSolanaAddress(address: string): boolean {
-    // Базовая валидация адреса Solana (44 символа, base58)
     if (!address || typeof address !== 'string') return false;
     if (address.length < 32 || address.length > 44) return false;
     
-    // Проверяем, что адрес содержит только допустимые символы base58
     const base58Regex = /^[1-9A-HJ-NP-Za-km-z]+$/;
     return base58Regex.test(address);
   }
 
   /**
-   * 💰 УЛУЧШЕННЫЙ парсинг строки с USD в число
+   * 💰 Парсинг USD строки (без изменений)
    */
   private parseUsdString(usdString: string): number {
     if (!usdString || typeof usdString !== 'string') {
       return 0;
     }
     
-    // Удаляем все лишние символы
     const cleaned = usdString.replace(/[$,\s]/g, '');
     
-    // Обрабатываем множители (K, M, B)
     let multiplier = 1;
     if (cleaned.endsWith('K') || cleaned.endsWith('k')) {
       multiplier = 1000;
@@ -457,7 +450,7 @@ export class DragonResultsParser {
   }
 
   /**
-   * 🔄 Дедупликация кошельков по адресу
+   * 🔄 Дедупликация (без изменений)
    */
   private deduplicateWallets(wallets: DragonWallet[]): DragonWallet[] {
     const walletMap = new Map<string, DragonWallet>();
@@ -474,37 +467,82 @@ export class DragonResultsParser {
   }
 
   /**
-   * 🎯 ВАША ОТЛИЧНАЯ ФИЛЬТРАЦИЯ! (11 из 100 - превосходно!)
+   * 🚀 НОВАЯ PROFIT-FIRST ФИЛЬТРАЦИЯ
    */
-  private filterWallets(wallets: DragonWallet[]): DragonWallet[] {
+  private applyProfitFirstFiltering(wallets: DragonWallet[]): DragonWallet[] {
     const now = Date.now() / 1000;
     
     return wallets.filter(wallet => {
-      // Фильтр по PnL
-      if (wallet.pnl < this.config.minPnl) return false;
+      // 🐳 WHALE AUTO-PASS: Мега-киты проходят с любым WR
+      if (wallet.pnl >= this.config.whaleThresholds.megaWhale) {
+        wallet.tier = 'whale';
+        this.logger.debug(`🐳 MEGA-WHALE AUTO-PASS: $${wallet.pnl/1000}K with ${wallet.winrate.toFixed(1)}% WR`);
+        return true;
+      }
+
+      // 🐋 WHALE AUTO-PASS: Киты проходят с WR ≥ 30%
+      if (wallet.pnl >= this.config.whaleThresholds.whale && wallet.winrate >= 30) {
+        wallet.tier = 'whale';
+        this.logger.debug(`🐋 WHALE AUTO-PASS: $${wallet.pnl/1000}K with ${wallet.winrate.toFixed(1)}% WR`);
+        return true;
+      }
+
+      // 💰 BIG PLAYER: $200K+ нужен WR ≥ 40%
+      if (wallet.pnl >= this.config.whaleThresholds.bigPlayer && wallet.winrate >= 40) {
+        wallet.tier = 'genius';
+        this.logger.debug(`💰 BIG PLAYER PASS: $${wallet.pnl/1000}K with ${wallet.winrate.toFixed(1)}% WR`);
+        return true;
+      }
+
+      // 💎 QUALITY: $100K+ нужен WR ≥ 45%
+      if (wallet.pnl >= this.config.whaleThresholds.quality && wallet.winrate >= 45) {
+        wallet.tier = 'quality';
+        return true;
+      }
+
+      // 📊 STANDARD FILTERS: Базовые критерии
+      if (wallet.pnl < this.config.minPnl) {
+        wallet.tier = 'filter_out';
+        return false;
+      }
       
-      // Фильтр по winrate
-      if (wallet.winrate < this.config.minWinrate) return false;
+      if (wallet.winrate < this.config.minWinrate) {
+        wallet.tier = 'filter_out';
+        return false;
+      }
       
-      // Фильтр по количеству сделок
-      if (wallet.trades < this.config.minTrades) return false;
+      if (wallet.trades < this.config.minTrades) {
+        wallet.tier = 'filter_out';
+        return false;
+      }
       
       // Фильтр по активности
       const daysSinceActive = (now - wallet.last_active) / (24 * 60 * 60);
-      if (daysSinceActive > this.config.maxDaysInactive) return false;
+      if (daysSinceActive > this.config.maxDaysInactive) {
+        wallet.tier = 'filter_out';
+        return false;
+      }
       
-      // Дополнительная проверка: исключаем кошельки с нереалистичными данными
-      if (wallet.winrate > 99.9) return false; // Слишком высокий winrate подозрителен
-      if (wallet.volume > wallet.pnl * 100) return false; // Нереалистичное соотношение
+      // Дополнительные фильтры безопасности
+      if (wallet.winrate > 99.9) {
+        wallet.tier = 'filter_out';
+        return false; // Подозрительно высокий WR
+      }
       
+      if (wallet.volume > wallet.pnl * 100) {
+        wallet.tier = 'filter_out';
+        return false; // Нереалистичное соотношение
+      }
+      
+      wallet.tier = 'quality';
       return true;
     });
   }
 
   /**
-   * 📊 Расчет рейтинга кошелька
+   * 📊 НОВЫЙ РАСЧЕТ РЕЙТИНГА С PROFIT-PRIORITY
    */
-  private calculateScores(wallets: DragonWallet[]): DragonWallet[] {
+  private calculateProfitFirstScores(wallets: DragonWallet[]): DragonWallet[] {
     if (wallets.length === 0) return wallets;
     
     const maxPnl = Math.max(...wallets.map(w => w.pnl));
@@ -513,6 +551,7 @@ export class DragonResultsParser {
     const now = Date.now() / 1000;
     
     return wallets.map(wallet => {
+      // 🚀 НОВАЯ ФОРМУЛА РАСЧЕТА SCORE (PnL доминирует)
       const pnlScore = maxPnl > 0 ? wallet.pnl / maxPnl : 0;
       const winrateScore = wallet.winrate / 100;
       const volumeScore = maxVolume > 0 ? wallet.volume / maxVolume : 0;
@@ -521,13 +560,30 @@ export class DragonResultsParser {
       const daysSinceActive = (now - wallet.last_active) / (24 * 60 * 60);
       const activityScore = Math.max(0, 1 - (daysSinceActive / this.config.maxDaysInactive));
       
-      const score = (
+      // 🔧 ПРИМЕНЯЕМ НОВЫЕ ВЕСА (PnL = 0.5)
+      let score = (
         pnlScore * this.config.scoreWeights.pnl +
         winrateScore * this.config.scoreWeights.winrate +
         volumeScore * this.config.scoreWeights.volume +
         tradesScore * this.config.scoreWeights.trades +
         activityScore * this.config.scoreWeights.activity
       ) * 100;
+
+      // 🐳 TIER BONUS: Дополнительные баллы за tier
+      if (wallet.tier === 'whale') {
+        score += 25; // Киты получают +25 баллов
+      } else if (wallet.tier === 'genius') {
+        score += 15; // Гении получают +15 баллов
+      } else if (wallet.tier === 'quality') {
+        score += 5;  // Качественные получают +5 баллов
+      }
+
+      // 📈 Расчет Profit Factor (если есть данные)
+      if (wallet.trades > 0 && wallet.pnl > 0) {
+        const avgProfitPerTrade = wallet.pnl / wallet.trades;
+        wallet.profitFactor = avgProfitPerTrade > 0 ? 
+          Math.min(avgProfitPerTrade / 1000, 10) : 0; // Нормализуем
+      }
       
       return {
         ...wallet,
@@ -537,7 +593,57 @@ export class DragonResultsParser {
   }
 
   /**
-   * 💾 УЛУЧШЕННОЕ добавление кошельков в базу данных
+   * 🔀 НОВОЕ СРАВНЕНИЕ ПО PROFIT-PRIORITY
+   */
+  private compareProfitPriority(a: DragonWallet, b: DragonWallet): number {
+    // 1. Сначала по tier
+    const tierPriority = { whale: 4, genius: 3, quality: 2, filter_out: 1 };
+    const aTier = tierPriority[a.tier || 'quality'] || 2;
+    const bTier = tierPriority[b.tier || 'quality'] || 2;
+    
+    if (aTier !== bTier) {
+      return bTier - aTier; // Высший tier первым
+    }
+    
+    // 2. Внутри tier - по PnL (главный критерий)
+    if (Math.abs(a.pnl - b.pnl) > 10000) { // Разница больше $10K
+      return b.pnl - a.pnl;
+    }
+    
+    // 3. При близких PnL - по score
+    return (b.score || 0) - (a.score || 0);
+  }
+
+  /**
+   * 📊 ОБОГАЩЕНИЕ РЕЗУЛЬТАТА PROFIT-АНАЛИТИКОЙ
+   */
+  private enrichResultWithProfitAnalytics(
+    result: DragonParseResult, 
+    wallets: DragonWallet[]
+  ): DragonParseResult {
+    
+    const profitDistribution = {
+      megaWhales: wallets.filter(w => w.pnl >= this.config.whaleThresholds.megaWhale).length,
+      whales: wallets.filter(w => w.pnl >= this.config.whaleThresholds.whale && w.pnl < this.config.whaleThresholds.megaWhale).length,
+      bigPlayers: wallets.filter(w => w.pnl >= this.config.whaleThresholds.bigPlayer && w.pnl < this.config.whaleThresholds.whale).length,
+      quality: wallets.filter(w => w.pnl >= this.config.whaleThresholds.quality && w.pnl < this.config.whaleThresholds.bigPlayer).length,
+      regular: wallets.filter(w => w.pnl < this.config.whaleThresholds.quality).length
+    };
+
+    const totalValue = wallets.reduce((sum, w) => sum + w.pnl, 0);
+    const averagePnL = wallets.length > 0 ? totalValue / wallets.length : 0;
+
+    return {
+      ...result,
+      profitDistribution,
+      averagePnL,
+      totalValue,
+      topPerformers: wallets.slice(0, 15) // Увеличиваем до 15 топов
+    };
+  }
+
+  /**
+   * 💾 Добавление в базу данных (обновлено под новые tier)
    */
   private async addWalletsToDatabase(wallets: DragonWallet[]): Promise<DragonParseResult> {
     const result: DragonParseResult = {
@@ -547,7 +653,10 @@ export class DragonResultsParser {
       updated: 0,
       skipped: 0,
       categories: { snipers: 0, hunters: 0, traders: 0 },
-      topPerformers: wallets.slice(0, 10)
+      topPerformers: wallets.slice(0, 10),
+      profitDistribution: { megaWhales: 0, whales: 0, bigPlayers: 0, quality: 0, regular: 0 },
+      averagePnL: 0,
+      totalValue: 0
     };
 
     for (const wallet of wallets) {
@@ -556,7 +665,6 @@ export class DragonResultsParser {
         const existingWallet = await this.smDatabase.getSmartWallet(wallet.wallet);
         
         if (existingWallet) {
-          // Обновляем только если новые данные лучше
           if (wallet.pnl > existingWallet.totalPnL || 
               wallet.winrate > existingWallet.winRate ||
               wallet.trades > existingWallet.totalTrades) {
@@ -582,16 +690,21 @@ export class DragonResultsParser {
   }
 
   /**
-   * 🎯 Определение категории кошелька
+   * 🎯 ОБНОВЛЕННОЕ определение категории (с учетом tier)
    */
   private determineWalletCategory(wallet: DragonWallet): 'sniper' | 'hunter' | 'trader' {
+    // Tier влияет на категорию
+    if (wallet.tier === 'whale') {
+      return 'trader'; // Киты = трейдеры
+    }
+    
     // Высокий PnL + много сделок = trader
-    if (wallet.pnl > 50000 && wallet.trades > 50) {
+    if (wallet.pnl > 100000 && wallet.trades > 50) {
       return 'trader';
     }
     
     // Средний PnL + средние сделки = hunter  
-    if (wallet.pnl > 20000 && wallet.trades > 20) {
+    if (wallet.pnl > 50000 && wallet.trades > 20) {
       return 'hunter';
     }
     
@@ -600,7 +713,7 @@ export class DragonResultsParser {
   }
 
   /**
-   * ➕ Добавление нового кошелька
+   * ➕ Добавление нового кошелька (обновлено)
    */
   private async addNewWallet(wallet: DragonWallet, category: 'sniper' | 'hunter' | 'trader'): Promise<void> {
     const smartWallet = {
@@ -610,40 +723,50 @@ export class DragonResultsParser {
       totalPnL: wallet.pnl,
       totalTrades: wallet.trades,
       avgTradeSize: wallet.trades > 0 ? wallet.volume / wallet.trades : 0,
-      maxTradeSize: wallet.volume * 0.1, // примерная оценка
-      minTradeSize: wallet.volume * 0.001, // примерная оценка
+      maxTradeSize: wallet.volume * 0.1,
+      minTradeSize: wallet.volume * 0.001,
       performanceScore: wallet.score || 75,
       lastActiveAt: new Date(wallet.last_active * 1000),
       isActive: true
     };
 
+    // 🆕 TIER-BASED PRIORITY
+    let priority: 'high' | 'medium' | 'low' = 'medium';
+    if (wallet.tier === 'whale') {
+      priority = 'high';
+    } else if (wallet.tier === 'genius') {
+      priority = 'high';
+    } else if (wallet.score && wallet.score > 85) {
+      priority = 'high';
+    }
+
     await this.smDatabase.saveSmartWallet(smartWallet, {
-      nickname: `${category.charAt(0).toUpperCase() + category.slice(1)} ${wallet.wallet.slice(0, 8)}`,
+      nickname: `${wallet.tier?.toUpperCase() || 'QUALITY'} ${category.charAt(0).toUpperCase() + category.slice(1)} ${wallet.wallet.slice(0, 8)}`,
       addedBy: 'dragon',
       verified: true,
       enabled: true,
-      priority: wallet.score && wallet.score > 85 ? 'high' : 'medium'
+      priority
     });
   }
 
   /**
-   * 🔄 Обновление существующего кошелька
+   * 🔄 Обновление существующего кошелька (без изменений)
    */
   private async updateExistingWallet(existing: any, wallet: DragonWallet, category: 'sniper' | 'hunter' | 'trader'): Promise<void> {
     await this.smDatabase.updateWalletPerformance(existing.address, {
-      winRate: Math.max(wallet.winrate, existing.winRate), // Берем лучший winrate
-      totalPnL: Math.max(wallet.pnl, existing.totalPnL), // Берем лучший PnL
-      totalTrades: Math.max(wallet.trades, existing.totalTrades), // Берем больше сделок
+      winRate: Math.max(wallet.winrate, existing.winRate),
+      totalPnL: Math.max(wallet.pnl, existing.totalPnL),
+      totalTrades: Math.max(wallet.trades, existing.totalTrades),
       lastActiveAt: new Date(wallet.last_active * 1000),
       performanceScore: wallet.score || existing.performanceScore
     });
   }
 
   /**
-   * 📤 Отправка уведомления
+   * 📤 НОВОЕ уведомление с profit-аналитикой
    */
-  private async sendDragonImportNotification(result: DragonParseResult, topPerformers: DragonWallet[]): Promise<void> {
-    const message = `🐲 <b>Dragon Import Results</b>
+  private async sendProfitFirstNotification(result: DragonParseResult, topPerformers: DragonWallet[]): Promise<void> {
+    const message = `🐲 <b>Dragon Import Results (PROFIT-FIRST)</b>
 
 📊 <b>Statistics:</b>
 • Parsed: <code>${result.totalParsed}</code> wallets
@@ -656,9 +779,19 @@ export class DragonResultsParser {
 • 💡 Hunters: <code>${result.categories.hunters}</code>  
 • 🐳 Traders: <code>${result.categories.traders}</code>
 
+💰 <b>Profit Distribution:</b>
+• 🐋 Mega-Whales ($1M+): <code>${result.profitDistribution.megaWhales}</code>
+• 🐳 Whales ($500K+): <code>${result.profitDistribution.whales}</code>
+• 💎 Big Players ($200K+): <code>${result.profitDistribution.bigPlayers}</code>
+• ⭐ Quality ($100K+): <code>${result.profitDistribution.quality}</code>
+
+📈 <b>Analytics:</b>
+• Avg PnL: <code>$${this.formatNumber(result.averagePnL)}</code>
+• Total Value: <code>$${this.formatNumber(result.totalValue)}</code>
+
 🏆 <b>Top 5 Performers:</b>
 ${topPerformers.slice(0, 5).map((w, i) => 
-  `<code>${i + 1}.</code> $${w.pnl.toFixed(0)} | ${w.winrate.toFixed(1)}% WR | ${w.trades} trades`
+  `<code>${i + 1}.</code> ${w.tier?.toUpperCase() || 'QUALITY'} - $${this.formatNumber(w.pnl)} | ${w.winrate.toFixed(1)}% WR | ${w.trades} trades`
 ).join('\n')}
 
 ⏰ <code>${new Date().toLocaleString()}</code>`;
@@ -667,7 +800,7 @@ ${topPerformers.slice(0, 5).map((w, i) =>
   }
 
   /**
-   * 📊 Создание пустого результата
+   * 📊 Создание пустого результата (обновлено)
    */
   private createEmptyResult(): DragonParseResult {
     return {
@@ -677,12 +810,15 @@ ${topPerformers.slice(0, 5).map((w, i) =>
       updated: 0,
       skipped: 0,
       categories: { snipers: 0, hunters: 0, traders: 0 },
-      topPerformers: []
+      topPerformers: [],
+      profitDistribution: { megaWhales: 0, whales: 0, bigPlayers: 0, quality: 0, regular: 0 },
+      averagePnL: 0,
+      totalValue: 0
     };
   }
 
   /**
-   * 🎯 МЕТОД для ручного запуска Git синхронизации (для команды /dragon)
+   * 🎯 Ручная синхронизация (без изменений)
    */
   async forceSyncFromGit(): Promise<boolean> {
     try {
@@ -695,7 +831,7 @@ ${topPerformers.slice(0, 5).map((w, i) =>
   }
 
   /**
-   * 📋 Получение статистики Dragon
+   * 📋 Статистика Dragon (без изменений)
    */
   async getDragonStats(): Promise<{
     lastRun?: Date;
@@ -712,5 +848,18 @@ ${topPerformers.slice(0, 5).map((w, i) =>
       isConfigured: fs.existsSync(this.config.dragonOutputPath),
       gitSyncEnabled: !!process.env.DRAGON_REPO_URL
     };
+  }
+
+  /**
+   * 💰 Форматирование чисел (без изменений)
+   */
+  private formatNumber(num: number): string {
+    if (num >= 1_000_000) {
+      return `${(num / 1_000_000).toFixed(1)}M`;
+    } else if (num >= 1_000) {
+      return `${(num / 1_000).toFixed(1)}K`;
+    } else {
+      return num.toFixed(0);
+    }
   }
 }

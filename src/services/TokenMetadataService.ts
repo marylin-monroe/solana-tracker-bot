@@ -1,4 +1,4 @@
-// src/services/TokenMetadataService.ts - ПОЛНЫЙ ФАЙЛ с добавленным getTokenPrice()
+// src/services/TokenMetadataService.ts - ENHANCED with FDV Support & API Efficiency
 import { Logger } from '../utils/Logger';
 
 interface TokenMetadata {
@@ -7,6 +7,7 @@ interface TokenMetadata {
   decimals: number;
   logoURI?: string;
   address: string;
+  totalSupply?: number; // 🆕 ДОБАВЛЕНО для FDV
 }
 
 interface JupiterTokenData {
@@ -89,6 +90,41 @@ interface SolanaTokenListResponse {
   };
 }
 
+// 🆕 NEW: RPC Response interfaces
+interface TokenSupplyResponse {
+  context: {
+    slot: number;
+  };
+  value: {
+    amount: string;
+    decimals: number;
+    uiAmount: number;
+    uiAmountString: string;
+  };
+}
+
+// 🆕 RPC JSON Response wrapper
+interface RPCResponse {
+  jsonrpc: string;
+  id: number;
+  result?: any;
+  error?: {
+    code: number;
+    message: string;
+  };
+}
+
+// 🆕 NEW: Enhanced token info with FDV
+interface EnhancedTokenInfo {
+  symbol: string;
+  name: string;
+  decimals: number;
+  price: number | null;
+  totalSupply: number | null;
+  fdv: number | null;  // Fully Diluted Valuation
+  marketCap: number | null;
+}
+
 export class TokenMetadataService {
   private logger: Logger;
   private cache = new Map<string, { metadata: TokenMetadata; timestamp: number }>();
@@ -101,13 +137,22 @@ export class TokenMetadataService {
   private priceCache = new Map<string, { price: number; timestamp: number }>();
   private readonly PRICE_CACHE_DURATION = 5 * 60 * 1000; // 5 минут
 
+  // 🆕 КЕШ ДЛЯ SUPPLY ДАННЫХ (для FDV)
+  private supplyCache = new Map<string, { supply: number; decimals: number; timestamp: number }>();
+  private readonly SUPPLY_CACHE_DURATION = 60 * 60 * 1000; // 1 час (supply меняется редко)
+
+  // 🆕 КЕШ ДЛЯ FDV РАСЧЕТОВ
+  private fdvCache = new Map<string, { fdv: number; timestamp: number }>();
+  private readonly FDV_CACHE_DURATION = 10 * 60 * 1000; // 10 минут
+
   // Известные токены для быстрого доступа
   private readonly WELL_KNOWN_TOKENS = new Map<string, TokenMetadata>([
     ['So11111111111111111111111111111111111111112', {
       symbol: 'SOL',
       name: 'Solana',
       decimals: 9,
-      address: 'So11111111111111111111111111111111111111112'
+      address: 'So11111111111111111111111111111111111111112',
+      totalSupply: 588_000_000 // Approximate SOL supply
     }],
     ['EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', {
       symbol: 'USDC',
@@ -137,7 +182,7 @@ export class TokenMetadataService {
 
   constructor() {
     this.logger = Logger.getInstance();
-    this.logger.info('🏷️ TokenMetadataService initialized (Jupiter + Birdeye APIs, NO HELIUS)');
+    this.logger.info('🏷️ TokenMetadataService initialized (Jupiter + Birdeye APIs + FDV Support)');
   }
 
   /**
@@ -194,6 +239,207 @@ export class TokenMetadataService {
       // При ошибке возвращаем fallback
       const fallbackMetadata = this.createFallbackMetadata(mintAddress);
       return fallbackMetadata;
+    }
+  }
+
+  /**
+   * 🆕 НОВЫЙ МЕТОД: Получение Total Supply токена через RPC
+   */
+  async getTokenSupply(mintAddress: string): Promise<number | null> {
+    try {
+      if (!mintAddress || mintAddress === 'UNKNOWN') {
+        return null;
+      }
+
+      // Проверяем кеш supply
+      const cached = this.supplyCache.get(mintAddress);
+      if (cached && Date.now() - cached.timestamp < this.SUPPLY_CACHE_DURATION) {
+        return cached.supply;
+      }
+
+      // Известные токены с фиксированным supply
+      const wellKnown = this.WELL_KNOWN_TOKENS.get(mintAddress);
+      if (wellKnown?.totalSupply) {
+        this.supplyCache.set(mintAddress, {
+          supply: wellKnown.totalSupply,
+          decimals: wellKnown.decimals,
+          timestamp: Date.now()
+        });
+        return wellKnown.totalSupply;
+      }
+
+      // Получаем через RPC API (используем QuickNode/Alchemy через environment)
+      const rpcUrl = process.env.QUICKNODE_HTTP_URL || process.env.ALCHEMY_HTTP_URL;
+      if (!rpcUrl) {
+        this.logger.warn('No RPC URL available for getTokenSupply');
+        return null;
+      }
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
+
+      const response = await fetch(rpcUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'getTokenSupply',
+          params: [mintAddress]
+        }),
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        const data = await response.json() as RPCResponse;
+        
+        if (data.result && data.result.value) {
+          const supply = parseFloat(data.result.value.uiAmountString || data.result.value.uiAmount);
+          const decimals = data.result.value.decimals;
+
+          if (supply > 0) {
+            // Кешируем результат
+            this.supplyCache.set(mintAddress, {
+              supply,
+              decimals,
+              timestamp: Date.now()
+            });
+            
+            this.logger.debug(`📊 Got token supply for ${mintAddress}: ${supply.toLocaleString()}`);
+            return supply;
+          }
+        }
+      }
+
+      return null;
+
+    } catch (error) {
+      this.logger.debug(`Error getting token supply for ${mintAddress}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * 🆕 ГЛАВНЫЙ МЕТОД: Получение FDV (Fully Diluted Valuation)
+   */
+  async getTokenFDV(mintAddress: string): Promise<number | null> {
+    try {
+      if (!mintAddress || mintAddress === 'UNKNOWN') {
+        return null;
+      }
+
+      // Проверяем кеш FDV
+      const cached = this.fdvCache.get(mintAddress);
+      if (cached && Date.now() - cached.timestamp < this.FDV_CACHE_DURATION) {
+        return cached.fdv;
+      }
+
+      // Получаем цену и supply параллельно для эффективности
+      const [price, supply] = await Promise.all([
+        this.getTokenPrice(mintAddress),
+        this.getTokenSupply(mintAddress)
+      ]);
+
+      if (price && supply && price > 0 && supply > 0) {
+        const fdv = price * supply;
+        
+        // Кешируем результат
+        this.fdvCache.set(mintAddress, {
+          fdv,
+          timestamp: Date.now()
+        });
+
+        this.logger.debug(`💎 Calculated FDV for ${mintAddress}: $${fdv.toLocaleString()}`);
+        return fdv;
+      }
+
+      return null;
+
+    } catch (error) {
+      this.logger.debug(`Error calculating FDV for ${mintAddress}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * 🆕 ПАКЕТНОЕ ПОЛУЧЕНИЕ FDV для нескольких токенов
+   */
+  async getBatchTokenFDV(mintAddresses: string[]): Promise<Map<string, number | null>> {
+    const results = new Map<string, number | null>();
+    
+    // Обрабатываем пакетами по 3 токена для соблюдения API limits
+    const batchSize = 3;
+    for (let i = 0; i < mintAddresses.length; i += batchSize) {
+      const batch = mintAddresses.slice(i, i + batchSize);
+      
+      const batchPromises = batch.map(async (address) => {
+        const fdv = await this.getTokenFDV(address);
+        results.set(address, fdv);
+      });
+      
+      await Promise.all(batchPromises);
+      
+      // Пауза между пакетами для соблюдения rate limits
+      if (i + batchSize < mintAddresses.length) {
+        await this.sleep(300);
+      }
+    }
+    
+    return results;
+  }
+
+  /**
+   * 🆕 РАСШИРЕННАЯ информация о токене (metadata + price + supply + FDV)
+   */
+  async getEnhancedTokenInfo(mintAddress: string): Promise<EnhancedTokenInfo | null> {
+    try {
+      if (!mintAddress || mintAddress === 'UNKNOWN') {
+        return null;
+      }
+
+      // Получаем все данные параллельно для максимальной эффективности
+      const [metadata, price, supply] = await Promise.all([
+        this.getTokenMetadata(mintAddress),
+        this.getTokenPrice(mintAddress),
+        this.getTokenSupply(mintAddress)
+      ]);
+
+      if (!metadata) {
+        return null;
+      }
+
+      // Расчет FDV
+      let fdv: number | null = null;
+      if (price && supply && price > 0 && supply > 0) {
+        fdv = price * supply;
+      }
+
+      // Market Cap может быть получен из Birdeye, если доступен
+      let marketCap: number | null = null;
+      try {
+        const birdeyeData = await this.getBirdeyeMarketData(mintAddress);
+        marketCap = birdeyeData?.marketCap || null;
+      } catch (error) {
+        // Не критично, продолжаем без market cap
+      }
+
+      return {
+        symbol: metadata.symbol,
+        name: metadata.name,
+        decimals: metadata.decimals,
+        price,
+        totalSupply: supply,
+        fdv,
+        marketCap
+      };
+
+    } catch (error) {
+      this.logger.error(`Error getting enhanced token info for ${mintAddress}:`, error);
+      return null;
     }
   }
 
@@ -295,6 +541,43 @@ export class TokenMetadataService {
 
     } catch (error) {
       this.logger.debug(`Birdeye API error for ${mintAddress}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * 🆕 ПОЛУЧЕНИЕ MARKET DATA из Birdeye
+   */
+  private async getBirdeyeMarketData(mintAddress: string): Promise<{ marketCap?: number } | null> {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+      const response = await fetch(`https://public-api.birdeye.so/public/price?address=${mintAddress}`, {
+        method: 'GET',
+        headers: { 
+          'Content-Type': 'application/json',
+          'User-Agent': 'Smart-Money-Bot/1.0'
+        },
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        const data = await response.json();
+        
+        if (this.isBirdeyePriceResponse(data)) {
+          return {
+            marketCap: data.data.marketCap
+          };
+        }
+      }
+
+      return null;
+
+    } catch (error) {
+      this.logger.debug(`Birdeye market data error for ${mintAddress}:`, error);
       return null;
     }
   }
@@ -404,6 +687,91 @@ export class TokenMetadataService {
   }
 
   /**
+   * 💰 ПОЛУЧЕНИЕ ЦЕНЫ ТОКЕНА (существующий метод)
+   */
+  async getTokenPrice(tokenAddress: string): Promise<number | null> {
+    try {
+      if (!tokenAddress || tokenAddress === 'UNKNOWN') {
+        return null;
+      }
+
+      // Проверяем кеш цен
+      const cached = this.priceCache.get(tokenAddress);
+      if (cached && Date.now() - cached.timestamp < this.PRICE_CACHE_DURATION) {
+        return cached.price;
+      }
+
+      // Известные токены с фиксированными ценами
+      if (tokenAddress === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' || // USDC
+          tokenAddress === 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB') { // USDT
+        const price = 1.0;
+        this.priceCache.set(tokenAddress, { price, timestamp: Date.now() });
+        return price;
+      }
+
+      // Получаем через Birdeye API
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+      const response = await fetch(`https://public-api.birdeye.so/public/price?address=${tokenAddress}`, {
+        method: 'GET',
+        headers: { 
+          'Content-Type': 'application/json',
+          'User-Agent': 'Smart-Money-Bot/1.0'
+        },
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        const data = await response.json();
+        
+        if (this.isBirdeyePriceResponse(data) && data.data.value) {
+          const price = data.data.value;
+          this.priceCache.set(tokenAddress, { price, timestamp: Date.now() });
+          return price;
+        }
+      }
+
+      return null;
+
+    } catch (error) {
+      this.logger.debug(`Error getting token price for ${tokenAddress}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * 🎯 ПАКЕТНОЕ ПОЛУЧЕНИЕ ЦЕН ТОКЕНОВ (существующий метод)
+   */
+  async getBatchTokenPrices(tokenAddresses: string[]): Promise<Map<string, number | null>> {
+    const results = new Map<string, number | null>();
+    
+    // Обрабатываем пакетами по 5 токенов для соблюдения rate limits
+    const batchSize = 5;
+    for (let i = 0; i < tokenAddresses.length; i += batchSize) {
+      const batch = tokenAddresses.slice(i, i + batchSize);
+      
+      const batchPromises = batch.map(async (address) => {
+        const price = await this.getTokenPrice(address);
+        results.set(address, price);
+      });
+      
+      await Promise.all(batchPromises);
+      
+      // Пауза между пакетами для соблюдения rate limits
+      if (i + batchSize < tokenAddresses.length) {
+        await this.sleep(200);
+      }
+    }
+    
+    return results;
+  }
+
+  // ========== ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ==========
+
+  /**
    * 🔍 ПРОВЕРКА КЕША
    */
   private getCachedMetadata(mintAddress: string): TokenMetadata | null {
@@ -455,31 +823,44 @@ export class TokenMetadataService {
   }
 
   /**
-   * 📊 ПОЛУЧЕНИЕ СТАТИСТИКИ КЕША
+   * ⏱️ УТИЛИТА ДЛЯ ЗАДЕРЖКИ
+   */
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * 📊 ПОЛУЧЕНИЕ РАСШИРЕННОЙ СТАТИСТИКИ КЕША
    */
   getCacheStats(): {
     totalCached: number;
     jupiterTokens: number;
+    priceCacheSize: number;
+    supplyCacheSize: number;
+    fdvCacheSize: number;
     cacheHitRate: number;
     lastJupiterUpdate: Date | null;
-    priceCacheSize: number;
   } {
     return {
       totalCached: this.cache.size,
       jupiterTokens: this.jupiterTokenList.size,
+      priceCacheSize: this.priceCache.size,
+      supplyCacheSize: this.supplyCache.size,
+      fdvCacheSize: this.fdvCache.size,
       cacheHitRate: 0, // Можно добавить отслеживание hit rate
-      lastJupiterUpdate: this.lastJupiterUpdate ? new Date(this.lastJupiterUpdate) : null,
-      priceCacheSize: this.priceCache.size
+      lastJupiterUpdate: this.lastJupiterUpdate ? new Date(this.lastJupiterUpdate) : null
     };
   }
 
   /**
-   * 🧹 ОЧИСТКА КЕША
+   * 🧹 РАСШИРЕННАЯ ОЧИСТКА КЕША
    */
   clearCache(): void {
     this.cache.clear();
     this.priceCache.clear();
-    this.logger.info('🧹 Token metadata cache cleared');
+    this.supplyCache.clear();
+    this.fdvCache.clear();
+    this.logger.info('🧹 All token metadata caches cleared');
   }
 
   /**
@@ -489,6 +870,8 @@ export class TokenMetadataService {
     this.lastJupiterUpdate = 0; // Сбрасываем время последнего обновления
     await this.updateJupiterTokenList();
   }
+
+  // ========== СУЩЕСТВУЮЩИЕ МЕТОДЫ (сохранены все) ==========
 
   /**
    * 🎯 ПАКЕТНОЕ ПОЛУЧЕНИЕ МЕТАДАННЫХ
@@ -552,13 +935,6 @@ export class TokenMetadataService {
   }
 
   /**
-   * ⏱️ УТИЛИТА ДЛЯ ЗАДЕРЖКИ
-   */
-  private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
-  }
-
-  /**
    * 🔍 ПРОВЕРКА ВАЛИДНОСТИ АДРЕСА ТОКЕНА
    */
   isValidSolanaAddress(address: string): boolean {
@@ -579,7 +955,7 @@ export class TokenMetadataService {
   }
 
   /**
-   * 📈 ПОЛУЧЕНИЕ МЕТАДАННЫХ С ЦЕНОЙ (через Birdeye)
+   * 📈 ПОЛУЧЕНИЕ МЕТАДАННЫХ С ЦЕНОЙ (обновлен)
    */
   async getTokenMetadataWithPrice(mintAddress: string): Promise<TokenMetadata & { price?: number; marketCap?: number } | null> {
     try {
@@ -622,89 +998,6 @@ export class TokenMetadataService {
       const basicMetadata = await this.getTokenMetadata(mintAddress);
       return basicMetadata;
     }
-  }
-
-  /**
-   * 💰 ПОЛУЧЕНИЕ ЦЕНЫ ТОКЕНА (новый метод для TelegramNotifier)
-   */
-  async getTokenPrice(tokenAddress: string): Promise<number | null> {
-    try {
-      if (!tokenAddress || tokenAddress === 'UNKNOWN') {
-        return null;
-      }
-
-      // Проверяем кеш цен
-      const cached = this.priceCache.get(tokenAddress);
-      if (cached && Date.now() - cached.timestamp < this.PRICE_CACHE_DURATION) {
-        return cached.price;
-      }
-
-      // Известные токены с фиксированными ценами
-      if (tokenAddress === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' || // USDC
-          tokenAddress === 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB') { // USDT
-        const price = 1.0;
-        this.priceCache.set(tokenAddress, { price, timestamp: Date.now() });
-        return price;
-      }
-
-      // Получаем через Birdeye API
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
-
-      const response = await fetch(`https://public-api.birdeye.so/public/price?address=${tokenAddress}`, {
-        method: 'GET',
-        headers: { 
-          'Content-Type': 'application/json',
-          'User-Agent': 'Smart-Money-Bot/1.0'
-        },
-        signal: controller.signal
-      });
-
-      clearTimeout(timeoutId);
-
-      if (response.ok) {
-        const data = await response.json();
-        
-        if (this.isBirdeyePriceResponse(data) && data.data.value) {
-          const price = data.data.value;
-          this.priceCache.set(tokenAddress, { price, timestamp: Date.now() });
-          return price;
-        }
-      }
-
-      return null;
-
-    } catch (error) {
-      this.logger.debug(`Error getting token price for ${tokenAddress}:`, error);
-      return null;
-    }
-  }
-
-  /**
-   * 🎯 ПАКЕТНОЕ ПОЛУЧЕНИЕ ЦЕН ТОКЕНОВ
-   */
-  async getBatchTokenPrices(tokenAddresses: string[]): Promise<Map<string, number | null>> {
-    const results = new Map<string, number | null>();
-    
-    // Обрабатываем пакетами по 5 токенов для соблюдения rate limits
-    const batchSize = 5;
-    for (let i = 0; i < tokenAddresses.length; i += batchSize) {
-      const batch = tokenAddresses.slice(i, i + batchSize);
-      
-      const batchPromises = batch.map(async (address) => {
-        const price = await this.getTokenPrice(address);
-        results.set(address, price);
-      });
-      
-      await Promise.all(batchPromises);
-      
-      // Пауза между пакетами для соблюдения rate limits
-      if (i + batchSize < tokenAddresses.length) {
-        await this.sleep(200);
-      }
-    }
-    
-    return results;
   }
 
   // Type Guards для проверки структуры API ответов
