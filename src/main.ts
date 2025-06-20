@@ -1,4 +1,4 @@
-// src/main.ts - КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ФАЗА 1 интеграции + глобальная дедупликация + все функции сохранены
+// src/main.ts - КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: исправлены ссылки на упрощенную дедупликацию + все функции сохранены
 import * as dotenv from 'dotenv';
 import { TelegramNotifier } from './services/TelegramNotifier';
 import { Database } from './services/Database';
@@ -44,7 +44,7 @@ class SmartMoneyBotRunner {
     this.database = new Database();
     this.smDatabase = new SmartMoneyDatabase();
     
-    // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Telegram Notifier с ГЛОБАЛЬНОЙ дедупликацией
+    // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Telegram Notifier с ПРОСТОЙ дедупликацией
     this.telegramNotifier = new TelegramNotifier(
       process.env.TELEGRAM_BOT_TOKEN!,
       process.env.TELEGRAM_USER_ID!
@@ -88,17 +88,18 @@ class SmartMoneyBotRunner {
     // 🚨 MODULE B: MULTI-PROVIDER SERVICE INITIALIZATION
     this.multiProviderService = new MultiProviderService();
 
-    // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ФАЗА 1 Large Transaction Monitor с улучшенной фильтрацией
+    // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ФАЗА 1 Large Transaction Monitor с БЛОКИРОВКОЙ дублей
     this.largeTransactionMonitor = new LargeTransactionMonitor(
       this.telegramNotifier,
       this.multiProviderService,
       this.tokenMetadataService,
-      this.smDatabase // SmartMoneyDatabase для проверки наших гениев
+      this.smDatabase // SmartMoneyDatabase для проверки наших гениев и БЛОКИРОВКИ дублей
     );
 
-    this.logger.info('✅ Smart Money Bot services initialized (ФАЗА 1 + ГЛОБАЛЬНАЯ ДЕДУПЛИКАЦИЯ + TokenMetadataService)');
+    this.logger.info('✅ Smart Money Bot services initialized (ФАЗА 1 + ПРОСТАЯ дедупликация + TokenMetadataService + DUPLICATE BLOCKING)');
     this.logger.info('💰 Dragon thresholds: PnL≥$50K, WR≥35%, Trades≥10');
     this.logger.info('🛡️ ФАЗА 1 Features: Enhanced Honeypot Detection, Token-2022 Support, Advanced Creator Analysis');
+    this.logger.info('🚫 DUPLICATE BLOCKING: Large TX alerts блокируются для Smart Money кошельков');
   }
 
   private validateEnvironment(): void {
@@ -167,7 +168,7 @@ class SmartMoneyBotRunner {
       '/flows': this.handleFlowsCommand.bind(this),
       '/holdings': this.handleHoldingsCommand.bind(this), // 🆕 HOLDINGS COMMAND
       '/large': this.handleLargeTransactionsCommand.bind(this), // 🚨 MODULE B COMMAND (ФАЗА 1)
-      '/dedup': this.handleDeduplicationCommand.bind(this), // 🆕 DEDUPLICATION STATS
+      '/dedup': this.handleDeduplicationCommand.bind(this), // 🆕 DEDUPLICATION STATS (упрощенные)
       '/help': this.handleHelpCommand.bind(this)
     });
 
@@ -377,7 +378,8 @@ class SmartMoneyBotRunner {
         `  • Advanced Creator Analysis\n` +
         `  • Jupiter Sell Simulation\n` +
         `  • Smart Money Genius Check (-100 score)\n` +
-        `  • Exchange Internal Transfer Detection\n\n` +
+        `  • Exchange Internal Transfer Detection\n` +
+        `  • DUPLICATE BLOCKING for SM wallets\n\n` +
         `⏰ <code>${new Date().toLocaleString()}</code>`
       );
 
@@ -387,7 +389,7 @@ class SmartMoneyBotRunner {
     }
   }
 
-  // 🆕 DEDUPLICATION COMMAND - НОВАЯ КОМАНДА для мониторинга дедупликации
+  // 🆕 DEDUPLICATION COMMAND - УПРОЩЕННАЯ ВЕРСИЯ для мониторинга простой дедупликации
   private async handleDeduplicationCommand(): Promise<void> {
     try {
       this.logger.info('🔍 Processing /dedup command');
@@ -396,20 +398,14 @@ class SmartMoneyBotRunner {
       const notificationStats = this.telegramNotifier.getNotificationStats();
       
       await this.telegramNotifier.sendCycleLog(
-        `🔍 <b>Deduplication Statistics</b>\n\n` +
-        `🌍 <b>Global Deduplication:</b>\n` +
-        `• Tracked: <code>${dedupStats.totalTracked}</code> transactions\n` +
-        `• Window: <code>${dedupStats.globalWindowMinutes}</code> minutes\n` +
-        `• Filtered: <code>${dedupStats.globalDuplicatesFiltered}</code> global duplicates\n\n` +
-        `📍 <b>Local Deduplication:</b>\n` +
+        `🔍 <b>Simple Deduplication Statistics</b>\n\n` +
+        `📍 <b>Simple Deduplication:</b>\n` +
         `• Tracked: <code>${notificationStats.duplicatesTracked}</code> transactions\n` +
         `• Window: <code>${dedupStats.windowMinutes}</code> minutes\n` +
-        `• Filtered: <code>${dedupStats.duplicatesFiltered}</code> local duplicates\n\n` +
+        `• Filtered: <code>${dedupStats.duplicatesFiltered}</code> duplicates\n\n` +
         `📊 <b>Performance:</b>\n` +
         `• Total Sent: <code>${notificationStats.totalSent}</code>\n` +
         `• Smart Swaps: <code>${notificationStats.smartMoneySwaps}</code>\n` +
-        `• Aggregated: <code>${notificationStats.aggregatedSwaps}</code>\n` +
-        `• Pending: <code>${notificationStats.pendingAggregations}</code>\n` +
         `• Queue Size: <code>${notificationStats.queueSize}</code>\n\n` +
         `⏰ <b>Time Range:</b>\n` +
         `• Oldest: <code>${dedupStats.oldestTransaction ? dedupStats.oldestTransaction.toLocaleString() : 'N/A'}</code>\n` +
@@ -417,6 +413,9 @@ class SmartMoneyBotRunner {
         `🎯 <b>Effectiveness:</b>\n` +
         `• Success Rate: <code>${notificationStats.successRate}</code>\n` +
         `• Error Rate: <code>${notificationStats.errorRate}</code>\n\n` +
+        `🚫 <b>DUPLICATE BLOCKING:</b>\n` +
+        `• Large TX alerts for SM wallets: <code>BLOCKED</code>\n` +
+        `• This prevents duplicate notifications\n\n` +
         `⏰ <code>${new Date().toLocaleString()}</code>`
       );
 
@@ -438,7 +437,7 @@ class SmartMoneyBotRunner {
         `📈 <b>/flows</b> - Analyze current flows (1h/24h)\n` +
         `📊 <b>/holdings</b> - Portfolio holdings analysis\n` +
         `🚨 <b>/large</b> - Large transaction monitor stats (ФАЗА 1)\n` +
-        `🔍 <b>/dedup</b> - Deduplication statistics\n` +
+        `🔍 <b>/dedup</b> - Simple deduplication statistics\n` +
         `❓ <b>/help</b> - This help message\n\n` +
         `🤖 <b>Bot Features:</b>\n` +
         `• Real-time DEX monitoring\n` +
@@ -454,10 +453,12 @@ class SmartMoneyBotRunner {
         `  - Enhanced Honeypot Detection\n` +
         `  - Advanced Creator Analysis\n` +
         `  - Jupiter Sell Simulation\n` +
-        `• GLOBAL Deduplication System\n\n` +
+        `• DUPLICATE BLOCKING System\n` +
+        `• Simple Deduplication\n\n` +
         `📡 <b>Data Sources:</b> QuickNode + Alchemy + Jupiter + Birdeye\n` +
         `🏷️ <b>Token Metadata:</b> Enhanced with prices & symbols\n` +
-        `🚫 <b>NOT USING:</b> Helius API (removed)\n\n` +
+        `🚫 <b>NOT USING:</b> Helius API (removed)\n` +
+        `🚫 <b>DUPLICATE PREVENTION:</b> SM wallet Large TX alerts blocked\n\n` +
         `⏰ <code>${new Date().toLocaleString()}</code>`
       );
 
@@ -469,7 +470,7 @@ class SmartMoneyBotRunner {
 
   async start(): Promise<void> {
     try {
-      this.logger.info('🚀 Starting Smart Money Bot (ФАЗА 1 + ГЛОБАЛЬНАЯ ДЕДУПЛИКАЦИЯ + TokenMetadataService)...');
+      this.logger.info('🚀 Starting Smart Money Bot (ФАЗА 1 + ПРОСТАЯ дедупликация + TokenMetadataService + DUPLICATE BLOCKING)...');
 
       await this.database.init();
       await this.smDatabase.init();
@@ -489,16 +490,16 @@ class SmartMoneyBotRunner {
 
       await this.setupQuickNodeWebhook();
 
-      // 🚨 MODULE B: START LARGE TRANSACTION MONITORING (ФАЗА 1)
+      // 🚨 MODULE B: START LARGE TRANSACTION MONITORING (ФАЗА 1 + DUPLICATE BLOCKING)
       await this.largeTransactionMonitor.startMonitoring();
-      this.logger.info('🚨 Large Transaction Monitor started with ФАЗА 1 enhancements ($2M+ threshold)');
+      this.logger.info('🚨 Large Transaction Monitor started with ФАЗА 1 enhancements + DUPLICATE BLOCKING ($2M+ threshold)');
 
       await this.sendStartupNotification();
 
       this.startPeriodicAnalysis();
       this.startDragonProcessing(); // 🆕 DRAGON PROCESSING
 
-      this.logger.info('✅ Smart Money Bot started successfully (ФАЗА 1 + ГЛОБАЛЬНАЯ ДЕДУПЛИКАЦИЯ + TokenMetadataService)!');
+      this.logger.info('✅ Smart Money Bot started successfully (ФАЗА 1 + ПРОСТАЯ дедупликация + TokenMetadataService + DUPLICATE BLOCKING)!');
 
     } catch (error) {
       this.logger.error('❌ Error starting Smart Money Bot:', error);
@@ -550,7 +551,7 @@ class SmartMoneyBotRunner {
       const multiProviderMetrics = this.multiProviderService.getMetrics();
       
       await this.telegramNotifier.sendCycleLog(
-        `🚀 <b>Smart Money Bot Started! (ФАЗА 1 ENHANCED)</b>\n\n` +
+        `🚀 <b>Smart Money Bot Started! (ФАЗА 1 ENHANCED + DUPLICATE BLOCKING)</b>\n\n` +
         `🔄 <b>Mode:</b> <code>${mode}</code>\n` +
         `👥 <b>Smart Wallets:</b> <code>${stats.total}</code>\n` +
         `  • 🔫 Snipers: <code>${stats.byCategory?.sniper || 0}</code>\n` +
@@ -567,7 +568,10 @@ class SmartMoneyBotRunner {
         `  • Advanced Creator Analysis\n` +
         `  • Jupiter Sell Simulation\n` +
         `  • Smart Money Genius Check\n\n` +
-        `🌍 <b>Global Deduplication:</b> <code>Active</code>\n` +
+        `🚫 <b>DUPLICATE BLOCKING:</b> <code>Active</code>\n` +
+        `  • Large TX alerts блокируются для SM wallets\n` +
+        `  • Простая дедупликация (5 мин окно)\n` +
+        `  • Никаких двойных уведомлений!\n\n` +
         `🔧 <b>Providers:</b> <code>${multiProviderMetrics.healthyProviders}/${multiProviderMetrics.totalProviders} healthy</code>\n` +
         `🏷️ <b>Token Metadata:</b> <code>Enhanced (Jupiter + Birdeye)</code>\n\n` +
         `🔥 <b>Features:</b>\n` +
@@ -579,10 +583,11 @@ class SmartMoneyBotRunner {
         `• Multi-Provider Failover\n` +
         `• Enhanced Token-2022 Filtering\n` +
         `• Advanced Creator Detection\n` +
-        `• Global Deduplication System\n` +
+        `• DUPLICATE BLOCKING System\n` +
         `• Enhanced Token Data\n\n` +
         `📡 <b>APIs:</b> QuickNode + Alchemy + Jupiter + Birdeye\n` +
-        `🚫 <b>NO HELIUS:</b> Removed for stability\n\n` +
+        `🚫 <b>NO HELIUS:</b> Removed for stability\n` +
+        `🚫 <b>NO DUPLICATES:</b> SM wallet Large TX alerts blocked\n\n` +
         `⏰ <code>${new Date().toLocaleString()}</code>`
       );
 
@@ -639,12 +644,13 @@ class SmartMoneyBotRunner {
             .join(', ');
 
           await this.telegramNotifier.sendCycleLog(
-            `🚨 <b>Large TX Summary (6h) - ФАЗА 1</b>\n\n` +
+            `🚨 <b>Large TX Summary (6h) - ФАЗА 1 + DUPLICATE BLOCKING</b>\n\n` +
             `💰 <b>Found:</b> <code>${largeStats.largeTransactionsFound}</code> transactions $2M+\n` +
             `✅ <b>Alerts:</b> <code>${largeStats.alertsSent}</code> passed ФАЗА 1 filters\n` +
-            `🚫 <b>Filtered:</b> <code>${largeStats.filtered}</code> scam/owner/exchange\n` +
+            `🚫 <b>Filtered:</b> <code>${largeStats.filtered}</code> (включая SM wallet блокировку)\n` +
             `📊 <b>Total Scanned:</b> <code>${largeStats.totalScanned}</code>\n\n` +
-            `🛡️ <b>Top Filters:</b> <code>${topFilters || 'None'}</code>\n\n` +
+            `🛡️ <b>Top Filters:</b> <code>${topFilters || 'None'}</code>\n` +
+            `🚫 <b>DUPLICATE BLOCKING:</b> <code>Active</code> (SM wallets blocked)\n\n` +
             `⏰ <code>${new Date().toLocaleString()}</code>`
           );
         }
@@ -655,7 +661,7 @@ class SmartMoneyBotRunner {
 
     this.intervalIds.push(largeTxSummaryInterval);
 
-    this.logger.info('🔄 Periodic analysis started: Flow (4h), Holdings (12h), Large TX Summary ФАЗА 1 (6h)');
+    this.logger.info('🔄 Periodic analysis started: Flow (4h), Holdings (12h), Large TX Summary ФАЗА 1 + DUPLICATE BLOCKING (6h)');
   }
 
   private startDragonProcessing(): void {
@@ -750,7 +756,7 @@ class SmartMoneyBotRunner {
 
       // 🚨 MODULE B: STOP LARGE TRANSACTION MONITORING (ФАЗА 1)
       await this.largeTransactionMonitor.stopMonitoring();
-      this.logger.info('🚨 Large Transaction Monitor stopped (ФАЗА 1)');
+      this.logger.info('🚨 Large Transaction Monitor stopped (ФАЗА 1 + DUPLICATE BLOCKING)');
 
       // 🚨 MODULE B: SHUTDOWN MULTI-PROVIDER SERVICE
       await this.multiProviderService.shutdown();
@@ -764,13 +770,14 @@ class SmartMoneyBotRunner {
         `🚨 Large TX Monitor (ФАЗА 1): <code>Stopped</code>\n` +
         `🔧 Multi-Provider: <code>Shutdown</code>\n` +
         `🏷️ Token Metadata: <code>Disconnected</code>\n` +
-        `🌍 Global Deduplication: <code>Stopped</code>\n` +
+        `🚫 DUPLICATE BLOCKING: <code>Stopped</code>\n` +
         `📊 All Services: <code>Gracefully Stopped</code>\n` +
-        `🚫 APIs Used: <code>QuickNode + Alchemy + Jupiter + Birdeye (NO HELIUS)</code>\n\n` +
+        `🚫 APIs Used: <code>QuickNode + Alchemy + Jupiter + Birdeye (NO HELIUS)</code>\n` +
+        `🚫 NO DUPLICATES: <code>SM wallet Large TX alerts were blocked</code>\n\n` +
         `⏰ <code>${new Date().toLocaleString()}</code>`
       );
 
-      this.logger.info('✅ Smart Money Bot stopped successfully (ФАЗА 1 + ГЛОБАЛЬНАЯ ДЕДУПЛИКАЦИЯ + TokenMetadataService)');
+      this.logger.info('✅ Smart Money Bot stopped successfully (ФАЗА 1 + ПРОСТАЯ дедупликация + TokenMetadataService + DUPLICATE BLOCKING)');
 
     } catch (error) {
       this.logger.error('❌ Error stopping Smart Money Bot:', error);

@@ -1,4 +1,4 @@
-// src/services/QuickNodeWebhookManager.ts - КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Фильтр старых транзакций + tokenPrice + все функции сохранены
+// src/services/QuickNodeWebhookManager.ts - УПРОЩЕННАЯ ВЕРСИЯ: убрана сложная дедупликация, простая защита
 import { Logger } from '../utils/Logger';
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
 import { TelegramNotifier } from './TelegramNotifier';
@@ -84,8 +84,8 @@ export class QuickNodeWebhookManager {
   private lastProcessedSignatures = new Map<string, string>();
   private monitoredWallets: SmartMoneyWallet[] = [];
   
-  // 🆕 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Дедупликация обработанных транзакций + фильтр времени
-  private processedSignatures = new Set<string>();
+  // 🆕 ПРОСТАЯ дедупликация обработанных транзакций + фильтр времени
+  private recentSignatures = new Set<string>();
   private lastCleanupTime = Date.now();
   private botStartTime = Date.now(); // 🆕 КРИТИЧНО: Время запуска бота для фильтрации старых транзакций
   
@@ -125,7 +125,7 @@ export class QuickNodeWebhookManager {
     this.initializeProviders();
     this.startLimitResetTimer();
     this.startCacheCleanup();
-    this.logger.info('🆕 QuickNode initialized with TRANSACTION AGE FILTER + TokenMetadataService');
+    this.logger.info('🆕 QuickNode initialized with SIMPLE deduplication + TokenMetadataService');
   }
 
   // 🆕 ИНИЦИАЛИЗАЦИЯ МУЛЬТИ-ПРОВАЙДЕР СИСТЕМЫ
@@ -233,6 +233,14 @@ export class QuickNodeWebhookManager {
           this.addressCache.delete(key);
         }
       }
+      
+      // 🆕 ПРОСТАЯ очистка дубликатов (старше 10 минут)
+      if (this.recentSignatures.size > 1000 && now - this.lastCleanupTime > 10 * 60 * 1000) {
+        this.recentSignatures.clear();
+        this.lastCleanupTime = now;
+        this.logger.debug('🧹 Simple signature cleanup performed');
+      }
+      
     }, 5 * 60 * 1000); // Очищаем каждые 5 минут
   }
 
@@ -524,7 +532,7 @@ export class QuickNodeWebhookManager {
     this.logger.info('⏹️ Polling mode stopped');
   }
 
-  // 🔥 УЛУЧШЕННЫЙ POLLING С ДЕДУПЛИКАЦИЕЙ
+  // 🔥 УЛУЧШЕННЫЙ POLLING С ПРОСТОЙ ДЕДУПЛИКАЦИЕЙ
   private async pollWalletsForTransactions(): Promise<void> {
     if (!this.isPollingActive) return;
 
@@ -610,26 +618,16 @@ export class QuickNodeWebhookManager {
     }
   }
 
-  // 🔧 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Улучшенная дедупликация + ФИЛЬТР СТАРЫХ ТРАНЗАКЦИЙ
+  // 🔧 УПРОЩЕННАЯ обработка транзакций с простой дедупликацией
   private async processWalletTransaction(signature: string, wallet: SmartMoneyWallet): Promise<void> {
     try {
-      // ✅ ДОБАВЛЕНО: Проверка на уже обработанные транзакции
-      if (this.processedSignatures.has(signature)) {
+      // ✅ ПРОСТАЯ проверка на уже обработанные транзакции
+      if (this.recentSignatures.has(signature)) {
         return; // Пропускаем уже обработанные транзакции
       }
 
       // Добавляем подпись в обработанные
-      this.processedSignatures.add(signature);
-
-      // Очищаем старые подписи каждые 10 минут
-      const now = Date.now();
-      if (now - this.lastCleanupTime > 600000) { // 10 минут
-        if (this.processedSignatures.size > 1000) {
-          this.processedSignatures.clear();
-          this.logger.info('🧹 Cleared processed signatures cache');
-        }
-        this.lastCleanupTime = now;
-      }
+      this.recentSignatures.add(signature);
 
       if (!this.canMakeRequest()) return;
 
@@ -637,7 +635,7 @@ export class QuickNodeWebhookManager {
       const transaction = await this.getTransactionDetails(signature);
       if (!transaction) return;
 
-      // 🔧 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Проверяем возраст транзакции
+      // 🔧 ПРОСТАЯ проверка возраста транзакции
       if (!this.isTransactionRecentAndValid(transaction)) {
         const transactionAge = this.getTransactionAge(transaction);
         this.logger.debug(`⏰ Skipping old/invalid transaction: ${signature.slice(0, 12)}... (age: ${transactionAge})`);
@@ -658,31 +656,20 @@ export class QuickNodeWebhookManager {
     }
   }
 
-  // 🔧 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: НОВЫЙ МЕТОД - Проверка актуальности и валидности транзакции
+  // 🔧 ПРОСТАЯ проверка актуальности транзакции
   private isTransactionRecentAndValid(transaction: any): boolean {
     if (!transaction || !transaction.blockTime) return false;
     
     const transactionTime = transaction.blockTime * 1000; // Convert to milliseconds
     const now = Date.now();
     
-    // 🚨 КРИТИЧНО: Фильтр старых транзакций относительно времени запуска бота
-    const timeSinceBotStart = now - this.botStartTime;
+    // 🚨 ПРОСТАЯ фильтрация: игнорируем транзакции старше 24 часов
     const timeSinceTransaction = now - transactionTime;
+    const maxAge = 24 * 60 * 60 * 1000; // 24 часа
     
-    // Если бот работает менее 5 минут, игнорируем транзакции старше 5 минут
-    if (timeSinceBotStart < 5 * 60 * 1000) {
-      const maxAgeForNewBot = 5 * 60 * 1000; // 5 минут
-      if (timeSinceTransaction > maxAgeForNewBot) {
-        this.logger.debug(`🚫 Bot startup filter: Transaction too old (${this.formatTimeDiff(timeSinceTransaction)} ago, bot running ${this.formatTimeDiff(timeSinceBotStart)})`);
-        return false;
-      }
-    } else {
-      // Если бот работает дольше, используем стандартный фильтр 24 часа
-      const maxAge = 24 * 60 * 60 * 1000; // 24 часа
-      if (timeSinceTransaction > maxAge) {
-        this.logger.debug(`🚫 Age filter: Transaction too old (${this.formatTimeDiff(timeSinceTransaction)} ago)`);
-        return false;
-      }
+    if (timeSinceTransaction > maxAge) {
+      this.logger.debug(`🚫 Transaction too old (${this.formatTimeDiff(timeSinceTransaction)} ago)`);
+      return false;
     }
     
     // Дополнительные проверки валидности
@@ -722,7 +709,7 @@ export class QuickNodeWebhookManager {
     return `${ageMinutes}m`;
   }
 
-  // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: extractSwapsFromTransaction с добавлением tokenPrice + улучшенной интеграцией TokenMetadataService
+  // 🔥 ИСПРАВЛЕНО: extractSwapsFromTransaction с добавлением tokenPrice + улучшенной интеграцией TokenMetadataService
   private async extractSwapsFromTransaction(transaction: any, wallet: SmartMoneyWallet): Promise<SmartMoneySwap[]> {
     const swaps: SmartMoneySwap[] = [];
 
@@ -906,7 +893,7 @@ export class QuickNodeWebhookManager {
       });
 
       // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Используем правильный метод TelegramNotifier
-      await this.telegramNotifier.sendSmartMoneySwapAlert(swap);
+      await this.telegramNotifier.sendSmartMoneySwapAlert(swap, 'QuickNodeWebhookManager');
 
     } catch (error) {
       this.logger.error('Error saving and notifying swap:', error);
@@ -965,14 +952,14 @@ export class QuickNodeWebhookManager {
     isActive: boolean;
     walletsMonitored: number;
     lastProcessedSignatures: number;
-    processedSignatures: number; // ✅ ДОБАВЛЕНО
+    recentSignatures: number; // ✅ ОБНОВЛЕНО
     botStartTime: string; // ✅ ДОБАВЛЕНО
   } {
     return {
       isActive: this.isPollingActive,
       walletsMonitored: this.monitoredWallets.length,
       lastProcessedSignatures: this.lastProcessedSignatures.size,
-      processedSignatures: this.processedSignatures.size, // ✅ ДОБАВЛЕНО
+      recentSignatures: this.recentSignatures.size, // ✅ ОБНОВЛЕНО
       botStartTime: new Date(this.botStartTime).toISOString() // ✅ ДОБАВЛЕНО
     };
   }

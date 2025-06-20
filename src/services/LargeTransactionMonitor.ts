@@ -1,11 +1,11 @@
-// src/services/LargeTransactionMonitor.ts - ФАЗА 1: КРИТИЧЕСКИЕ УЛУЧШЕНИЯ с Enhanced Honeypot Detection
+// src/services/LargeTransactionMonitor.ts - КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: БЛОКИРУЕМ Large TX alerts для Smart Money кошельков
 import { TelegramNotifier } from './TelegramNotifier';
 import { MultiProviderService } from './MultiProviderService';
 import { TokenMetadataService } from './TokenMetadataService';
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
 import { Logger } from '../utils/Logger';
 
-interface LargeTransaction {
+export interface LargeTransaction {
   signature: string;
   timestamp: Date;
   walletAddress: string;
@@ -200,7 +200,7 @@ export class LargeTransactionMonitor {
     this.logger = Logger.getInstance();
     
     this.startCacheCleanup();
-    this.logger.info('🚨 LargeTransactionMonitor initialized with ФАЗА 1 ENHANCED FILTERING (Token-2022 + Advanced Creator Detection)');
+    this.logger.info('🚨 LargeTransactionMonitor initialized with ФАЗА 1 ENHANCED FILTERING (Token-2022 + Advanced Creator Detection) + DUPLICATE BLOCKING');
   }
 
   /**
@@ -243,12 +243,13 @@ export class LargeTransactionMonitor {
         `  • Advanced Creator Analysis\n` +
         `  • Jupiter Sell Simulation\n` +
         `  • Smart Money Genius Check (-100 score)\n` +
-        `  • Exchange Internal Transfer Detection\n\n` +
+        `  • Exchange Internal Transfer Detection\n` +
+        `  • DUPLICATE BLOCKING for SM wallets\n\n` +
         `🎯 <b>Starting Slot:</b> <code>${this.lastProcessedSlot}</code>\n` +
         `⏰ <code>${new Date().toLocaleString()}</code>`
       );
 
-      this.logger.info('✅ Large transaction monitoring started successfully with ФАЗА 1 enhancements');
+      this.logger.info('✅ Large transaction monitoring started successfully with ФАЗА 1 enhancements + DUPLICATE BLOCKING');
 
     } catch (error) {
       this.logger.error('❌ Error starting large transaction monitoring:', error);
@@ -658,18 +659,19 @@ export class LargeTransactionMonitor {
   }
 
   /**
-   * 🛡️ ФАЗА 1: МЕГА-ФИЛЬТРАЦИЯ С УЛУЧШЕНИЯМИ
+   * 🛡️ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ФАЗА 1 МЕГА-ФИЛЬТРАЦИЯ С БЛОКИРОВКОЙ SMART MONEY ДУБЛЕЙ
    */
   private async applyPhase1MegaFilters(transaction: LargeTransaction): Promise<FilterResult> {
     let riskScore = 0;
     const reasons: string[] = [];
     
     try {
-      // 1. 🔥 ПЕРВАЯ ПРОВЕРКА: НАШ ГЕНИЙ ИЗ БАЗЫ
+      // 1. 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: НАШ ГЕНИЙ ИЗ БАЗЫ - БЛОКИРУЕМ LARGE TX ALERT
       const ourGenius = await this.smDatabase.getSmartWallet(transaction.walletAddress);
       if (ourGenius && ourGenius.isActive) {
-        transaction.filterReason = `✅ VERIFIED GENIUS (${ourGenius.category.toUpperCase()}, PnL: $${ourGenius.totalPnL.toLocaleString()})`;
-        return { shouldFilter: false, riskScore: -100 }; // Наш гений всегда проходит
+        transaction.filterReason = `✅ VERIFIED GENIUS - Will be handled by SM Monitor (${ourGenius.category.toUpperCase()}, PnL: $${ourGenius.totalPnL.toLocaleString()})`;
+        this.logger.info(`🚫 БЛОКИРУЕМ Large TX для Smart Money кошелька: ${transaction.walletAddress.slice(0,8)}... | Token: ${transaction.tokenSymbol} | Amount: $${transaction.amountUSD.toFixed(0)}`);
+        return { shouldFilter: true, riskScore: -100, reason: 'SM_WALLET_BLOCKED' }; // 🔥 БЛОКИРУЕМ отправку Large TX alert
       }
       
       // 2. 🔥 УРОВЕНЬ 1: КРИТИЧЕСКИЕ ПРОВЕРКИ (мгновенная блокировка при 100 баллов)
@@ -1824,6 +1826,6 @@ export class LargeTransactionMonitor {
     this.tokenAgeCache.clear();
     this.walletHistoryCache.clear();
     
-    this.logger.info('✅ LargeTransactionMonitor shutdown completed (ФАЗА 1 ENHANCED)');
+    this.logger.info('✅ LargeTransactionMonitor shutdown completed (ФАЗА 1 ENHANCED + DUPLICATE BLOCKING)');
   }
 }
