@@ -1,13 +1,13 @@
-// src/services/TokenMetadataService.ts - ENHANCED with FDV Support & API Efficiency
+// src/services/TokenMetadataService.ts - ENHANCED with FDV Support & API Efficiency + FIXED DECIMALS HANDLING
 import { Logger } from '../utils/Logger';
 
 interface TokenMetadata {
   symbol: string;
   name: string;
-  decimals: number;
+  decimals: number; // 🔥 КРИТИЧЕСКИ ВАЖНО для правильного расчета USD сумм
   logoURI?: string;
   address: string;
-  totalSupply?: number; // 🆕 ДОБАВЛЕНО для FDV
+  totalSupply?: number; // For FDV calculation
 }
 
 interface JupiterTokenData {
@@ -90,7 +90,7 @@ interface SolanaTokenListResponse {
   };
 }
 
-// 🆕 NEW: RPC Response interfaces
+// RPC Response interfaces
 interface TokenSupplyResponse {
   context: {
     slot: number;
@@ -103,7 +103,7 @@ interface TokenSupplyResponse {
   };
 }
 
-// 🆕 RPC JSON Response wrapper
+// RPC JSON Response wrapper
 interface RPCResponse {
   jsonrpc: string;
   id: number;
@@ -114,11 +114,11 @@ interface RPCResponse {
   };
 }
 
-// 🆕 NEW: Enhanced token info with FDV
+// Enhanced token info with FDV
 interface EnhancedTokenInfo {
   symbol: string;
   name: string;
-  decimals: number;
+  decimals: number; // 🔥 КРИТИЧЕСКИ ВАЖНО!
   price: number | null;
   totalSupply: number | null;
   fdv: number | null;  // Fully Diluted Valuation
@@ -128,65 +128,65 @@ interface EnhancedTokenInfo {
 export class TokenMetadataService {
   private logger: Logger;
   private cache = new Map<string, { metadata: TokenMetadata; timestamp: number }>();
-  private readonly CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 часа
+  private readonly CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours
   private jupiterTokenList: Map<string, JupiterTokenData> = new Map();
   private lastJupiterUpdate = 0;
-  private readonly JUPITER_UPDATE_INTERVAL = 60 * 60 * 1000; // 1 час
+  private readonly JUPITER_UPDATE_INTERVAL = 60 * 60 * 1000; // 1 hour
 
-  // 🆕 КЕШ ДЛЯ ЦЕН ТОКЕНОВ
+  // Price cache
   private priceCache = new Map<string, { price: number; timestamp: number }>();
-  private readonly PRICE_CACHE_DURATION = 5 * 60 * 1000; // 5 минут
+  private readonly PRICE_CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
 
-  // 🆕 КЕШ ДЛЯ SUPPLY ДАННЫХ (для FDV)
+  // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Supply cache для FDV расчетов с ОБЯЗАТЕЛЬНЫМИ decimals
   private supplyCache = new Map<string, { supply: number; decimals: number; timestamp: number }>();
-  private readonly SUPPLY_CACHE_DURATION = 60 * 60 * 1000; // 1 час (supply меняется редко)
+  private readonly SUPPLY_CACHE_DURATION = 60 * 60 * 1000; // 1 hour (supply меняется редко)
 
-  // 🆕 КЕШ ДЛЯ FDV РАСЧЕТОВ
+  // FDV cache
   private fdvCache = new Map<string, { fdv: number; timestamp: number }>();
-  private readonly FDV_CACHE_DURATION = 10 * 60 * 1000; // 10 минут
+  private readonly FDV_CACHE_DURATION = 10 * 60 * 1000; // 10 minutes
 
-  // Известные токены для быстрого доступа
+  // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Известные токены с ОБЯЗАТЕЛЬНЫМИ decimals
   private readonly WELL_KNOWN_TOKENS = new Map<string, TokenMetadata>([
     ['So11111111111111111111111111111111111111112', {
       symbol: 'SOL',
       name: 'Solana',
-      decimals: 9,
+      decimals: 9, // 🔥 КРИТИЧЕСКИ ВАЖНО: SOL имеет 9 decimals
       address: 'So11111111111111111111111111111111111111112',
       totalSupply: 588_000_000 // Approximate SOL supply
     }],
     ['EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', {
       symbol: 'USDC',
       name: 'USD Coin',
-      decimals: 6,
+      decimals: 6, // 🔥 КРИТИЧЕСКИ ВАЖНО: USDC имеет 6 decimals
       address: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
     }],
     ['Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', {
       symbol: 'USDT',
       name: 'Tether USD',
-      decimals: 6,
+      decimals: 6, // 🔥 КРИТИЧЕСКИ ВАЖНО: USDT имеет 6 decimals
       address: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'
     }],
     ['DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263', {
       symbol: 'BONK',
       name: 'Bonk',
-      decimals: 5,
+      decimals: 5, // 🔥 КРИТИЧЕСКИ ВАЖНО: BONK имеет 5 decimals
       address: 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263'
     }],
     ['7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs', {
       symbol: 'WIF',
       name: 'dogwifhat',
-      decimals: 6,
+      decimals: 6, // 🔥 КРИТИЧЕСКИ ВАЖНО: WIF имеет 6 decimals
       address: '7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs'
     }]
   ]);
 
   constructor() {
     this.logger = Logger.getInstance();
-    this.logger.info('🏷️ TokenMetadataService initialized (Jupiter + Birdeye APIs + FDV Support)');
+    this.logger.info('🏷️ TokenMetadataService initialized (🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ПРАВИЛЬНАЯ РАБОТА С DECIMALS)');
   }
 
   /**
-   * 🎯 ОСНОВНОЙ МЕТОД: Получение метаданных токена
+   * 🎯 ГЛАВНЫЙ МЕТОД: Получение метаданных токена с ОБЯЗАТЕЛЬНЫМИ decimals
    */
   async getTokenMetadata(mintAddress: string): Promise<TokenMetadata | null> {
     try {
@@ -197,7 +197,13 @@ export class TokenMetadataService {
       // 1. Проверяем кеш
       const cached = this.getCachedMetadata(mintAddress);
       if (cached) {
-        return cached;
+        // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Проверяем, что у кешированной версии есть decimals
+        if (typeof cached.decimals === 'number' && cached.decimals >= 0) {
+          return cached;
+        } else {
+          // Если нет decimals - удаляем из кеша и перезапрашиваем
+          this.cache.delete(mintAddress);
+        }
       }
 
       // 2. Проверяем известные токены
@@ -207,28 +213,37 @@ export class TokenMetadataService {
         return wellKnown;
       }
 
-      // 3. Получаем из Jupiter
+      // 3. 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Получаем decimals через RPC ПЕРВЫМ ДЕЛОМ
+      const rpcMetadata = await this.getTokenMetadataFromRPC(mintAddress);
+      if (rpcMetadata) {
+        // Обогащаем RPC данные через API
+        const enrichedMetadata = await this.enrichTokenMetadata(rpcMetadata);
+        this.setCachedMetadata(mintAddress, enrichedMetadata);
+        return enrichedMetadata;
+      }
+
+      // 4. Получаем из Jupiter
       const jupiterData = await this.getFromJupiter(mintAddress);
-      if (jupiterData) {
+      if (jupiterData && typeof jupiterData.decimals === 'number') {
         this.setCachedMetadata(mintAddress, jupiterData);
         return jupiterData;
       }
 
-      // 4. Получаем из Birdeye
+      // 5. Получаем из Birdeye
       const birdeyeData = await this.getFromBirdeye(mintAddress);
-      if (birdeyeData) {
+      if (birdeyeData && typeof birdeyeData.decimals === 'number') {
         this.setCachedMetadata(mintAddress, birdeyeData);
         return birdeyeData;
       }
 
-      // 5. Получаем из Solana Token List
+      // 6. Получаем из Solana Token List
       const tokenListData = await this.getFromSolanaTokenList(mintAddress);
-      if (tokenListData) {
+      if (tokenListData && typeof tokenListData.decimals === 'number') {
         this.setCachedMetadata(mintAddress, tokenListData);
         return tokenListData;
       }
 
-      // 6. Fallback: создаем базовые метаданные
+      // 7. Fallback: создаем базовые метаданные с decimals по умолчанию
       const fallbackMetadata = this.createFallbackMetadata(mintAddress);
       this.setCachedMetadata(mintAddress, fallbackMetadata);
       return fallbackMetadata;
@@ -236,14 +251,124 @@ export class TokenMetadataService {
     } catch (error) {
       this.logger.error(`Error getting token metadata for ${mintAddress}:`, error);
       
-      // При ошибке возвращаем fallback
+      // При ошибке возвращаем fallback с обязательными decimals
       const fallbackMetadata = this.createFallbackMetadata(mintAddress);
       return fallbackMetadata;
     }
   }
 
   /**
-   * 🆕 НОВЫЙ МЕТОД: Получение Total Supply токена через RPC
+   * 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Получение метаданных токена через RPC с decimals
+   */
+  private async getTokenMetadataFromRPC(mintAddress: string): Promise<TokenMetadata | null> {
+    try {
+      // Получаем через RPC API
+      const rpcUrl = process.env.QUICKNODE_HTTP_URL || process.env.ALCHEMY_HTTP_URL;
+      if (!rpcUrl) {
+        this.logger.debug('No RPC URL available for getTokenMetadataFromRPC');
+        return null;
+      }
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
+
+      const response = await fetch(rpcUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'getAccountInfo',
+          params: [
+            mintAddress,
+            {
+              encoding: 'jsonParsed',
+              commitment: 'confirmed'
+            }
+          ]
+        }),
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        const data = await response.json() as RPCResponse;
+        
+        if (data.result && data.result.value && data.result.value.data) {
+          const accountData = data.result.value.data;
+          
+          // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Безопасное извлечение decimals
+          if (accountData.parsed && accountData.parsed.info) {
+            const info = accountData.parsed.info;
+            const decimals = this.safeGetNumberValue(info.decimals, 9);
+            
+            // Проверяем, что decimals в разумных пределах (0-18)
+            if (decimals >= 0 && decimals <= 18) {
+              this.logger.debug(`📊 Got RPC metadata for ${mintAddress}: decimals=${decimals}`);
+              
+              return {
+                symbol: this.generateSymbolFromAddress(mintAddress),
+                name: `Token ${mintAddress.slice(0, 8)}...`,
+                decimals: decimals, // 🔥 КРИТИЧЕСКИ ВАЖНО!
+                address: mintAddress,
+                totalSupply: this.safeGetNumberValue(info.supply, undefined)
+              };
+            }
+          }
+        }
+      }
+
+      return null;
+
+    } catch (error) {
+      this.logger.debug(`Error getting RPC metadata for ${mintAddress}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Обогащение базовых метаданных через API
+   */
+  private async enrichTokenMetadata(baseMetadata: TokenMetadata): Promise<TokenMetadata> {
+    try {
+      // Пытаемся получить более полную информацию из Jupiter
+      const jupiterData = await this.getFromJupiter(baseMetadata.address);
+      if (jupiterData && jupiterData.symbol && jupiterData.symbol !== this.generateSymbolFromAddress(baseMetadata.address)) {
+        return {
+          ...baseMetadata,
+          symbol: jupiterData.symbol,
+          name: jupiterData.name,
+          logoURI: jupiterData.logoURI,
+          decimals: baseMetadata.decimals // 🔥 СОХРАНЯЕМ decimals из RPC!
+        };
+      }
+
+      // Пытаемся получить из Birdeye
+      const birdeyeData = await this.getFromBirdeye(baseMetadata.address);
+      if (birdeyeData && birdeyeData.symbol && birdeyeData.symbol !== this.generateSymbolFromAddress(baseMetadata.address)) {
+        return {
+          ...baseMetadata,
+          symbol: birdeyeData.symbol,
+          name: birdeyeData.name,
+          logoURI: birdeyeData.logoURI,
+          decimals: baseMetadata.decimals // 🔥 СОХРАНЯЕМ decimals из RPC!
+        };
+      }
+
+      // Если обогащение не удалось - возвращаем базовые метаданные
+      return baseMetadata;
+
+    } catch (error) {
+      this.logger.debug('Error enriching token metadata:', error);
+      return baseMetadata;
+    }
+  }
+
+  /**
+   * 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Получение Total Supply токена через RPC с decimals
    */
   async getTokenSupply(mintAddress: string): Promise<number | null> {
     try {
@@ -262,16 +387,16 @@ export class TokenMetadataService {
       if (wellKnown?.totalSupply) {
         this.supplyCache.set(mintAddress, {
           supply: wellKnown.totalSupply,
-          decimals: wellKnown.decimals,
+          decimals: wellKnown.decimals, // 🔥 СОХРАНЯЕМ decimals
           timestamp: Date.now()
         });
         return wellKnown.totalSupply;
       }
 
-      // Получаем через RPC API (используем QuickNode/Alchemy через environment)
+      // Получаем через RPC API
       const rpcUrl = process.env.QUICKNODE_HTTP_URL || process.env.ALCHEMY_HTTP_URL;
       if (!rpcUrl) {
-        this.logger.warn('No RPC URL available for getTokenSupply');
+        this.logger.debug('No RPC URL available for getTokenSupply');
         return null;
       }
 
@@ -298,18 +423,19 @@ export class TokenMetadataService {
         const data = await response.json() as RPCResponse;
         
         if (data.result && data.result.value) {
+          // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Используем uiAmount (уже с учетом decimals)
           const supply = parseFloat(data.result.value.uiAmountString || data.result.value.uiAmount);
           const decimals = data.result.value.decimals;
 
-          if (supply > 0) {
-            // Кешируем результат
+          if (supply > 0 && typeof decimals === 'number') {
+            // Кешируем результат с decimals
             this.supplyCache.set(mintAddress, {
               supply,
-              decimals,
+              decimals, // 🔥 КРИТИЧЕСКИ ВАЖНО сохранить decimals
               timestamp: Date.now()
             });
             
-            this.logger.debug(`📊 Got token supply for ${mintAddress}: ${supply.toLocaleString()}`);
+            this.logger.debug(`📊 Got token supply for ${mintAddress}: ${supply.toLocaleString()} (decimals: ${decimals})`);
             return supply;
           }
         }
@@ -324,7 +450,7 @@ export class TokenMetadataService {
   }
 
   /**
-   * 🆕 ГЛАВНЫЙ МЕТОД: Получение FDV (Fully Diluted Valuation)
+   * 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Получение FDV (Fully Diluted Valuation) с правильными decimals
    */
   async getTokenFDV(mintAddress: string): Promise<number | null> {
     try {
@@ -345,6 +471,7 @@ export class TokenMetadataService {
       ]);
 
       if (price && supply && price > 0 && supply > 0) {
+        // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: supply уже учитывает decimals (uiAmount)
         const fdv = price * supply;
         
         // Кешируем результат
@@ -366,7 +493,7 @@ export class TokenMetadataService {
   }
 
   /**
-   * 🆕 ПАКЕТНОЕ ПОЛУЧЕНИЕ FDV для нескольких токенов
+   * 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Пакетное получение FDV для нескольких токенов
    */
   async getBatchTokenFDV(mintAddresses: string[]): Promise<Map<string, number | null>> {
     const results = new Map<string, number | null>();
@@ -393,7 +520,7 @@ export class TokenMetadataService {
   }
 
   /**
-   * 🆕 РАСШИРЕННАЯ информация о токене (metadata + price + supply + FDV)
+   * 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Расширенная информация о токене с ОБЯЗАТЕЛЬНЫМИ decimals
    */
   async getEnhancedTokenInfo(mintAddress: string): Promise<EnhancedTokenInfo | null> {
     try {
@@ -412,7 +539,13 @@ export class TokenMetadataService {
         return null;
       }
 
-      // Расчет FDV
+      // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Проверяем, что decimals есть и валидны
+      if (typeof metadata.decimals !== 'number' || metadata.decimals < 0) {
+        this.logger.warn(`⚠️ Invalid decimals for token ${mintAddress}: ${metadata.decimals}`);
+        metadata.decimals = 9; // Fallback
+      }
+
+      // Расчет FDV (supply уже учитывает decimals)
       let fdv: number | null = null;
       if (price && supply && price > 0 && supply > 0) {
         fdv = price * supply;
@@ -430,7 +563,7 @@ export class TokenMetadataService {
       return {
         symbol: metadata.symbol,
         name: metadata.name,
-        decimals: metadata.decimals,
+        decimals: metadata.decimals, // 🔥 КРИТИЧЕСКИ ВАЖНО!
         price,
         totalSupply: supply,
         fdv,
@@ -444,7 +577,7 @@ export class TokenMetadataService {
   }
 
   /**
-   * 🔍 ПОЛУЧЕНИЕ ИЗ JUPITER API
+   * 🔍 ПОЛУЧЕНИЕ ИЗ JUPITER API с правильными decimals
    */
   private async getFromJupiter(mintAddress: string): Promise<TokenMetadata | null> {
     try {
@@ -454,42 +587,18 @@ export class TokenMetadataService {
       // Ищем в кешированном списке
       const jupiterToken = this.jupiterTokenList.get(mintAddress);
       if (jupiterToken) {
+        // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Проверяем decimals
+        const decimals = typeof jupiterToken.decimals === 'number' && jupiterToken.decimals >= 0 
+          ? jupiterToken.decimals 
+          : 9; // Fallback
+
         return {
           symbol: jupiterToken.symbol,
           name: jupiterToken.name,
-          decimals: jupiterToken.decimals,
+          decimals: decimals, // 🔥 КРИТИЧЕСКИ ВАЖНО!
           logoURI: jupiterToken.logoURI,
           address: mintAddress
         };
-      }
-
-      // Пытаемся получить через Quote API (может дать базовую информацию)
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
-
-      const response = await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${mintAddress}&outputMint=So11111111111111111111111111111111111111112&amount=1000000`, {
-        method: 'GET',
-        headers: { 
-          'Content-Type': 'application/json',
-          'User-Agent': 'Smart-Money-Bot/1.0'
-        },
-        signal: controller.signal
-      });
-
-      clearTimeout(timeoutId);
-
-      if (response.ok) {
-        const data = await response.json();
-        
-        // Type guard для проверки структуры ответа
-        if (this.isJupiterQuoteResponse(data) && data.inputMint === mintAddress) {
-          return {
-            symbol: this.generateSymbolFromAddress(mintAddress),
-            name: `Token ${mintAddress.slice(0, 8)}...`,
-            decimals: 9, // Предполагаем стандартные 9 decimals
-            address: mintAddress
-          };
-        }
       }
 
       return null;
@@ -501,7 +610,7 @@ export class TokenMetadataService {
   }
 
   /**
-   * 🔍 ПОЛУЧЕНИЕ ИЗ BIRDEYE API
+   * 🔍 ПОЛУЧЕНИЕ ИЗ BIRDEYE API с правильными decimals
    */
   private async getFromBirdeye(mintAddress: string): Promise<TokenMetadata | null> {
     try {
@@ -526,10 +635,15 @@ export class TokenMetadataService {
           const token = data.data.tokens.find((t: BirdeyeTokenData) => t.address === mintAddress);
           
           if (token) {
+            // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Проверяем decimals
+            const decimals = typeof token.decimals === 'number' && token.decimals >= 0 
+              ? token.decimals 
+              : 9; // Fallback
+
             return {
               symbol: token.symbol || this.generateSymbolFromAddress(mintAddress),
               name: token.name || `Token ${mintAddress.slice(0, 8)}...`,
-              decimals: token.decimals || 9,
+              decimals: decimals, // 🔥 КРИТИЧЕСКИ ВАЖНО!
               logoURI: token.logoURI,
               address: mintAddress
             };
@@ -546,44 +660,7 @@ export class TokenMetadataService {
   }
 
   /**
-   * 🆕 ПОЛУЧЕНИЕ MARKET DATA из Birdeye
-   */
-  private async getBirdeyeMarketData(mintAddress: string): Promise<{ marketCap?: number } | null> {
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
-
-      const response = await fetch(`https://public-api.birdeye.so/public/price?address=${mintAddress}`, {
-        method: 'GET',
-        headers: { 
-          'Content-Type': 'application/json',
-          'User-Agent': 'Smart-Money-Bot/1.0'
-        },
-        signal: controller.signal
-      });
-
-      clearTimeout(timeoutId);
-
-      if (response.ok) {
-        const data = await response.json();
-        
-        if (this.isBirdeyePriceResponse(data)) {
-          return {
-            marketCap: data.data.marketCap
-          };
-        }
-      }
-
-      return null;
-
-    } catch (error) {
-      this.logger.debug(`Birdeye market data error for ${mintAddress}:`, error);
-      return null;
-    }
-  }
-
-  /**
-   * 🔍 ПОЛУЧЕНИЕ ИЗ SOLANA TOKEN LIST
+   * 🔍 ПОЛУЧЕНИЕ ИЗ SOLANA TOKEN LIST с правильными decimals
    */
   private async getFromSolanaTokenList(mintAddress: string): Promise<TokenMetadata | null> {
     try {
@@ -608,10 +685,15 @@ export class TokenMetadataService {
           const token = data.tokens.find((t: SolanaTokenListEntry) => t.address === mintAddress);
           
           if (token) {
+            // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Проверяем decimals
+            const decimals = typeof token.decimals === 'number' && token.decimals >= 0 
+              ? token.decimals 
+              : 9; // Fallback
+
             return {
               symbol: token.symbol,
               name: token.name,
-              decimals: token.decimals,
+              decimals: decimals, // 🔥 КРИТИЧЕСКИ ВАЖНО!
               logoURI: token.logoURI,
               address: mintAddress
             };
@@ -628,7 +710,7 @@ export class TokenMetadataService {
   }
 
   /**
-   * 🔄 ОБНОВЛЕНИЕ СПИСКА ТОКЕНОВ JUPITER
+   * 🔄 ОБНОВЛЕНИЕ СПИСКА ТОКЕНОВ JUPITER с проверкой decimals
    */
   private async updateJupiterTokenList(): Promise<void> {
     try {
@@ -665,15 +747,21 @@ export class TokenMetadataService {
           // Очищаем старый список
           this.jupiterTokenList.clear();
           
-          // Заполняем новыми данными
+          // Заполняем новыми данными с проверкой decimals
           for (const token of tokens) {
             if (this.isJupiterTokenData(token)) {
-              this.jupiterTokenList.set(token.address, token);
+              // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Проверяем валидность decimals
+              if (typeof token.decimals === 'number' && token.decimals >= 0 && token.decimals <= 18) {
+                this.jupiterTokenList.set(token.address, token);
+              } else {
+                // Логируем токены с невалидными decimals
+                this.logger.debug(`⚠️ Jupiter token ${token.address} has invalid decimals: ${token.decimals}`);
+              }
             }
           }
           
           this.lastJupiterUpdate = now;
-          this.logger.info(`✅ Updated Jupiter token list: ${tokens.length} tokens`);
+          this.logger.info(`✅ Updated Jupiter token list: ${this.jupiterTokenList.size} valid tokens`);
         } else {
           this.logger.warn('⚠️ Jupiter API returned unexpected data format');
         }
@@ -687,7 +775,7 @@ export class TokenMetadataService {
   }
 
   /**
-   * 💰 ПОЛУЧЕНИЕ ЦЕНЫ ТОКЕНА (существующий метод)
+   * 💰 ПОЛУЧЕНИЕ ЦЕНЫ ТОКЕНА (существующий метод без изменений)
    */
   async getTokenPrice(tokenAddress: string): Promise<number | null> {
     try {
@@ -743,7 +831,7 @@ export class TokenMetadataService {
   }
 
   /**
-   * 🎯 ПАКЕТНОЕ ПОЛУЧЕНИЕ ЦЕН ТОКЕНОВ (существующий метод)
+   * 🎯 ПАКЕТНОЕ ПОЛУЧЕНИЕ ЦЕН ТОКЕНОВ (существующий метод без изменений)
    */
   async getBatchTokenPrices(tokenAddresses: string[]): Promise<Map<string, number | null>> {
     const results = new Map<string, number | null>();
@@ -767,6 +855,43 @@ export class TokenMetadataService {
     }
     
     return results;
+  }
+
+  /**
+   * 🔍 ПОЛУЧЕНИЕ MARKET DATA из Birdeye
+   */
+  private async getBirdeyeMarketData(mintAddress: string): Promise<{ marketCap?: number } | null> {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+      const response = await fetch(`https://public-api.birdeye.so/public/price?address=${mintAddress}`, {
+        method: 'GET',
+        headers: { 
+          'Content-Type': 'application/json',
+          'User-Agent': 'Smart-Money-Bot/1.0'
+        },
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        const data = await response.json();
+        
+        if (this.isBirdeyePriceResponse(data)) {
+          return {
+            marketCap: data.data.marketCap
+          };
+        }
+      }
+
+      return null;
+
+    } catch (error) {
+      this.logger.debug(`Birdeye market data error for ${mintAddress}:`, error);
+      return null;
+    }
   }
 
   // ========== ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ==========
@@ -799,13 +924,13 @@ export class TokenMetadataService {
   }
 
   /**
-   * 🆘 СОЗДАНИЕ FALLBACK МЕТАДАННЫХ
+   * 🆘 СОЗДАНИЕ FALLBACK МЕТАДАННЫХ с обязательными decimals
    */
   private createFallbackMetadata(mintAddress: string): TokenMetadata {
     return {
       symbol: this.generateSymbolFromAddress(mintAddress),
       name: `Token ${mintAddress.slice(0, 8)}...`,
-      decimals: 9, // Стандартное значение для Solana
+      decimals: 9, // 🔥 КРИТИЧЕСКИ ВАЖНО: Стандартное значение для Solana
       address: mintAddress
     };
   }
@@ -823,55 +948,29 @@ export class TokenMetadataService {
   }
 
   /**
+   * 🔢 БЕЗОПАСНОЕ ПОЛУЧЕНИЕ ЧИСЛОВОГО ЗНАЧЕНИЯ
+   */
+  private safeGetNumberValue(value: any, defaultValue: number = 0): number {
+    if (typeof value === 'number' && !isNaN(value) && isFinite(value)) {
+      return value;
+    }
+    if (typeof value === 'string') {
+      const parsed = parseFloat(value);
+      if (!isNaN(parsed) && isFinite(parsed)) {
+        return parsed;
+      }
+    }
+    return defaultValue;
+  }
+
+  /**
    * ⏱️ УТИЛИТА ДЛЯ ЗАДЕРЖКИ
    */
   private sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  /**
-   * 📊 ПОЛУЧЕНИЕ РАСШИРЕННОЙ СТАТИСТИКИ КЕША
-   */
-  getCacheStats(): {
-    totalCached: number;
-    jupiterTokens: number;
-    priceCacheSize: number;
-    supplyCacheSize: number;
-    fdvCacheSize: number;
-    cacheHitRate: number;
-    lastJupiterUpdate: Date | null;
-  } {
-    return {
-      totalCached: this.cache.size,
-      jupiterTokens: this.jupiterTokenList.size,
-      priceCacheSize: this.priceCache.size,
-      supplyCacheSize: this.supplyCache.size,
-      fdvCacheSize: this.fdvCache.size,
-      cacheHitRate: 0, // Можно добавить отслеживание hit rate
-      lastJupiterUpdate: this.lastJupiterUpdate ? new Date(this.lastJupiterUpdate) : null
-    };
-  }
-
-  /**
-   * 🧹 РАСШИРЕННАЯ ОЧИСТКА КЕША
-   */
-  clearCache(): void {
-    this.cache.clear();
-    this.priceCache.clear();
-    this.supplyCache.clear();
-    this.fdvCache.clear();
-    this.logger.info('🧹 All token metadata caches cleared');
-  }
-
-  /**
-   * 🔄 ПРИНУДИТЕЛЬНОЕ ОБНОВЛЕНИЕ JUPITER СПИСКА
-   */
-  async forceUpdateJupiterList(): Promise<void> {
-    this.lastJupiterUpdate = 0; // Сбрасываем время последнего обновления
-    await this.updateJupiterTokenList();
-  }
-
-  // ========== СУЩЕСТВУЮЩИЕ МЕТОДЫ (сохранены все) ==========
+  // ========== ОСТАЛЬНЫЕ СУЩЕСТВУЮЩИЕ МЕТОДЫ ==========
 
   /**
    * 🎯 ПАКЕТНОЕ ПОЛУЧЕНИЕ МЕТАДАННЫХ
@@ -924,7 +1023,7 @@ export class TokenMetadataService {
         return {
           symbol: token.symbol,
           name: token.name,
-          decimals: token.decimals,
+          decimals: token.decimals, // 🔥 КРИТИЧЕСКИ ВАЖНО!
           logoURI: token.logoURI,
           address: token.address
         };
@@ -955,7 +1054,7 @@ export class TokenMetadataService {
   }
 
   /**
-   * 📈 ПОЛУЧЕНИЕ МЕТАДАННЫХ С ЦЕНОЙ (обновлен)
+   * 📈 ПОЛУЧЕНИЕ МЕТАДАННЫХ С ЦЕНОЙ
    */
   async getTokenMetadataWithPrice(mintAddress: string): Promise<TokenMetadata & { price?: number; marketCap?: number } | null> {
     try {
@@ -998,6 +1097,48 @@ export class TokenMetadataService {
       const basicMetadata = await this.getTokenMetadata(mintAddress);
       return basicMetadata;
     }
+  }
+
+  /**
+   * 📊 ПОЛУЧЕНИЕ РАСШИРЕННОЙ СТАТИСТИКИ КЕША
+   */
+  getCacheStats(): {
+    totalCached: number;
+    jupiterTokens: number;
+    priceCacheSize: number;
+    supplyCacheSize: number;
+    fdvCacheSize: number;
+    cacheHitRate: number;
+    lastJupiterUpdate: Date | null;
+  } {
+    return {
+      totalCached: this.cache.size,
+      jupiterTokens: this.jupiterTokenList.size,
+      priceCacheSize: this.priceCache.size,
+      supplyCacheSize: this.supplyCache.size,
+      fdvCacheSize: this.fdvCache.size,
+      cacheHitRate: 0, // Можно добавить отслеживание hit rate
+      lastJupiterUpdate: this.lastJupiterUpdate ? new Date(this.lastJupiterUpdate) : null
+    };
+  }
+
+  /**
+   * 🧹 РАСШИРЕННАЯ ОЧИСТКА КЕША
+   */
+  clearCache(): void {
+    this.cache.clear();
+    this.priceCache.clear();
+    this.supplyCache.clear();
+    this.fdvCache.clear();
+    this.logger.info('🧹 All token metadata caches cleared');
+  }
+
+  /**
+   * 🔄 ПРИНУДИТЕЛЬНОЕ ОБНОВЛЕНИЕ JUPITER СПИСКА
+   */
+  async forceUpdateJupiterList(): Promise<void> {
+    this.lastJupiterUpdate = 0; // Сбрасываем время последнего обновления
+    await this.updateJupiterTokenList();
   }
 
   // Type Guards для проверки структуры API ответов

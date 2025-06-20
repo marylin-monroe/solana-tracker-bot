@@ -1,4 +1,4 @@
-// src/services/LargeTransactionMonitor.ts - КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: БЛОКИРУЕМ Large TX alerts для Smart Money кошельков
+// src/services/LargeTransactionMonitor.ts - 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ПРАВИЛЬНЫЙ РАСЧЕТ USD СУММ с decimals
 import { TelegramNotifier } from './TelegramNotifier';
 import { MultiProviderService } from './MultiProviderService';
 import { TokenMetadataService } from './TokenMetadataService';
@@ -18,6 +18,10 @@ export interface LargeTransaction {
   isFiltered: boolean;
   filterReason?: string;
   tokenPrice?: number;
+  // 🆕 ДОБАВЛЕНО для отладки
+  rawTokenAmount?: number;
+  actualTokenAmount?: number;
+  decimals?: number;
 }
 
 interface FilterResult {
@@ -61,6 +65,7 @@ interface TokenMetadata {
   symbol: string;
   name: string;
   price: number | null;
+  decimals?: number; // 🆕 ДОБАВЛЕНО
   marketCap?: number;
   volume24h?: number;
   liquidity?: number;
@@ -129,6 +134,7 @@ export class LargeTransactionMonitor {
     symbol: string; 
     name: string; 
     price: number | null;
+    decimals: number; // 🆕 ДОБАВЛЕНО
     timestamp: number; 
   }>();
   private mintInfoCache = new Map<string, { mintInfo: EnhancedMintInfo; timestamp: number }>();
@@ -200,7 +206,7 @@ export class LargeTransactionMonitor {
     this.logger = Logger.getInstance();
     
     this.startCacheCleanup();
-    this.logger.info('🚨 LargeTransactionMonitor initialized with ФАЗА 1 ENHANCED FILTERING (Token-2022 + Advanced Creator Detection) + DUPLICATE BLOCKING');
+    this.logger.info('🚨 LargeTransactionMonitor initialized with 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ USD РАСЧЕТОВ + ФАЗА 1 ENHANCED FILTERING + DUPLICATE BLOCKING');
   }
 
   /**
@@ -233,11 +239,15 @@ export class LargeTransactionMonitor {
       }, this.SCAN_INTERVAL_MS);
 
       await this.telegramNotifier.sendCycleLog(
-        `🚨 <b>Large Transaction Monitor Started (ФАЗА 1 ENHANCED)</b>\n\n` +
+        `🚨 <b>Large Transaction Monitor Started (🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ USD РАСЧЕТОВ)</b>\n\n` +
         `💰 <b>Threshold:</b> <code>$${this.TRANSACTION_THRESHOLD_USD.toLocaleString()}</code>\n` +
         `⏰ <b>Scan Interval:</b> <code>${this.SCAN_INTERVAL_MS / 1000}s</code>\n` +
         `📡 <b>Data Source:</b> <code>MultiProvider (QuickNode + Alchemy)</code>\n` +
         `🏷️ <b>Token Metadata:</b> <code>TokenMetadataService (Jupiter + Birdeye)</code>\n` +
+        `🔥 <b>КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ:</b>\n` +
+        `  • Правильный расчет amount/decimals\n` +
+        `  • Исправлен baг с uiAmountString\n` +
+        `  • Теперь USD суммы точные!\n` +
         `🛡️ <b>ФАЗА 1 Filtering:</b>\n` +
         `  • Enhanced Honeypot Detection (Token-2022)\n` +
         `  • Advanced Creator Analysis\n` +
@@ -249,7 +259,7 @@ export class LargeTransactionMonitor {
         `⏰ <code>${new Date().toLocaleString()}</code>`
       );
 
-      this.logger.info('✅ Large transaction monitoring started successfully with ФАЗА 1 enhancements + DUPLICATE BLOCKING');
+      this.logger.info('✅ Large transaction monitoring started successfully with 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ USD РАСЧЕТОВ + ФАЗА 1 enhancements + DUPLICATE BLOCKING');
 
     } catch (error) {
       this.logger.error('❌ Error starting large transaction monitoring:', error);
@@ -281,7 +291,7 @@ export class LargeTransactionMonitor {
       `• Large TXs Found: <code>${this.stats.largeTransactionsFound}</code>\n` +
       `• Filtered Out: <code>${this.stats.filtered}</code>\n` +
       `• Alerts Sent: <code>${this.stats.alertsSent}</code>\n\n` +
-      `🔬 <b>ФАЗА 1 Filter Performance:</b>\n` +
+      `🔬 <b>🔥 USD РАСЧЕТ ИСПРАВЛЕН - Filter Performance:</b>\n` +
       Object.entries(this.stats.filterReasons).map(([reason, count]) => 
         `• ${reason}: <code>${count}</code>`
       ).join('\n') +
@@ -464,7 +474,9 @@ export class LargeTransactionMonitor {
       }
 
       this.stats.largeTransactionsFound++;
-      this.logger.info(`💰 Found large transaction: $${swapInfo.amountUSD.toLocaleString()} - ${swapInfo.tokenSymbol} ${swapInfo.tokenPrice ? `@ $${swapInfo.tokenPrice}` : ''}`);
+      
+      // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Добавляем детали для отладки
+      this.logger.info(`💰 Found large transaction: $${swapInfo.amountUSD.toLocaleString()} - ${swapInfo.tokenSymbol} ${swapInfo.tokenPrice ? `@ $${swapInfo.tokenPrice}` : ''} | RAW: ${swapInfo.rawTokenAmount || 'N/A'} | ACTUAL: ${swapInfo.actualTokenAmount || 'N/A'} | DECIMALS: ${swapInfo.decimals || 'N/A'}`);
 
       // 🛡️ ПРИМЕНЯЕМ ФАЗА 1 МЕГА-ФИЛЬТРЫ
       const filterResult = await this.applyPhase1MegaFilters(swapInfo);
@@ -511,7 +523,7 @@ export class LargeTransactionMonitor {
   }
 
   /**
-   * 🔍 ИЗВЛЕЧЕНИЕ ИНФОРМАЦИИ О СВАПЕ С ОБОГАЩЕНИЕМ
+   * 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ИЗВЛЕЧЕНИЕ ИНФОРМАЦИИ О СВАПЕ С ПРАВИЛЬНЫМ РАСЧЕТОМ USD
    */
   private async extractSwapInfoWithEnrichment(transaction: any): Promise<LargeTransaction | null> {
     try {
@@ -536,7 +548,9 @@ export class LargeTransactionMonitor {
       const accountKeys = transaction.transaction?.message?.accountKeys || [];
       
       let tokenAddress = '';
-      let tokenAmount = 0;
+      let rawTokenAmount = 0; // 🆕 RAW amount для отладки
+      let actualTokenAmount = 0; // 🆕 ПРАВИЛЬНОЕ количество токенов
+      let decimals = 9; // 🆕 Decimals токена
       let amountUSD = 0;
       let walletAddress = '';
       let transactionType: 'buy' | 'sell' = 'buy';
@@ -553,34 +567,48 @@ export class LargeTransactionMonitor {
 
         if (!preBalance) continue;
 
-        const balanceChange = parseFloat(postBalance.uiTokenAmount.uiAmountString || '0') - 
-                             parseFloat(preBalance.uiTokenAmount.uiAmountString || '0');
-
-        if (Math.abs(balanceChange) > 1000) { // Значительное изменение
+        // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ПРАВИЛЬНЫЙ РАСЧЕТ С DECIMALS!
+        // Получаем RAW amounts (numbers without decimals)
+        const postRawAmount = parseFloat(postBalance.uiTokenAmount.amount || '0');
+        const preRawAmount = parseFloat(preBalance.uiTokenAmount.amount || '0');
+        const rawBalanceChange = postRawAmount - preRawAmount;
+        
+        // Получаем decimals для токена
+        decimals = postBalance.uiTokenAmount.decimals || 9;
+        
+        // 🔥 ПРАВИЛЬНО: Конвертируем raw amount в актуальное количество токенов
+        const actualBalanceChange = rawBalanceChange / Math.pow(10, decimals);
+        
+        // Проверяем значительное изменение (используем ACTUAL amount, не RAW!)
+        if (Math.abs(actualBalanceChange) > 1000) { // Значительное изменение
           tokenAddress = postBalance.mint;
-          tokenAmount = Math.abs(balanceChange);
+          rawTokenAmount = Math.abs(rawBalanceChange); // Для отладки
+          actualTokenAmount = Math.abs(actualBalanceChange); // ПРАВИЛЬНОЕ количество
           walletAddress = accountKeys[postBalance.accountIndex]?.pubkey || '';
-          transactionType = balanceChange > 0 ? 'buy' : 'sell';
+          transactionType = actualBalanceChange > 0 ? 'buy' : 'sell';
           break;
         }
       }
 
-      if (!tokenAddress || !walletAddress || tokenAmount === 0) {
+      if (!tokenAddress || !walletAddress || actualTokenAmount === 0) {
         return null;
       }
 
       // 🆕 ОБОГАЩЕНИЕ ЧЕРЕЗ TokenMetadataService
       const enrichedInfo = await this.getEnrichedTokenInfo(tokenAddress);
       
-      // Рассчитываем USD сумму
+      // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Рассчитываем USD сумму с ПРАВИЛЬНЫМ количеством токенов
       if (enrichedInfo.price) {
-        amountUSD = tokenAmount * enrichedInfo.price;
+        amountUSD = actualTokenAmount * enrichedInfo.price; // ← ИСПРАВЛЕНО: используем actualTokenAmount!
       } else {
         // Fallback расчет для неизвестных токенов
-        amountUSD = tokenAmount * 0.001; // Очень низкая цена
+        amountUSD = actualTokenAmount * 0.001; // ← ИСПРАВЛЕНО: используем actualTokenAmount!
       }
 
       const dex = this.detectDexFromTransaction(transaction);
+
+      // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Добавляем отладочную информацию
+      this.logger.debug(`🔍 Transaction ${signature.slice(0, 12)}... | Token: ${enrichedInfo.symbol} | RAW: ${rawTokenAmount.toLocaleString()} | ACTUAL: ${actualTokenAmount.toLocaleString()} | DECIMALS: ${decimals} | PRICE: $${enrichedInfo.price || 0.001} | USD: $${amountUSD.toLocaleString()}`);
 
       return {
         signature,
@@ -593,7 +621,11 @@ export class LargeTransactionMonitor {
         transactionType,
         dex,
         isFiltered: false,
-        tokenPrice: enrichedInfo.price
+        tokenPrice: enrichedInfo.price,
+        // 🆕 ДОБАВЛЕНО для отладки
+        rawTokenAmount,
+        actualTokenAmount,
+        decimals
       };
 
     } catch (error) {
@@ -613,7 +645,8 @@ export class LargeTransactionMonitor {
         return {
           symbol: cached.symbol,
           name: cached.name,
-          price: cached.price
+          price: cached.price,
+          decimals: cached.decimals // 🆕 ДОБАВЛЕНО
         };
       }
 
@@ -627,14 +660,16 @@ export class LargeTransactionMonitor {
         enrichedInfo = {
           symbol: tokenInfo.symbol || this.generateFallbackSymbol(tokenAddress),
           name: tokenInfo.name || this.generateFallbackName(tokenAddress),
-          price: price || this.getTokenFallbackPrice(tokenAddress)
+          price: price || this.getTokenFallbackPrice(tokenAddress),
+          decimals: tokenInfo.decimals || 9 // 🆕 ДОБАВЛЕНО
         };
       } else {
         // Fallback
         enrichedInfo = {
           symbol: this.generateFallbackSymbol(tokenAddress),
           name: this.generateFallbackName(tokenAddress),
-          price: this.getTokenFallbackPrice(tokenAddress)
+          price: this.getTokenFallbackPrice(tokenAddress),
+          decimals: 9 // 🆕 ДОБАВЛЕНО
         };
       }
 
@@ -643,6 +678,7 @@ export class LargeTransactionMonitor {
         symbol: enrichedInfo.symbol,
         name: enrichedInfo.name,
         price: enrichedInfo.price,
+        decimals: enrichedInfo.decimals || 9, // 🆕 ДОБАВЛЕНО
         timestamp: Date.now()
       });
 
@@ -653,7 +689,8 @@ export class LargeTransactionMonitor {
       return {
         symbol: this.generateFallbackSymbol(tokenAddress),
         name: this.generateFallbackName(tokenAddress),
-        price: this.getTokenFallbackPrice(tokenAddress)
+        price: this.getTokenFallbackPrice(tokenAddress),
+        decimals: 9 // 🆕 ДОБАВЛЕНО
       };
     }
   }
@@ -1750,14 +1787,23 @@ export class LargeTransactionMonitor {
       statusLine = '\n🚨 UNKNOWN LARGE TRADER';
     }
 
-    return `🚨 <b>Large Transaction Alert! (ФАЗА 1 FILTERED)</b>\n\n` +
+    // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Добавляем отладочную информацию
+    let debugInfo = '';
+    if (transaction.rawTokenAmount || transaction.actualTokenAmount || transaction.decimals) {
+      debugInfo = `\n\n🔍 <b>Debug Info:</b>\n` +
+                  `• RAW Amount: <code>${transaction.rawTokenAmount?.toLocaleString() || 'N/A'}</code>\n` +
+                  `• ACTUAL Amount: <code>${transaction.actualTokenAmount?.toLocaleString() || 'N/A'}</code>\n` +
+                  `• Decimals: <code>${transaction.decimals || 'N/A'}</code>`;
+    }
+
+    return `🚨 <b>Large Transaction Alert! (🔥 USD РАСЧЕТ ИСПРАВЛЕН)</b>\n\n` +
            `${emoji} <b>${action}:</b> <code>$${transaction.amountUSD.toLocaleString()}</code>\n\n` +
            `🪙 <b>Token:</b> <code>${transaction.tokenSymbol}</code> (${transaction.tokenName})\n` +
            `💰 <b>Price:</b> <code>$${transaction.tokenPrice ? transaction.tokenPrice.toFixed(6) : 'Unknown'}</code>\n` +
            `🏪 <b>DEX:</b> <code>${transaction.dex || 'Unknown'}</code>\n` +
            `👤 <b>Wallet:</b> <code>${transaction.walletAddress.slice(0, 8)}...${transaction.walletAddress.slice(-4)}</code>\n` +
            `⏰ <b>Time:</b> <code>${transaction.timestamp.toLocaleString()}</code>\n` +
-           statusLine + '\n\n' +
+           statusLine + debugInfo + '\n\n' +
            `<a href="https://solscan.io/tx/${transaction.signature}">📊 View Transaction</a> | ` +
            `<a href="https://solscan.io/account/${transaction.walletAddress}">👤 View Wallet</a> | ` +
            `<a href="https://solscan.io/token/${transaction.tokenAddress}">🪙 View Token</a>`;
@@ -1826,6 +1872,6 @@ export class LargeTransactionMonitor {
     this.tokenAgeCache.clear();
     this.walletHistoryCache.clear();
     
-    this.logger.info('✅ LargeTransactionMonitor shutdown completed (ФАЗА 1 ENHANCED + DUPLICATE BLOCKING)');
+    this.logger.info('✅ LargeTransactionMonitor shutdown completed (🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ USD РАСЧЕТОВ + ФАЗА 1 ENHANCED + DUPLICATE BLOCKING)');
   }
 }

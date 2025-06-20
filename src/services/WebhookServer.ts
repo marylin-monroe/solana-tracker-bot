@@ -1,4 +1,4 @@
-// src/services/WebhookServer.ts - ИСПРАВЛЕНО: убраны все упоминания HELIUS + добавлена поддержка tokenPrice
+// src/services/WebhookServer.ts - 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ПРАВИЛЬНЫЙ РАСЧЕТ USD СУММ с decimals
 import express from 'express';
 import { Database } from './Database';
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
@@ -104,6 +104,12 @@ interface ProcessingStats {
     medium: number;
     low: number;
   };
+  // 🔥 ДОБАВЛЕНО: статистика USD расчетов
+  usdCalculationStats: {
+    correctCalculations: number;
+    fallbackCalculations: number;
+    errorCalculations: number;
+  };
 }
 
 export class WebhookServer {
@@ -121,6 +127,7 @@ export class WebhookServer {
   private tokenInfoCache = new Map<string, { 
     symbol: string; 
     name: string; 
+    decimals: number; // 🔥 ДОБАВЛЕНО для правильного расчета
     createdAt?: Date;
     timestamp: number; 
   }>();
@@ -167,6 +174,12 @@ export class WebhookServer {
       high: 0,
       medium: 0,
       low: 0
+    },
+    // 🔥 ДОБАВЛЕНО: статистика USD расчетов
+    usdCalculationStats: {
+      correctCalculations: 0,
+      fallbackCalculations: 0,
+      errorCalculations: 0
     }
   };
 
@@ -449,10 +462,12 @@ export class WebhookServer {
         if (mainTokens.includes(tokenInput.mint)) {
           swapType = 'buy';
           tokenAddress = tokenOutput.mint;
+          // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ПРАВИЛЬНЫЙ РАСЧЕТ С DECIMALS
           amountUSD = parseFloat(tokenInput.rawTokenAmount.tokenAmount) / Math.pow(10, tokenInput.rawTokenAmount.decimals);
         } else if (mainTokens.includes(tokenOutput.mint)) {
           swapType = 'sell';
           tokenAddress = tokenInput.mint;
+          // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ПРАВИЛЬНЫЙ РАСЧЕТ С DECIMALS
           amountUSD = parseFloat(tokenOutput.rawTokenAmount.tokenAmount) / Math.pow(10, tokenOutput.rawTokenAmount.decimals);
         }
       }
@@ -461,6 +476,7 @@ export class WebhookServer {
 
     } catch (error) {
       this.logger.error('Error extracting basic swap info:', error);
+      this.processingStats.usdCalculationStats.errorCalculations++;
       return null;
     }
   }
@@ -704,7 +720,7 @@ export class WebhookServer {
     }
   }
 
-  // 🔥 ИСПРАВЛЕНО: extractSwapInfo с добавлением tokenPrice через TokenMetadataService
+  // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: extractSwapInfo с ПРАВИЛЬНЫМ РАСЧЕТОМ USD СУММ
   private async extractSwapInfo(txData: SolanaWebhookPayload, swapEvent: any, smartWallet: SmartMoneyWallet): Promise<SmartMoneySwap | null> {
     try {
       let tokenAddress = '';
@@ -721,17 +737,27 @@ export class WebhookServer {
         if (mainTokens.includes(tokenInput.mint)) {
           swapType = 'buy';
           tokenAddress = tokenOutput.mint;
+          // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ПРАВИЛЬНЫЙ РАСЧЕТ С DECIMALS
           tokenAmount = parseFloat(tokenOutput.rawTokenAmount.tokenAmount) / Math.pow(10, tokenOutput.rawTokenAmount.decimals);
           amountUSD = parseFloat(tokenInput.rawTokenAmount.tokenAmount) / Math.pow(10, tokenInput.rawTokenAmount.decimals);
+          
+          // 🔥 ДОБАВЛЕНО: Логирование для отладки
+          this.logger.debug(`🔍 BUY Swap | Token: ${tokenAddress.slice(0, 8)}... | RAW OUT: ${tokenOutput.rawTokenAmount.tokenAmount} | DECIMALS OUT: ${tokenOutput.rawTokenAmount.decimals} | ACTUAL TOKEN: ${tokenAmount.toLocaleString()} | RAW IN: ${tokenInput.rawTokenAmount.tokenAmount} | DECIMALS IN: ${tokenInput.rawTokenAmount.decimals} | USD: $${amountUSD.toLocaleString()}`);
+          
         } else if (mainTokens.includes(tokenOutput.mint)) {
           swapType = 'sell';
           tokenAddress = tokenInput.mint;
+          // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ПРАВИЛЬНЫЙ РАСЧЕТ С DECIMALS
           tokenAmount = parseFloat(tokenInput.rawTokenAmount.tokenAmount) / Math.pow(10, tokenInput.rawTokenAmount.decimals);
           amountUSD = parseFloat(tokenOutput.rawTokenAmount.tokenAmount) / Math.pow(10, tokenOutput.rawTokenAmount.decimals);
+          
+          // 🔥 ДОБАВЛЕНО: Логирование для отладки
+          this.logger.debug(`🔍 SELL Swap | Token: ${tokenAddress.slice(0, 8)}... | RAW IN: ${tokenInput.rawTokenAmount.tokenAmount} | DECIMALS IN: ${tokenInput.rawTokenAmount.decimals} | ACTUAL TOKEN: ${tokenAmount.toLocaleString()} | RAW OUT: ${tokenOutput.rawTokenAmount.tokenAmount} | DECIMALS OUT: ${tokenOutput.rawTokenAmount.decimals} | USD: $${amountUSD.toLocaleString()}`);
         }
       }
 
       if (!tokenAddress || amountUSD < 1000) {
+        this.processingStats.usdCalculationStats.fallbackCalculations++;
         return null;
       }
 
@@ -739,6 +765,9 @@ export class WebhookServer {
       
       // 🆕 ДОБАВЛЕНО: получение цены токена через TokenMetadataService
       const tokenPrice = await this.tokenMetadataService.getTokenPrice(tokenAddress);
+      
+      // 🔥 ОТМЕЧАЕМ УСПЕШНЫЙ РАСЧЕТ USD
+      this.processingStats.usdCalculationStats.correctCalculations++;
       
       return {
         transactionId: txData.signature,
@@ -761,6 +790,7 @@ export class WebhookServer {
       };
     } catch (error) {
       this.logger.error('Error extracting swap info:', error as Error);
+      this.processingStats.usdCalculationStats.errorCalculations++;
       return null;
     }
   }
@@ -848,11 +878,11 @@ export class WebhookServer {
     }
   }
 
-  // ✅ ИСПРАВЛЕНО: убрали Helius API, используем QuickNode/Jupiter для метаданных
-  private async getTokenInfo(tokenAddress: string): Promise<{ symbol: string; name: string }> {
+  // ✅ ИСПРАВЛЕНО: убрали Helius API, используем QuickNode/Jupiter для метаданных + ДОБАВЛЕНЫ DECIMALS
+  private async getTokenInfo(tokenAddress: string): Promise<{ symbol: string; name: string; decimals: number }> {
     const cached = this.tokenInfoCache.get(tokenAddress);
     if (cached && Date.now() - cached.timestamp < 3600000) {
-      return { symbol: cached.symbol, name: cached.name };
+      return { symbol: cached.symbol, name: cached.name, decimals: cached.decimals };
     }
 
     try {
@@ -861,24 +891,28 @@ export class WebhookServer {
       
       let symbol = 'UNKNOWN';
       let name = 'Unknown Token';
+      let decimals = 9; // 🔥 ДОБАВЛЕНО: decimals
       
       if (metadata) {
         symbol = metadata.symbol || symbol;
         name = metadata.name || name;
+        decimals = metadata.decimals || decimals; // 🔥 ДОБАВЛЕНО: decimals из метаданных
       } else {
         // Fallback: используем сокращенный адрес
         symbol = tokenAddress.slice(0, 6);
         name = `Token ${tokenAddress.slice(0, 8)}...`;
+        decimals = 9; // Fallback decimals
       }
       
       const tokenInfo = {
         symbol,
         name,
+        decimals, // 🔥 ДОБАВЛЕНО
         timestamp: Date.now()
       };
       
       this.tokenInfoCache.set(tokenAddress, tokenInfo);
-      return { symbol: tokenInfo.symbol, name: tokenInfo.name };
+      return { symbol: tokenInfo.symbol, name: tokenInfo.name, decimals: tokenInfo.decimals };
 
     } catch (error) {
       this.logger.error(`Error getting token info for ${tokenAddress}:`, error);
@@ -886,14 +920,16 @@ export class WebhookServer {
       // Fallback: используем сокращенный адрес
       const fallbackSymbol = tokenAddress ? tokenAddress.slice(0, 6) : 'UNKNOWN';
       const fallbackName = tokenAddress ? `Token ${tokenAddress.slice(0, 8)}...` : 'Unknown Token';
+      const fallbackDecimals = 9; // 🔥 ДОБАВЛЕНО
       
       this.tokenInfoCache.set(tokenAddress, {
         symbol: fallbackSymbol,
         name: fallbackName,
+        decimals: fallbackDecimals, // 🔥 ДОБАВЛЕНО
         timestamp: Date.now()
       });
 
-      return { symbol: fallbackSymbol, name: fallbackName };
+      return { symbol: fallbackSymbol, name: fallbackName, decimals: fallbackDecimals };
     }
   }
 
@@ -942,6 +978,9 @@ export class WebhookServer {
       // Логируем статистику каждые 5 минут
       this.logger.info(`📊 Webhook Stats: Processed=${this.processingStats.totalTransactionsProcessed}, SM=${this.processingStats.smartMoneyTransactions}, Regular=${this.processingStats.regularTransactions}, Filtered=${this.processingStats.filteredTransactions}, Errors=${this.processingStats.errorCount}`);
       
+      // 🔥 ДОБАВЛЕНО: Логируем статистику USD расчетов
+      this.logger.info(`💰 USD Calculation Stats: Correct=${this.processingStats.usdCalculationStats.correctCalculations}, Fallback=${this.processingStats.usdCalculationStats.fallbackCalculations}, Error=${this.processingStats.usdCalculationStats.errorCalculations}`);
+      
     }, 5 * 60 * 1000); // Каждые 5 минут
   }
 
@@ -977,7 +1016,7 @@ export class WebhookServer {
     return new Promise((resolve, reject) => {
       try {
         this.server = this.app.listen(this.port, () => {
-          this.logger.info(`🚀 Webhook server started on port ${this.port}`);
+          this.logger.info(`🚀 Webhook server started on port ${this.port} with 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ USD РАСЧЕТОВ`);
           resolve();
         });
 

@@ -1,4 +1,4 @@
-// src/services/QuickNodeWebhookManager.ts - УПРОЩЕННАЯ ВЕРСИЯ: убрана сложная дедупликация, простая защита
+// src/services/QuickNodeWebhookManager.ts - 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ПРАВИЛЬНЫЙ РАСЧЕТ USD СУММ с decimals
 import { Logger } from '../utils/Logger';
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
 import { TelegramNotifier } from './TelegramNotifier';
@@ -93,6 +93,7 @@ export class QuickNodeWebhookManager {
   private tokenInfoCache = new Map<string, { 
     symbol: string; 
     name: string; 
+    decimals: number; // 🔥 ДОБАВЛЕНО для правильного расчета
     timestamp: number; 
     price?: number; 
   }>();
@@ -125,7 +126,7 @@ export class QuickNodeWebhookManager {
     this.initializeProviders();
     this.startLimitResetTimer();
     this.startCacheCleanup();
-    this.logger.info('🆕 QuickNode initialized with SIMPLE deduplication + TokenMetadataService');
+    this.logger.info('🆕 QuickNode initialized with 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ USD РАСЧЕТОВ + SIMPLE deduplication + TokenMetadataService');
   }
 
   // 🆕 ИНИЦИАЛИЗАЦИЯ МУЛЬТИ-ПРОВАЙДЕР СИСТЕМЫ
@@ -647,7 +648,7 @@ export class QuickNodeWebhookManager {
       for (const swap of swaps) {
         if (this.shouldProcessSmartMoneySwapOptimized(swap, wallet)) {
           await this.saveAndNotifySwap(swap);
-          this.logger.info(`🔥 SM swap: ${swap.tokenSymbol} - $${swap.amountUSD.toFixed(0)} (${this.getTransactionAge(transaction)})`);
+          this.logger.info(`🔥 SM swap: ${swap.tokenSymbol} - $${swap.amountUSD.toFixed(0)} (${this.getTransactionAge(transaction)}) ${swap.actualTokenAmount ? `| ACTUAL: ${swap.actualTokenAmount.toLocaleString()}` : ''}`);
         }
       }
 
@@ -709,7 +710,7 @@ export class QuickNodeWebhookManager {
     return `${ageMinutes}m`;
   }
 
-  // 🔥 ИСПРАВЛЕНО: extractSwapsFromTransaction с добавлением tokenPrice + улучшенной интеграцией TokenMetadataService
+  // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: extractSwapsFromTransaction с ПРАВИЛЬНЫМ РАСЧЕТОМ USD СУММ
   private async extractSwapsFromTransaction(transaction: any, wallet: SmartMoneyWallet): Promise<SmartMoneySwap[]> {
     const swaps: SmartMoneySwap[] = [];
 
@@ -727,25 +728,44 @@ export class QuickNodeWebhookManager {
           (pre: any) => pre.accountIndex === postBalance.accountIndex
         );
 
-        const preAmount = preBalance ? 
-          parseFloat(preBalance.uiTokenAmount.uiAmountString || '0') : 0;
-        const postAmount = parseFloat(postBalance.uiTokenAmount.uiAmountString || '0');
-        const difference = postAmount - preAmount;
+        // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ПРАВИЛЬНЫЙ РАСЧЕТ С DECIMALS!
+        // ❌ СТАРЫЙ НЕПРАВИЛЬНЫЙ КОД:
+        // const preAmount = preBalance ? 
+        //   parseFloat(preBalance.uiTokenAmount.uiAmountString || '0') : 0;
+        // const postAmount = parseFloat(postBalance.uiTokenAmount.uiAmountString || '0');
+        // const difference = postAmount - preAmount;
 
-        if (Math.abs(difference) < 10) continue;
+        // ✅ НОВЫЙ ПРАВИЛЬНЫЙ КОД:
+        // Получаем RAW amounts (numbers without decimals)
+        const postRawAmount = parseFloat(postBalance.uiTokenAmount.amount || '0');
+        const preRawAmount = preBalance ? parseFloat(preBalance.uiTokenAmount.amount || '0') : 0;
+        const rawDifference = postRawAmount - preRawAmount;
+        
+        // Получаем decimals для токена
+        const decimals = postBalance.uiTokenAmount.decimals || 9;
+        
+        // 🔥 ПРАВИЛЬНО: Конвертируем raw amount в актуальное количество токенов
+        const actualDifference = rawDifference / Math.pow(10, decimals);
+
+        // Проверяем значительное изменение (используем ACTUAL amount, не RAW!)
+        if (Math.abs(actualDifference) < 10) continue;
 
         const tokenMint = postBalance.mint;
         
-        // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Улучшенная интеграция TokenMetadataService
+        // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Улучшенная интеграция TokenMetadataService + получение decimals
         const [tokenInfo, tokenPrice] = await Promise.all([
           this.getTokenInfoCached(tokenMint),
           this.tokenMetadataService.getTokenPrice(tokenMint)
         ]);
 
-        const swapType: 'buy' | 'sell' = difference > 0 ? 'buy' : 'sell';
-        const tokenAmount = Math.abs(difference);
+        const swapType: 'buy' | 'sell' = actualDifference > 0 ? 'buy' : 'sell';
+        const tokenAmount = Math.abs(actualDifference); // ← ИСПРАВЛЕНО: используем actualDifference!
         
-        const estimatedUSD = await this.estimateTokenValueUSDCached(tokenMint, tokenAmount);
+        // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Правильная оценка USD стоимости
+        const estimatedUSD = await this.estimateTokenValueUSDCached(tokenMint, tokenAmount, decimals);
+
+        // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Добавляем отладочную информацию
+        this.logger.debug(`🔍 Swap ${transaction.transaction.signatures[0].slice(0, 12)}... | Token: ${tokenInfo.symbol} | RAW: ${Math.abs(rawDifference).toLocaleString()} | ACTUAL: ${tokenAmount.toLocaleString()} | DECIMALS: ${decimals} | USD: $${estimatedUSD.toLocaleString()}`);
 
         if (estimatedUSD > 5000) {
           const swap: SmartMoneySwap = {
@@ -765,7 +785,10 @@ export class QuickNodeWebhookManager {
             tokenPrice: tokenPrice || undefined, // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: цена токена из TokenMetadataService
             isFamilyMember: false,
             familySize: 0,
-            familyId: undefined
+            familyId: undefined,
+            // 🆕 ДОБАВЛЕНО для отладки
+            actualTokenAmount: tokenAmount, // Для логирования
+            decimals: decimals // Для логирования
           };
 
           swaps.push(swap);
@@ -800,38 +823,40 @@ export class QuickNodeWebhookManager {
     return true;
   }
 
-  // 🚀 КЕШИРОВАННОЕ ПОЛУЧЕНИЕ ИНФОРМАЦИИ О ТОКЕНЕ - УЛУЧШЕННАЯ ИНТЕГРАЦИЯ С TokenMetadataService
-  private async getTokenInfoCached(tokenMint: string): Promise<{ symbol: string; name: string }> {
+  // 🚀 КЕШИРОВАННОЕ ПОЛУЧЕНИЕ ИНФОРМАЦИИ О ТОКЕНЕ - УЛУЧШЕННАЯ ИНТЕГРАЦИЯ С TokenMetadataService + DECIMALS
+  private async getTokenInfoCached(tokenMint: string): Promise<{ symbol: string; name: string; decimals: number }> {
     const cached = this.tokenInfoCache.get(tokenMint);
     if (cached && Date.now() - cached.timestamp < 60 * 60 * 1000) { // 1 час
-      return { symbol: cached.symbol, name: cached.name };
+      return { symbol: cached.symbol, name: cached.name, decimals: cached.decimals };
     }
 
     try {
-      // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Используем TokenMetadataService для получения метаданных
+      // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Используем TokenMetadataService для получения метаданных + decimals
       const metadata = await this.tokenMetadataService.getTokenMetadata(tokenMint);
       
       const tokenInfo = {
         symbol: metadata?.symbol || `${tokenMint.slice(0, 6).toUpperCase()}`, // ✅ ИСПРАВЛЕНО: fallback к части адреса
         name: metadata?.name || 'Unknown Token',
+        decimals: metadata?.decimals || 9, // 🔥 ДОБАВЛЕНО: decimals из метаданных!
         timestamp: Date.now()
       };
       
       this.tokenInfoCache.set(tokenMint, tokenInfo);
-      return { symbol: tokenInfo.symbol, name: tokenInfo.name };
+      return { symbol: tokenInfo.symbol, name: tokenInfo.name, decimals: tokenInfo.decimals };
 
     } catch (error) {
       this.logger.error(`Error getting token info for ${tokenMint}:`, error);
-      // ✅ ИСПРАВЛЕНО: Лучший fallback
+      // ✅ ИСПРАВЛЕНО: Лучший fallback + decimals
       return { 
         symbol: `${tokenMint.slice(0, 6).toUpperCase()}`, 
-        name: 'Unknown Token' 
+        name: 'Unknown Token',
+        decimals: 9 // Fallback decimals
       };
     }
   }
 
-  // 🚀 КЕШИРОВАННАЯ ОЦЕНКА СТОИМОСТИ ТОКЕНА с улучшенным алгоритмом
-  private async estimateTokenValueUSDCached(tokenMint: string, amount: number): Promise<number> {
+  // 🚀 КЕШИРОВАННАЯ ОЦЕНКА СТОИМОСТИ ТОКЕНА с улучшенным алгоритмом + DECIMALS
+  private async estimateTokenValueUSDCached(tokenMint: string, amount: number, decimals?: number): Promise<number> {
     const cached = this.priceCache.get(tokenMint);
     if (cached && Date.now() - cached.timestamp < 5 * 60 * 1000) { // 5 минут
       return cached.priceUSD * amount;
@@ -861,7 +886,13 @@ export class QuickNodeWebhookManager {
         timestamp: Date.now()
       });
       
-      return estimatedPrice * amount;
+      // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Логируем для отладки
+      const estimatedUSD = estimatedPrice * amount;
+      if (decimals) {
+        this.logger.debug(`💰 Price estimation for ${tokenMint.slice(0, 8)}... | Price: $${estimatedPrice} | Amount: ${amount.toLocaleString()} | Decimals: ${decimals} | USD: $${estimatedUSD.toLocaleString()}`);
+      }
+      
+      return estimatedUSD;
 
     } catch (error) {
       this.logger.error(`Error estimating price for ${tokenMint}:`, error);

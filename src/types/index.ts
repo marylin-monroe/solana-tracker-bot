@@ -1,4 +1,4 @@
-// src/types/index.ts - ФИНАЛЬНАЯ ВЕРСИЯ: убраны все упоминания Helius + все типы сохранены
+// src/types/index.ts - 🔥 КРИТИЧЕСКИЕ ИСПРАВЛЕНИЯ: добавлены поля для отладки USD расчетов
 
 // ===== ОСНОВНЫЕ ТИПЫ ТРАНЗАКЦИЙ =====
 
@@ -26,6 +26,10 @@ export interface TokenSwap {
   isAggregated?: boolean;
   aggregationId?: number;
   suspicionScore?: number;
+  // 🔥 КРИТИЧЕСКИЕ ДОБАВЛЕНИЯ для отладки USD расчетов
+  decimals?: number;
+  rawTokenAmount?: number;
+  actualTokenAmount?: number;
 }
 
 export interface WalletInfo {
@@ -57,7 +61,7 @@ export interface TokenInfo {
   address: string;
   symbol: string;
   name: string;
-  decimals: number;
+  decimals: number; // 🔥 КРИТИЧЕСКИ ВАЖНО для правильного расчета USD
   createdAt?: Date;
   isNew?: boolean;
   launchPrice?: number;
@@ -210,6 +214,11 @@ export interface SmartMoneySwap {
   isFamilyMember: false; // всегда false
   familySize?: 0; // всегда 0
   familyId?: undefined; // всегда undefined
+  
+  // 🔥 КРИТИЧЕСКИЕ ДОБАВЛЕНИЯ для отладки USD расчетов
+  decimals?: number;
+  rawTokenAmount?: number;
+  actualTokenAmount?: number;
 }
 
 // ===== ТИПЫ ДЛЯ АГРЕГАЦИИ ПОЗИЦИЙ =====
