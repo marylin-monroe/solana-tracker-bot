@@ -5,26 +5,16 @@
   "main": "dist/main.js",
   "scripts": {
     "build": "npm rebuild better-sqlite3 && tsc",
-    "start": "node --max-old-space-size=256 --optimize-for-size --expose-gc dist/main.js",
+    "start": "node --max-old-space-size=768 --expose-gc dist/main.js",
     "dev": "ts-node-dev --respawn --transpile-only src/main.ts",
     "clean": "rm -rf dist",
     "rebuild": "npm run clean && npm run build",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
-    "solana",
-    "telegram",
-    "bot",
-    "smart-money",
-    "crypto",
-    "trading",
-    "blockchain",
-    "quicknode",
-    "alchemy",
-    "jupiter",
-    "dragon",
-    "large-transactions",
-    "monitoring"
+    "solana", "telegram", "bot", "smart-money", "crypto", "trading",
+    "blockchain", "quicknode", "alchemy", "jupiter", "dragon",
+    "large-transactions", "monitoring"
   ],
   "author": "Smart Money Bot Team",
   "license": "MIT",

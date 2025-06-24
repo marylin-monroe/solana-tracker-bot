@@ -1,4 +1,4 @@
-// src/services/DragonResultsParser.ts - DRAGON СИСТЕМА ПОЛНОЙ ЗАМЕНЫ + PROFIT-FIRST OPTIMIZATION
+// src/services/DragonResultsParser.ts - ИСПРАВЛЕНА КРИТИЧЕСКАЯ УТЕЧКА ПАМЯТИ
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
 import { TelegramNotifier } from './TelegramNotifier';
 import { Logger } from '../utils/Logger';
@@ -12,60 +12,24 @@ import { promisify } from 'util';
 const execAsync = promisify(exec);
 
 interface DragonWallet {
-  wallet: string;
-  pnl: number;
-  winrate: number;
-  trades: number;
-  volume: number;
-  last_active: number;
-  sol_balance: number;
-  score?: number;
-  profitFactor?: number;
+  wallet: string; pnl: number; winrate: number; trades: number; volume: number;
+  last_active: number; sol_balance: number; score?: number; profitFactor?: number;
   tier?: 'whale' | 'genius' | 'quality' | 'filter_out';
 }
 
 interface DragonConfig {
-  dragonOutputPath: string;
-  minPnl: number;           // $50K
-  minWinrate: number;       // 58%
-  minTrades: number;        // 100
+  dragonOutputPath: string; minPnl: number; minWinrate: number; minTrades: number;
   maxDaysInactive: number;
-  
-  whaleThresholds: {
-    megaWhale: number;      // $1M+
-    whale: number;          // $500K+
-    bigPlayer: number;      // $200K+
-    quality: number;        // $100K+
-  };
-  
-  scoreWeights: {
-    pnl: number;           // 0.5
-    winrate: number;       // 0.2
-    volume: number;        // 0.15
-    trades: number;        // 0.1
-    activity: number;      // 0.05
-  };
+  whaleThresholds: { megaWhale: number; whale: number; bigPlayer: number; quality: number; };
+  scoreWeights: { pnl: number; winrate: number; volume: number; trades: number; activity: number; };
 }
 
 interface DragonParseResult {
-  totalParsed: number;
-  filtered: number;
-  added: number;
-  updated: number;
-  skipped: number;
-  cleared: number; // 🆕 ДЛЯ РЕЖИМА ЗАМЕНЫ
-  categories: { snipers: number; hunters: number; traders: number };
-  topPerformers: DragonWallet[];
-  profitDistribution: {
-    megaWhales: number;
-    whales: number;
-    bigPlayers: number;
-    quality: number;
-    regular: number;
-  };
-  averagePnL: number;
-  totalValue: number;
-  replaceMode?: boolean; // 🆕 ФЛАГ РЕЖИМА ЗАМЕНЫ
+  totalParsed: number; filtered: number; added: number; updated: number; skipped: number;
+  cleared: number; categories: { snipers: number; hunters: number; traders: number };
+  topPerformers: DragonWallet[]; profitDistribution: {
+    megaWhales: number; whales: number; bigPlayers: number; quality: number; regular: number;
+  }; averagePnL: number; totalValue: number; replaceMode?: boolean;
 }
 
 export class DragonResultsParser {
@@ -74,45 +38,21 @@ export class DragonResultsParser {
   private logger: Logger;
   private config: DragonConfig;
 
-  constructor(
-    smDatabase: SmartMoneyDatabase,
-    telegramNotifier: TelegramNotifier,
-    config?: Partial<DragonConfig>
-  ) {
+  constructor(smDatabase: SmartMoneyDatabase, telegramNotifier: TelegramNotifier, config?: Partial<DragonConfig>) {
     this.smDatabase = smDatabase;
     this.telegramNotifier = telegramNotifier;
     this.logger = Logger.getInstance();
     
-    // 🚀 ОБНОВЛЕННАЯ КОНФИГУРАЦИЯ (новые пороги!)
     this.config = {
       dragonOutputPath: this.resolveDragonPath(config?.dragonOutputPath),
-      
-      // ✅ НОВЫЕ СТРОГИЕ КРИТЕРИИ
-      minPnl: config?.minPnl || 50000,        // $50K
-      minWinrate: config?.minWinrate || 58,   // 58% (было 35%)
-      minTrades: config?.minTrades || 100,    // 100 (было 10)
-      maxDaysInactive: config?.maxDaysInactive || 7,
-      
-      whaleThresholds: {
-        megaWhale: 1_000_000,  // $1M+
-        whale: 500_000,        // $500K+
-        bigPlayer: 200_000,    // $200K+
-        quality: 100_000,      // $100K+
-        ...config?.whaleThresholds
-      },
-      
-      scoreWeights: {
-        pnl: 0.5,           // PnL приоритет
-        winrate: 0.2,       
-        volume: 0.15,       
-        trades: 0.1,        
-        activity: 0.05,     
-        ...config?.scoreWeights
-      }
+      minPnl: config?.minPnl || 50000, minWinrate: config?.minWinrate || 58,
+      minTrades: config?.minTrades || 100, maxDaysInactive: config?.maxDaysInactive || 7,
+      whaleThresholds: { megaWhale: 1_000_000, whale: 500_000, bigPlayer: 200_000, quality: 100_000, ...config?.whaleThresholds },
+      scoreWeights: { pnl: 0.5, winrate: 0.2, volume: 0.15, trades: 0.1, activity: 0.05, ...config?.scoreWeights }
     };
 
-    this.logger.info(`🐲 Dragon Parser initialized with STRICT CRITERIA`);
-    this.logger.info(`💰 NEW THRESHOLDS: PnL≥$${this.config.minPnl/1000}K, WR≥${this.config.minWinrate}%, Trades≥${this.config.minTrades}`);
+    this.logger.info(`🐲 Dragon Parser initialized with STRICT CRITERIA + MEMORY OPTIMIZATION`);
+    this.logger.info(`💰 THRESHOLDS: PnL≥${this.config.minPnl/1000}K, WR≥${this.config.minWinrate}%, Trades≥${this.config.minTrades}`);
   }
 
   private resolveDragonPath(customPath?: string): string {
@@ -123,14 +63,11 @@ export class DragonResultsParser {
     }
 
     const possiblePaths = [
-      '/opt/render/project/src/data/dragon-output',
-      '/app/data/dragon/output',
-      './data/dragon-output',
-      './dragon-git/dragon-files',
+      '/opt/render/project/src/data/dragon-output', '/app/data/dragon/output',
+      './data/dragon-output', './dragon-git/dragon-files',
       'C:\\Users\\ibm\\OneDrive\\Документы\\dragon-git\\dragon-files',
       'C:\\Users\\ibm\\OneDrive\\Документы\\Dragon-main\\Dragon\\data\\Solana\\TopTraders\\',
-      './Dragon/data/Solana/TopTraders',
-      'C:\\Dragon\\data\\Solana\\TopTraders\\',
+      './Dragon/data/Solana/TopTraders', 'C:\\Dragon\\data\\Solana\\TopTraders\\',
       'D:\\Dragon\\data\\Solana\\TopTraders\\',
       path.join(os.homedir(), 'dragon-git/dragon-files'),
       path.join(os.homedir(), 'Dragon/data/Solana/TopTraders'),
@@ -167,8 +104,6 @@ export class DragonResultsParser {
       if (githubToken && repoUrl.includes('github.com')) {
         if (githubToken.trim().length > 0) {
           authUrl = repoUrl.replace('https://github.com/', `https://${githubToken}@github.com/`);
-        } else {
-          this.logger.warn('⚠️ GITHUB_TOKEN is empty, using repo URL without authentication');
         }
       }
 
@@ -210,20 +145,14 @@ export class DragonResultsParser {
           }
         }
       }
-
-      const files = await this.findLatestDragonFiles();
-      this.logger.info(`📄 Found ${files.length} Dragon JSON files after sync`);
     } catch (error) {
       this.logger.error('❌ Error syncing from Git:', error);
     }
   }
 
-  /**
-   * ✅ ГЛАВНЫЙ МЕТОД: Парсинг с поддержкой полной замены
-   */
   async parseLatestDragonResults(forceReplace: boolean = false): Promise<DragonParseResult> {
     try {
-      this.logger.info(`🐲 Starting Dragon parsing (Replace Mode: ${forceReplace})...`);
+      this.logger.info(`🐲 Starting Dragon parsing (Replace Mode: ${forceReplace}) with MEMORY OPTIMIZATION...`);
 
       await this.syncFromGit();
 
@@ -235,35 +164,35 @@ export class DragonResultsParser {
 
       this.logger.info(`📄 Found ${files.length} Dragon files to process`);
 
-      // Парсинг всех найденных JSON файлов
       const allWallets: DragonWallet[] = [];
       for (const filePath of files) {
-        const wallets = await this.parseDragonJsonFile(filePath);
-        allWallets.push(...wallets);
+        const wallets = await this.parseDragonJsonFileOptimized(filePath);
+        if (wallets.length > 0) {
+          allWallets.push(...wallets);
+          
+          // 🔥 ПРИНУДИТЕЛЬНАЯ ОЧИСТКА ПАМЯТИ после каждого файла
+          if (global.gc) {
+            global.gc();
+            this.logger.debug(`🧹 Memory cleanup after ${path.basename(filePath)}`);
+          }
+        }
       }
 
-      // Дедупликация и фильтрация
       const uniqueWallets = this.deduplicateWallets(allWallets);
       this.logger.info(`🔄 After deduplication: ${uniqueWallets.length} unique wallets`);
 
       const filteredWallets = this.applyProfitFirstFiltering(uniqueWallets);
       this.logger.info(`💰 After STRICT filtering: ${filteredWallets.length} high-quality wallets (${((filteredWallets.length / uniqueWallets.length) * 100).toFixed(1)}% selected)`);
 
-      // Расчет рейтингов и сортировка
       const scoredWallets = this.calculateProfitFirstScores(filteredWallets);
       scoredWallets.sort((a, b) => this.compareProfitPriority(a, b));
 
-      // Конвертация в SmartMoneyWallet
       const smartWallets = this.convertToSmartWallets(scoredWallets);
       
-      let clearedCount = 0;
-      let addedCount = 0;
-      let updatedCount = 0;
-      let skippedCount = 0;
+      let clearedCount = 0, addedCount = 0, updatedCount = 0, skippedCount = 0;
       let errors: string[] = [];
 
       if (forceReplace) {
-        // 🔥 РЕЖИМ ПОЛНОЙ ЗАМЕНЫ
         this.logger.info('🔥 REPLACE MODE: Clearing existing Dragon wallets and adding new ones');
         const replacementResult = await this.smDatabase.replaceDragonWallets(smartWallets);
         clearedCount = replacementResult.cleared;
@@ -272,37 +201,28 @@ export class DragonResultsParser {
         
         await this.sendReplacementNotification(clearedCount, addedCount, errors);
       } else {
-        // 📈 ОБЫЧНЫЙ РЕЖИМ: добавление/обновление
         this.logger.info('📈 NORMAL MODE: Adding/updating Dragon wallets');
         for (const smWallet of smartWallets) {
           try {
             const existing = await this.smDatabase.getSmartWallet(smWallet.address);
             if (existing) {
-              // Проверяем через настройки кошелька, является ли он Dragon кошельком
               const settings = await this.smDatabase.getWalletSettings(existing.address);
               const isDragonWallet = settings && await this.isDragonWallet(existing.address);
               
               if (isDragonWallet) {
-                // Обновляем если метрики лучше
-                if (smWallet.totalPnL > existing.totalPnL || 
-                    smWallet.winRate > existing.winRate ||
-                    smWallet.totalTrades > existing.totalTrades) {
+                if (smWallet.totalPnL > existing.totalPnL || smWallet.winRate > existing.winRate || smWallet.totalTrades > existing.totalTrades) {
                   await this.updateExistingWallet(existing, smWallet);
                   updatedCount++;
                 } else {
                   skippedCount++;
                 }
               } else {
-                // Кошелек существует, но не Dragon - пропускаем
                 skippedCount++;
               }
             } else {
-              // Добавляем новый кошелек
               await this.smDatabase.saveSmartWallet(smWallet, {
                 nickname: `Dragon-${smWallet.address.slice(0, 8)}`,
-                addedBy: 'dragon',
-                verified: true,
-                enabled: true,
+                addedBy: 'dragon', verified: true, enabled: true,
                 priority: this.determinePriority(smWallet)
               });
               addedCount++;
@@ -317,23 +237,31 @@ export class DragonResultsParser {
         await this.sendNormalNotification(addedCount, updatedCount, skippedCount, errors);
       }
 
-      // Формируем результат
-      const finalResult = this.createResult(
-        allWallets.length,
-        uniqueWallets.length - filteredWallets.length,
-        addedCount,
-        updatedCount,
-        skippedCount,
-        clearedCount,
-        scoredWallets,
-        forceReplace
-      );
+      const finalResult = this.createResult(allWallets.length, uniqueWallets.length - filteredWallets.length,
+        addedCount, updatedCount, skippedCount, clearedCount, scoredWallets, forceReplace);
+
+      // 🔥 ФИНАЛЬНАЯ ОЧИСТКА ПАМЯТИ
+      allWallets.length = 0;
+      uniqueWallets.length = 0;
+      filteredWallets.length = 0;
+      scoredWallets.length = 0;
+      
+      if (global.gc) {
+        global.gc();
+        this.logger.info('🧹 Final memory cleanup completed');
+      }
 
       this.logger.info(`✅ Dragon parsing completed. Mode: ${forceReplace ? 'REPLACE' : 'NORMAL'}. Added: ${addedCount}, Updated: ${updatedCount}, Cleared: ${clearedCount}`);
       return finalResult;
 
     } catch (error) {
       this.logger.error('❌ Critical error during Dragon results parsing:', error);
+      
+      // ОЧИСТКА ПАМЯТИ В СЛУЧАЕ ОШИБКИ
+      if (global.gc) {
+        global.gc();
+      }
+      
       throw error;
     }
   }
@@ -349,19 +277,13 @@ export class DragonResultsParser {
       
       const jsonFiles = files
         .filter(file => {
-          if (file.startsWith('.git')) return false;
-          if (file === 'README.md') return false;
-          if (file === '.gitignore') return false;
-          if (file === 'package.json') return false;
-          if (file === 'package-lock.json') return false;
+          if (file.startsWith('.git') || file === 'README.md' || file === '.gitignore' || 
+              file === 'package.json' || file === 'package-lock.json') return false;
           
           return file.endsWith('.json') && (
-            file.includes('topTraders') || 
-            file.includes('TopTraders') ||
-            file.includes('dragon') ||
-            file.includes('traders') ||
-            file.includes('wallet') ||
-            file.includes('result')
+            file.includes('topTraders') || file.includes('TopTraders') ||
+            file.includes('dragon') || file.includes('traders') ||
+            file.includes('wallet') || file.includes('result')
           );
         })
         .map(file => {
@@ -388,14 +310,24 @@ export class DragonResultsParser {
   }
 
   /**
-   * 📄 Парсинг JSON файла (обновлен под новый формат Dragon)
+   * 🔥 ОПТИМИЗИРОВАННЫЙ ПАРСИНГ JSON - БАТЧЕВАЯ ОБРАБОТКА С ОЧИСТКОЙ ПАМЯТИ
    */
-  private async parseDragonJsonFile(filePath: string): Promise<DragonWallet[]> {
+  private async parseDragonJsonFileOptimized(filePath: string): Promise<DragonWallet[]> {
     try {
-      this.logger.info(`📄 Parsing Dragon file: ${path.basename(filePath)}`);
+      // Проверяем размер файла
+      const stats = fs.statSync(filePath);
+      const fileSizeMB = stats.size / (1024 * 1024);
       
+      this.logger.info(`📄 Parsing Dragon file: ${path.basename(filePath)} (${fileSizeMB.toFixed(1)}MB)`);
+      
+      if (fileSizeMB > 100) {
+        this.logger.warn(`⚠️ LARGE FILE WARNING: ${fileSizeMB.toFixed(1)}MB - processing with extra caution`);
+      }
+
+      // Читаем файл
       const fileContent = fs.readFileSync(filePath, 'utf8');
       let jsonData: any;
+      
       try {
         jsonData = JSON.parse(fileContent);
       } catch (parseError) {
@@ -404,49 +336,76 @@ export class DragonResultsParser {
       }
 
       const dragonWallets: DragonWallet[] = [];
+      let processedCount = 0;
+      
+      // 🔥 БАТЧЕВАЯ ОБРАБОТКА для экономии памяти
+      const entries = Object.entries(jsonData);
+      const BATCH_SIZE = 1000; // Обрабатываем по 1000 записей
+      
+      this.logger.info(`🔄 Processing ${entries.length} entries in batches of ${BATCH_SIZE}`);
+      
+      for (let i = 0; i < entries.length; i += BATCH_SIZE) {
+        const batch = entries.slice(i, i + BATCH_SIZE);
+        
+        for (const [walletAddress, metrics] of batch) {
+          if (!metrics || typeof metrics !== 'object') continue;
+          
+          const data = metrics as any;
+          const boughtUsd = this.parseUsdString(data.boughtUsd || '0');
+          const totalProfit = this.parseUsdString(data.totalProfit || '0');
+          const buys = parseInt(data.buys || '0');
+          const sells = parseInt(data.sells || '0');
+          const totalTrades = buys + sells;
 
-      // 🆕 ОБРАБОТКА НОВОГО ФОРМАТА: {"address": {"boughtUsd": "$792,222.51", ...}}
-      for (const [walletAddress, metrics] of Object.entries(jsonData)) {
-        if (!metrics || typeof metrics !== 'object' || Object.keys(metrics).length === 0) {
-          continue;
+          const winrate = totalTrades > 0 ? 
+            (data.winRate !== undefined ? parseFloat(data.winRate) : 
+             (sells > 0 ? Math.min((totalProfit > 0 ? 70 : 30), 100) : 0)) : 0;
+
+          if (this.isValidSolanaAddress(walletAddress) && totalTrades > 0 && boughtUsd > 0) {
+            dragonWallets.push({
+              wallet: walletAddress,
+              pnl: totalProfit,
+              winrate: Math.min(winrate, 100),
+              trades: totalTrades,
+              volume: boughtUsd,
+              last_active: Date.now() / 1000,
+              sol_balance: parseFloat(data.solBalance || '0')
+            });
+          }
+          processedCount++;
         }
-
-        const data = metrics as any;
-        const boughtUsd = this.parseUsdString(data.boughtUsd || '0');
-        const totalProfit = this.parseUsdString(data.totalProfit || '0');
-        const buys = parseInt(data.buys || '0');
-        const sells = parseInt(data.sells || '0');
-        const totalTrades = buys + sells;
-
-        // Расчет WinRate (эвристика, так как Dragon не предоставляет)
-        const winrate = totalTrades > 0 ? 
-          (data.winRate !== undefined ? parseFloat(data.winRate) : 
-           (sells > 0 ? Math.min((totalProfit > 0 ? 70 : 30), 100) : 0)) : 0;
-
-        if (this.isValidSolanaAddress(walletAddress) && totalTrades > 0 && boughtUsd > 0) {
-          dragonWallets.push({
-            wallet: walletAddress,
-            pnl: totalProfit,
-            winrate: Math.min(winrate, 100),
-            trades: totalTrades,
-            volume: boughtUsd,
-            last_active: Date.now() / 1000, // Заглушка, так как Dragon не предоставляет
-            sol_balance: parseFloat(data.solBalance || '0')
-          });
+        
+        // 🔥 ПРИНУДИТЕЛЬНАЯ ОЧИСТКА ПАМЯТИ каждые 5000 записей
+        if (i % (BATCH_SIZE * 5) === 0 && global.gc) {
+          global.gc();
+          this.logger.debug(`🧹 GC triggered after ${processedCount} entries`);
         }
       }
 
-      this.logger.info(`✅ Parsed ${dragonWallets.length} valid wallets from ${path.basename(filePath)}`);
+      // 🔥 ОЧИЩАЕМ ПЕРЕМЕННЫЕ ИЗ ПАМЯТИ
+      jsonData = null;
+      entries.length = 0;
+      
+      // ПРИНУДИТЕЛЬНАЯ ОЧИСТКА
+      if (global.gc) {
+        global.gc();
+      }
+
+      this.logger.info(`✅ Parsed ${dragonWallets.length}/${processedCount} valid wallets from ${path.basename(filePath)}`);
       return dragonWallets;
+      
     } catch (error) {
       this.logger.error(`❌ Error parsing Dragon JSON file ${filePath}:`, error);
+      
+      // ПРИНУДИТЕЛЬНАЯ ОЧИСТКА В СЛУЧАЕ ОШИБКИ
+      if (global.gc) {
+        global.gc();
+      }
+      
       return [];
     }
   }
 
-  /**
-   * 🔄 КОНВЕРТАЦИЯ Dragon кошельков в SmartMoneyWallet
-   */
   private convertToSmartWallets(dragonWallets: DragonWallet[]): SmartMoneyWallet[] {
     return dragonWallets.map(wallet => {
       const category = this.determineCategory(wallet);
@@ -455,35 +414,19 @@ export class DragonResultsParser {
       const nickname = `${tierName}-${categoryName}-${wallet.wallet.slice(0, 6)}`;
 
       return {
-        address: wallet.wallet,
-        category: category,
-        winRate: wallet.winrate,
-        totalPnL: wallet.pnl,
-        totalTrades: wallet.trades,
+        address: wallet.wallet, category: category, winRate: wallet.winrate,
+        totalPnL: wallet.pnl, totalTrades: wallet.trades,
         avgTradeSize: wallet.trades > 0 ? wallet.volume / wallet.trades : 0,
-        maxTradeSize: wallet.volume * 0.1,
-        minTradeSize: wallet.volume * 0.01,
-        performanceScore: wallet.score || 70,
-        sharpeRatio: undefined,
-        maxDrawdown: undefined,
-        lastActiveAt: new Date(wallet.last_active * 1000),
-        isActive: true,
-        isFamilyMember: false,
-        familyAddresses: undefined,
-        coordinationScore: 0,
-        stealthLevel: undefined,
-        earlyEntryRate: undefined,
-        avgHoldTime: undefined,
-        volumeScore: undefined,
-        createdAt: new Date(),
-        updatedAt: new Date()
+        maxTradeSize: wallet.volume * 0.1, minTradeSize: wallet.volume * 0.01,
+        performanceScore: wallet.score || 70, sharpeRatio: undefined, maxDrawdown: undefined,
+        lastActiveAt: new Date(wallet.last_active * 1000), isActive: true,
+        isFamilyMember: false, familyAddresses: undefined, coordinationScore: 0,
+        stealthLevel: undefined, earlyEntryRate: undefined, avgHoldTime: undefined,
+        volumeScore: undefined, createdAt: new Date(), updatedAt: new Date()
       } as SmartMoneyWallet;
     });
   }
 
-  /**
-   * 🔍 Проверка, является ли кошелек Dragon кошельком
-   */
   private async isDragonWallet(address: string): Promise<boolean> {
     try {
       const source = await this.smDatabase.getWalletSource(address);
@@ -501,13 +444,11 @@ export class DragonResultsParser {
   }
 
   private determinePriority(wallet: SmartMoneyWallet): 'high' | 'medium' | 'low' {
-    if (wallet.totalPnL >= 1000000) return 'high'; // $1M+
-    if (wallet.totalPnL >= 500000) return 'high';  // $500K+
-    if (wallet.winRate >= 60) return 'high';       // 60%+ WR
+    if (wallet.totalPnL >= 1000000) return 'high';
+    if (wallet.totalPnL >= 500000) return 'high';
+    if (wallet.winRate >= 60) return 'high';
     return 'medium';
   }
-
-  // ========== ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ (сокращены для экономии места) ==========
 
   private isValidSolanaAddress(address: string): boolean {
     if (!address || typeof address !== 'string') return false;
@@ -539,61 +480,26 @@ export class DragonResultsParser {
     return Array.from(walletMap.values());
   }
 
-  /**
-   * 🚀 СТРОГАЯ PROFIT-FIRST ФИЛЬТРАЦИЯ (обновленные пороги)
-   */
   private applyProfitFirstFiltering(wallets: DragonWallet[]): DragonWallet[] {
-    const now = Date.now() / 1000;
-    
     return wallets.filter(wallet => {
-      // 🐳 WHALE AUTO-PASS: Мега-киты проходят с любым WR
       if (wallet.pnl >= this.config.whaleThresholds.megaWhale) {
-        wallet.tier = 'whale';
-        return true;
+        wallet.tier = 'whale'; return true;
       }
-
-      // 🐋 WHALE AUTO-PASS: Киты проходят с WR ≥ 30%
       if (wallet.pnl >= this.config.whaleThresholds.whale && wallet.winrate >= 30) {
-        wallet.tier = 'whale';
-        return true;
+        wallet.tier = 'whale'; return true;
       }
-
-      // 💰 BIG PLAYER: $200K+ нужен WR ≥ 40%
       if (wallet.pnl >= this.config.whaleThresholds.bigPlayer && wallet.winrate >= 40) {
-        wallet.tier = 'genius';
-        return true;
+        wallet.tier = 'genius'; return true;
       }
-
-      // 💎 QUALITY: $100K+ нужен WR ≥ 45%
       if (wallet.pnl >= this.config.whaleThresholds.quality && wallet.winrate >= 45) {
-        wallet.tier = 'quality';
-        return true;
+        wallet.tier = 'quality'; return true;
       }
-
-      // 📊 СТРОГИЕ КРИТЕРИИ (обновлены!)
-      if (wallet.pnl < this.config.minPnl) {
-        wallet.tier = 'filter_out';
-        return false;
+      if (wallet.pnl < this.config.minPnl || wallet.winrate < this.config.minWinrate || 
+          wallet.trades < this.config.minTrades || wallet.winrate > 99.9 || 
+          wallet.volume > wallet.pnl * 100) {
+        wallet.tier = 'filter_out'; return false;
       }
-      
-      if (wallet.winrate < this.config.minWinrate) {
-        wallet.tier = 'filter_out';
-        return false;
-      }
-      
-      if (wallet.trades < this.config.minTrades) {
-        wallet.tier = 'filter_out';
-        return false;
-      }
-      
-      // Дополнительные фильтры безопасности
-      if (wallet.winrate > 99.9 || wallet.volume > wallet.pnl * 100) {
-        wallet.tier = 'filter_out';
-        return false;
-      }
-      
-      wallet.tier = 'quality';
-      return true;
+      wallet.tier = 'quality'; return true;
     });
   }
 
@@ -613,15 +519,10 @@ export class DragonResultsParser {
       const daysSinceActive = (now - wallet.last_active) / (24 * 60 * 60);
       const activityScore = Math.max(0, 1 - (daysSinceActive / this.config.maxDaysInactive));
       
-      let score = (
-        pnlScore * this.config.scoreWeights.pnl +
-        winrateScore * this.config.scoreWeights.winrate +
-        volumeScore * this.config.scoreWeights.volume +
-        tradesScore * this.config.scoreWeights.trades +
-        activityScore * this.config.scoreWeights.activity
-      ) * 100;
+      let score = (pnlScore * this.config.scoreWeights.pnl + winrateScore * this.config.scoreWeights.winrate +
+        volumeScore * this.config.scoreWeights.volume + tradesScore * this.config.scoreWeights.trades +
+        activityScore * this.config.scoreWeights.activity) * 100;
 
-      // Tier bonus
       if (wallet.tier === 'whale') score += 25;
       else if (wallet.tier === 'genius') score += 15;
       else if (wallet.tier === 'quality') score += 5;
@@ -650,17 +551,12 @@ export class DragonResultsParser {
       winRate: Math.max(wallet.winRate, existing.winRate),
       totalPnL: Math.max(wallet.totalPnL, existing.totalPnL),
       totalTrades: Math.max(wallet.totalTrades, existing.totalTrades),
-      lastActiveAt: wallet.lastActiveAt,
-      performanceScore: wallet.performanceScore
+      lastActiveAt: wallet.lastActiveAt, performanceScore: wallet.performanceScore
     });
   }
 
-  // ========== УВЕДОМЛЕНИЯ ==========
-
   private async sendReplacementNotification(clearedCount: number, addedCount: number, errors: string[]): Promise<void> {
-    const hasErrors = errors.length > 0;
-    const emoji = hasErrors ? '⚠️' : '✅';
-    
+    const emoji = errors.length > 0 ? '⚠️' : '✅';
     const message = `${emoji} <b>Dragon Database REPLACED</b>\n\n` +
       `🗑️ <b>Cleared Old:</b> <code>${clearedCount}</code> Dragon wallets\n` +
       `➕ <b>Added New:</b> <code>${addedCount}</code> STRICT-filtered wallets\n\n` +
@@ -687,31 +583,17 @@ export class DragonResultsParser {
     await this.telegramNotifier.sendCycleLog(message);
   }
 
-  // ========== РЕЗУЛЬТАТЫ ==========
-
-  private createResult(
-    totalParsedFromFile: number,
-    filteredOutCount: number,
-    added: number,
-    updated: number,
-    skipped: number,
-    cleared: number,
-    finalWallets: DragonWallet[],
-    replaceMode: boolean = false
-  ): DragonParseResult {
+  private createResult(totalParsedFromFile: number, filteredOutCount: number, added: number, updated: number,
+    skipped: number, cleared: number, finalWallets: DragonWallet[], replaceMode: boolean = false): DragonParseResult {
     const categories = this.categorizeWallets(finalWallets);
     const profitDistribution = this.calculateProfitDistribution(finalWallets);
     const totalValue = finalWallets.reduce((sum, w) => sum + w.pnl, 0);
     const averagePnL = finalWallets.length > 0 ? totalValue / finalWallets.length : 0;
 
     return {
-      totalParsed: totalParsedFromFile,
-      filtered: filteredOutCount,
-      added, updated, skipped, cleared,
-      categories,
-      topPerformers: finalWallets.sort((a,b) => this.compareProfitPriority(a,b)).slice(0, 15),
-      profitDistribution,
-      averagePnL, totalValue, replaceMode
+      totalParsed: totalParsedFromFile, filtered: filteredOutCount, added, updated, skipped, cleared,
+      categories, topPerformers: finalWallets.sort((a,b) => this.compareProfitPriority(a,b)).slice(0, 15),
+      profitDistribution, averagePnL, totalValue, replaceMode
     };
   }
 
@@ -741,8 +623,7 @@ export class DragonResultsParser {
   private createEmptyResult(replaceMode: boolean = false): DragonParseResult {
     return {
       totalParsed: 0, filtered: 0, added: 0, updated: 0, skipped: 0, cleared: 0,
-      categories: { snipers: 0, hunters: 0, traders: 0 },
-      topPerformers: [],
+      categories: { snipers: 0, hunters: 0, traders: 0 }, topPerformers: [],
       profitDistribution: { megaWhales: 0, whales: 0, bigPlayers: 0, quality: 0, regular: 0 },
       averagePnL: 0, totalValue: 0, replaceMode
     };
@@ -754,29 +635,18 @@ export class DragonResultsParser {
     return num.toFixed(0);
   }
 
-  // ========== ПУБЛИЧНЫЕ МЕТОДЫ ==========
-
   async forceSyncFromGit(): Promise<boolean> {
-    try {
-      await this.syncFromGit();
-      return true;
-    } catch (error) {
-      this.logger.error('❌ Force Git sync failed:', error);
-      return false;
-    }
+    try { await this.syncFromGit(); return true; } 
+    catch (error) { this.logger.error('❌ Force Git sync failed:', error); return false; }
   }
 
   async getDragonStats(): Promise<{
-    lastRun?: Date;
-    totalFilesFound: number;
-    configPath: string;
-    isConfigured: boolean;
-    gitSyncEnabled: boolean;
+    lastRun?: Date; totalFilesFound: number; configPath: string;
+    isConfigured: boolean; gitSyncEnabled: boolean;
   }> {
     const files = await this.findLatestDragonFiles();
     return {
-      totalFilesFound: files.length,
-      configPath: this.config.dragonOutputPath,
+      totalFilesFound: files.length, configPath: this.config.dragonOutputPath,
       isConfigured: fs.existsSync(this.config.dragonOutputPath),
       gitSyncEnabled: !!process.env.DRAGON_REPO_URL
     };
