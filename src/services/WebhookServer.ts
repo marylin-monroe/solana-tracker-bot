@@ -1,14 +1,13 @@
-// src/services/WebhookServer.ts - 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ПРАВИЛЬНЫЙ РАСЧЕТ USD СУММ с decimals
+// src/services/WebhookServer.ts - ЭТАП 2: API заглушки для экономии + оптимизация
 import express from 'express';
 import { Database } from './Database';
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
 import { TelegramNotifier } from './TelegramNotifier';
 import { SolanaMonitor } from './SolanaMonitor';
-import { TokenMetadataService } from './TokenMetadataService'; // 🆕 ДОБАВЛЕНО
+import { TokenMetadataService } from './TokenMetadataService';
 import { Logger } from '../utils/Logger';
 import { SmartMoneySwap, SmartMoneyWallet, TokenSwap } from '../types';
 
-// ✅ ИСПРАВЛЕНО: убираем упоминания Helius, используем общий интерфейс
 interface SolanaWebhookPayload {
   type: string;
   feePayer: string;
@@ -60,20 +59,19 @@ interface SolanaWebhookPayload {
   };
 }
 
-// 🚨 НОВЫЕ ИНТЕРФЕЙСЫ ДЛЯ ФИЛЬТРАЦИИ
 interface TokenCreatorCheck {
   isCreator: boolean;
   isTopHolder: boolean;
   holdingPercentage: number;
   creationTime: Date;
   firstTxTime: Date;
-  tokenAge: number; // в часах
+  tokenAge: number;
 }
 
 interface SmartMoneyValidationResult {
   isValid: boolean;
   reason?: string;
-  riskScore: number; // 0-100
+  riskScore: number;
   suspiciousFactors: string[];
 }
 
@@ -104,7 +102,6 @@ interface ProcessingStats {
     medium: number;
     low: number;
   };
-  // 🔥 ДОБАВЛЕНО: статистика USD расчетов
   usdCalculationStats: {
     correctCalculations: number;
     fallbackCalculations: number;
@@ -117,17 +114,16 @@ export class WebhookServer {
   private database: Database;
   private smDatabase: SmartMoneyDatabase;
   private telegramNotifier: TelegramNotifier;
-  private solanaMonitor: SolanaMonitor;
-  private tokenMetadataService: TokenMetadataService; // 🆕 ДОБАВЛЕНО
+  private solanaMonitor: SolanaMonitor | null;
+  private tokenMetadataService: TokenMetadataService;
   private logger: Logger;
   private port: number;
   private server: any;
 
-  // 🚀 ПРОДВИНУТАЯ СИСТЕМА КЕШИРОВАНИЯ
   private tokenInfoCache = new Map<string, { 
     symbol: string; 
     name: string; 
-    decimals: number; // 🔥 ДОБАВЛЕНО для правильного расчета
+    decimals: number;
     createdAt?: Date;
     timestamp: number; 
   }>();
@@ -140,7 +136,6 @@ export class WebhookServer {
     timestamp: number;
   }>();
   
-  // 🚀 НОВЫЙ КЕШ ДЛЯ RECENT TOKEN TRANSACTIONS - СНИЖАЕТ НАГРУЗКУ НА БД В 10+ РАЗ!
   private recentTxCache = new Map<string, {
     transactions: Array<{
       walletAddress: string;
@@ -151,10 +146,8 @@ export class WebhookServer {
     timestamp: number;
   }>();
   
-  // 🧹 АВТООЧИСТКА КЕШЕЙ ОТ СТАРЫХ ЗАПИСЕЙ
   private cacheCleanupInterval: NodeJS.Timeout | null = null;
 
-  // 🆕 СТАТИСТИКА И МОНИТОРИНГ
   private processingStats: ProcessingStats = {
     totalTransactionsProcessed: 0,
     smartMoneyTransactions: 0,
@@ -175,7 +168,6 @@ export class WebhookServer {
       medium: 0,
       low: 0
     },
-    // 🔥 ДОБАВЛЕНО: статистика USD расчетов
     usdCalculationStats: {
       correctCalculations: 0,
       fallbackCalculations: 0,
@@ -183,7 +175,6 @@ export class WebhookServer {
     }
   };
 
-  // 🆕 МЕТРИКИ ПРОИЗВОДИТЕЛЬНОСТИ
   private performanceInterval: NodeJS.Timeout | null = null;
   private requestCounters = {
     lastMinuteRequests: 0,
@@ -194,14 +185,14 @@ export class WebhookServer {
   constructor(
     database: Database,
     telegramNotifier: TelegramNotifier,
-    solanaMonitor: SolanaMonitor,
+    solanaMonitor: SolanaMonitor | null,
     smDatabase: SmartMoneyDatabase
   ) {
     this.database = database;
     this.smDatabase = smDatabase;
     this.telegramNotifier = telegramNotifier;
     this.solanaMonitor = solanaMonitor;
-    this.tokenMetadataService = new TokenMetadataService(); // 🆕 ДОБАВЛЕНО
+    this.tokenMetadataService = new TokenMetadataService();
     this.logger = Logger.getInstance();
     this.port = parseInt(process.env.PORT || '3000');
 
@@ -216,7 +207,6 @@ export class WebhookServer {
     this.app.use(express.json({ limit: '10mb' }));
     this.app.use(express.urlencoded({ extended: true }));
     
-    // Middleware для обновления счетчиков запросов
     this.app.use((req, res, next) => {
       const now = Date.now();
       
@@ -230,7 +220,6 @@ export class WebhookServer {
       next();
     });
 
-    // Error handling middleware
     this.app.use((error: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
       this.logger.error('Express error:', error);
       this.requestCounters.lastMinuteErrors++;
@@ -239,7 +228,6 @@ export class WebhookServer {
   }
 
   private setupRoutes(): void {
-    // Health check
     this.app.get('/health', (req, res) => {
       res.json({ 
         status: 'ok', 
@@ -252,7 +240,6 @@ export class WebhookServer {
       });
     });
 
-    // ✅ ИСПРАВЛЕНО: убрали '/webhook/helius', теперь '/webhook/solana'
     this.app.post('/webhook/solana', async (req, res) => {
       try {
         this.processingStats.totalTransactionsProcessed++;
@@ -266,7 +253,6 @@ export class WebhookServer {
       }
     });
 
-    // Совместимость со старым endpoint для плавного перехода
     this.app.post('/webhook/helius', async (req, res) => {
       try {
         this.processingStats.totalTransactionsProcessed++;
@@ -280,7 +266,6 @@ export class WebhookServer {
       }
     });
 
-    // Stats endpoint
     this.app.get('/stats', (req, res) => {
       res.json({
         ...this.processingStats,
@@ -294,18 +279,15 @@ export class WebhookServer {
       });
     });
 
-    // 404 handler
     this.app.use((req, res) => {
       res.status(404).json({ error: 'Endpoint not found' });
     });
   }
 
-  // 🆕 ОБРАБОТКА ТРАНЗАКЦИИ СО СТАТИСТИКОЙ
   private async processWebhookTransactionWithStats(txData: SolanaWebhookPayload): Promise<void> {
     const startTime = Date.now();
     
     try {
-      // Определяем тип транзакции
       if (txData.events?.swap && txData.events.swap.length > 0) {
         this.processingStats.transactionTypes.swaps++;
       } else if (txData.tokenTransfers && txData.tokenTransfers.length > 0) {
@@ -314,10 +296,8 @@ export class WebhookServer {
         this.processingStats.transactionTypes.other++;
       }
 
-      // Базовая обработка
       await this.processWebhookTransaction(txData);
       
-      // Обновляем время обработки
       const processingTime = Date.now() - startTime;
       this.processingStats.avgProcessingTime = 
         (this.processingStats.avgProcessingTime + processingTime) / 2;
@@ -353,20 +333,17 @@ export class WebhookServer {
       const walletAddress = this.extractWalletAddress(swapEvent);
       if (!walletAddress) return;
 
-      // 🔍 ПРОВЕРЯЕМ: SMART MONEY ИЛИ ОБЫЧНЫЙ КОШЕЛЕК
       const smartWallet = await this.smDatabase.getSmartWallet(walletAddress);
       
       if (!smartWallet || !smartWallet.isActive) {
-        // ✅ ОБЫЧНЫЙ КОШЕЛЕК - передаем в SolanaMonitor для агрегации
         if (this.solanaMonitor) {
           await this.solanaMonitor.processTransaction(txData);
         }
         this.processingStats.regularTransactions++;
 
-        // 🆕 ПРОВЕРЯЕМ НА АГРЕГАЦИЮ ПОЗИЦИЙ
         if (txData.events?.swap && txData.events.swap.length > 0) {
           const swapInfo = await this.extractBasicSwapInfo(txData, swapEvent);
-          if (swapInfo && swapInfo.amountUSD >= 5000 && this.solanaMonitor) { // Минимум $5K для проверки
+          if (swapInfo && swapInfo.amountUSD >= 5000 && this.solanaMonitor) {
             const aggregationCheck = await this.solanaMonitor.checkForPositionAggregation(
               walletAddress,
               swapInfo.tokenAddress,
@@ -376,7 +353,6 @@ export class WebhookServer {
             if (aggregationCheck.isPartOfAggregation) {
               this.processingStats.positionAggregations++;
               
-              // Определяем уровень риска
               if (aggregationCheck.suspicionScore >= 85) {
                 this.processingStats.riskLevels.high++;
               } else if (aggregationCheck.suspicionScore >= 75) {
@@ -390,11 +366,9 @@ export class WebhookServer {
         return;
       }
 
-      // ✅ SMART MONEY КОШЕЛЕК - обрабатываем с фильтрами
       const swapInfo = await this.extractSwapInfo(txData, swapEvent, smartWallet);
       if (!swapInfo) return;
 
-      // 🚨 НОВАЯ ВАЛИДАЦИЯ SMART MONEY ТРАНЗАКЦИЙ
       const validationResult = await this.validateSmartMoneyTransaction(
         swapInfo.walletAddress,
         swapInfo.tokenAddress,
@@ -406,7 +380,6 @@ export class WebhookServer {
         this.logger.warn(`🚫 BLOCKED Smart Money tx: ${swapInfo.tokenSymbol} - $${swapInfo.amountUSD} | ${validationResult.reason}`);
         this.processingStats.filteredTransactions++;
         
-        // Отправляем предупреждение в телеграм о заблокированной транзакции
         if (validationResult.riskScore > 80) {
           await this.telegramNotifier.sendCycleLog(
             `🚫 <b>BLOCKED Suspicious Transaction</b>\n\n` +
@@ -423,7 +396,6 @@ export class WebhookServer {
         return;
       }
 
-      // Проверяем стандартные фильтры
       if (!this.shouldProcessSmartMoneySwap(swapInfo, smartWallet)) {
         this.processingStats.filteredTransactions++;
         return;
@@ -442,7 +414,6 @@ export class WebhookServer {
     }
   }
 
-  // 🆕 НОВЫЙ МЕТОД: ИЗВЛЕЧЕНИЕ БАЗОВОЙ ИНФОРМАЦИИ О СВАПЕ
   private async extractBasicSwapInfo(txData: SolanaWebhookPayload, swapEvent: any): Promise<{
     tokenAddress: string;
     amountUSD: number;
@@ -462,12 +433,10 @@ export class WebhookServer {
         if (mainTokens.includes(tokenInput.mint)) {
           swapType = 'buy';
           tokenAddress = tokenOutput.mint;
-          // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ПРАВИЛЬНЫЙ РАСЧЕТ С DECIMALS
           amountUSD = parseFloat(tokenInput.rawTokenAmount.tokenAmount) / Math.pow(10, tokenInput.rawTokenAmount.decimals);
         } else if (mainTokens.includes(tokenOutput.mint)) {
           swapType = 'sell';
           tokenAddress = tokenInput.mint;
-          // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ПРАВИЛЬНЫЙ РАСЧЕТ С DECIMALS
           amountUSD = parseFloat(tokenOutput.rawTokenAmount.tokenAmount) / Math.pow(10, tokenOutput.rawTokenAmount.decimals);
         }
       }
@@ -481,7 +450,6 @@ export class WebhookServer {
     }
   }
 
-  // 🚨 НОВЫЙ МЕТОД: ВАЛИДАЦИЯ SMART MONEY ТРАНЗАКЦИЙ
   private async validateSmartMoneyTransaction(
     walletAddress: string,
     tokenAddress: string,
@@ -493,47 +461,40 @@ export class WebhookServer {
     let riskScore = 0;
 
     try {
-      // 1. Проверка на создателя токена (высокий риск)
       const creatorCheck = await this.checkTokenCreator(walletAddress, tokenAddress);
       if (creatorCheck.isCreator) {
         suspiciousFactors.push('Token creator');
         riskScore += 40;
       }
 
-      // 2. Проверка на топ холдера (средний риск)
       if (creatorCheck.isTopHolder && creatorCheck.holdingPercentage > 10) {
         suspiciousFactors.push(`Top holder (${creatorCheck.holdingPercentage.toFixed(1)}%)`);
         riskScore += 25;
       }
 
-      // 3. Проверка возраста токена (молодые токены = риск)
-      if (creatorCheck.tokenAge < 24) { // Младше 24 часов
+      if (creatorCheck.tokenAge < 24) {
         suspiciousFactors.push(`New token (${creatorCheck.tokenAge.toFixed(1)}h)`);
         riskScore += 20;
       }
 
-      // 4. Проверка паттерна множественных кошельков (координированная атака)
       const recentTxCheck = await this.checkRecentTokenActivity(tokenAddress, walletAddress);
       if (recentTxCheck.suspiciousPatterns) {
         suspiciousFactors.push('Coordinated buying pattern');
         riskScore += 30;
       }
 
-      // 5. Проверка размера сделки (слишком большие сделки = подозрительно)
-      if (amountUSD > 500000) { // $500K+
+      if (amountUSD > 500000) {
         suspiciousFactors.push('Extremely large trade');
         riskScore += 15;
       }
 
-      // 6. Проверка на связанные кошельки
       const relatedWallets = await this.getRelatedWallets(walletAddress);
       if (relatedWallets.length > 5) {
         suspiciousFactors.push(`Related wallets (${relatedWallets.length})`);
         riskScore += 20;
       }
 
-      // Итоговая валидация
-      const isValid = riskScore < 70; // Порог 70 из 100
+      const isValid = riskScore < 70;
       const reason = isValid ? undefined : `Risk score too high (${riskScore}/100)`;
 
       return {
@@ -546,48 +507,34 @@ export class WebhookServer {
     } catch (error) {
       this.logger.error('Error in Smart Money validation:', error);
       return {
-        isValid: true, // При ошибке валидации - пропускаем
+        isValid: true,
         riskScore: 0,
         suspiciousFactors: ['Validation error']
       };
     }
   }
 
-  // 🔍 ПРОВЕРКА НА СОЗДАТЕЛЯ ТОКЕНА
+  // 🔥 ЭТАП 2: ЗАГЛУШКА ДЛЯ ЭКОНОМИИ API
   private async checkTokenCreator(walletAddress: string, tokenAddress: string): Promise<TokenCreatorCheck> {
-    try {
-      // Заглушка - в реальности нужно проверить через Solana API
-      return {
-        isCreator: false,
-        isTopHolder: false,
-        holdingPercentage: 0,
-        creationTime: new Date(),
-        firstTxTime: new Date(),
-        tokenAge: 100 // часов
-      };
-    } catch (error) {
-      this.logger.error('Error checking token creator:', error);
-      return {
-        isCreator: false,
-        isTopHolder: false,
-        holdingPercentage: 0,
-        creationTime: new Date(),
-        firstTxTime: new Date(),
-        tokenAge: 100
-      };
-    }
+    this.logger.debug('🔥 checkTokenCreator temporarily disabled for API economy');
+    return {
+      isCreator: false,
+      isTopHolder: false,
+      holdingPercentage: 0,
+      creationTime: new Date(),
+      firstTxTime: new Date(),
+      tokenAge: 100
+    };
   }
 
-  // 🔍 ПРОВЕРКА НЕДАВНЕЙ АКТИВНОСТИ ТОКЕНА
   private async checkRecentTokenActivity(tokenAddress: string, walletAddress: string): Promise<{
     suspiciousPatterns: boolean;
     recentBuyers: number;
     averageHoldTime: number;
   }> {
     try {
-      // Проверяем кеш
       const cached = this.recentTxCache.get(tokenAddress);
-      if (cached && Date.now() - cached.timestamp < 10 * 60 * 1000) { // 10 минут
+      if (cached && Date.now() - cached.timestamp < 10 * 60 * 1000) {
         const uniqueBuyers = new Set(cached.transactions.map(tx => tx.walletAddress)).size;
         const suspiciousPatterns = uniqueBuyers > 10 && cached.transactions.length > 20;
         
@@ -598,10 +545,8 @@ export class WebhookServer {
         };
       }
 
-      // Получаем недавние транзакции токена из БД
       const recentTransactions = await this.getRecentTokenTransactions(tokenAddress);
       
-      // Кешируем результат
       this.recentTxCache.set(tokenAddress, {
         transactions: recentTransactions,
         timestamp: Date.now()
@@ -626,51 +571,35 @@ export class WebhookServer {
     }
   }
 
-  // 🔍 ПОЛУЧЕНИЕ СВЯЗАННЫХ КОШЕЛЬКОВ
+  // 🔥 ЭТАП 2: ЗАГЛУШКА ДЛЯ ЭКОНОМИИ API
   private async getRelatedWallets(walletAddress: string): Promise<string[]> {
-    try {
-      const cached = this.relatedWalletsCache.get(walletAddress);
-      if (cached && Date.now() - cached.timestamp < 30 * 60 * 1000) { // 30 минут
-        return cached.relatedWallets;
-      }
-
-      // Заглушка - в реальности нужно анализировать через граф транзакций
-      const relatedWallets: string[] = [];
-      
-      this.relatedWalletsCache.set(walletAddress, {
-        relatedWallets,
-        timestamp: Date.now()
-      });
-
-      return relatedWallets;
-
-    } catch (error) {
-      this.logger.error('Error getting related wallets:', error);
-      return [];
+    this.logger.debug('🔥 getRelatedWallets temporarily disabled for API economy');
+    const cached = this.relatedWalletsCache.get(walletAddress);
+    if (cached && Date.now() - cached.timestamp < 30 * 60 * 1000) {
+      return cached.relatedWallets;
     }
+
+    const relatedWallets: string[] = [];
+    
+    this.relatedWalletsCache.set(walletAddress, {
+      relatedWallets,
+      timestamp: Date.now()
+    });
+
+    return relatedWallets;
   }
 
-  // 🔍 ПОЛУЧЕНИЕ НЕДАВНИХ ТРАНЗАКЦИЙ ТОКЕНА
+  // 🔥 ЭТАП 2: ЗАГЛУШКА ДЛЯ ЭКОНОМИИ API
   private async getRecentTokenTransactions(tokenAddress: string): Promise<Array<{
     walletAddress: string;
     timestamp: Date;
     amountUSD: number;
     swapType: 'buy' | 'sell';
   }>> {
-    try {
-      // Получаем транзакции за последний час
-      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
-      
-      // Заглушка - в реальности нужно запросить из БД
-      return [];
-
-    } catch (error) {
-      this.logger.error('Error getting recent token transactions:', error);
-      return [];
-    }
+    this.logger.debug('🔥 getRecentTokenTransactions temporarily disabled for API economy');
+    return [];
   }
 
-  // 🔍 ПРОВЕРКА ПРЕДУПРЕЖДЕНИЙ О ИМЕНАХ ТОКЕНОВ
   private async checkTokenNameAlerts(txData: SolanaWebhookPayload): Promise<void> {
     try {
       if (!txData.tokenTransfers || txData.tokenTransfers.length === 0) return;
@@ -678,7 +607,6 @@ export class WebhookServer {
       for (const transfer of txData.tokenTransfers) {
         const tokenInfo = await this.getTokenInfo(transfer.mint);
         
-        // Простая проверка на подозрительные имена
         const suspiciousPatterns = [
           /bitcoin/i, /ethereum/i, /bnb/i, /solana/i,
           /usdt/i, /usdc/i, /doge/i, /shib/i
@@ -692,7 +620,7 @@ export class WebhookServer {
           const alert: TokenNameAlert = {
             tokenName: tokenInfo.name,
             contractAddress: transfer.mint,
-            holders: 0, // Заглушка
+            holders: 0,
             similarTokens: 1
           };
 
@@ -720,7 +648,6 @@ export class WebhookServer {
     }
   }
 
-  // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: extractSwapInfo с ПРАВИЛЬНЫМ РАСЧЕТОМ USD СУММ
   private async extractSwapInfo(txData: SolanaWebhookPayload, swapEvent: any, smartWallet: SmartMoneyWallet): Promise<SmartMoneySwap | null> {
     try {
       let tokenAddress = '';
@@ -737,21 +664,17 @@ export class WebhookServer {
         if (mainTokens.includes(tokenInput.mint)) {
           swapType = 'buy';
           tokenAddress = tokenOutput.mint;
-          // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ПРАВИЛЬНЫЙ РАСЧЕТ С DECIMALS
           tokenAmount = parseFloat(tokenOutput.rawTokenAmount.tokenAmount) / Math.pow(10, tokenOutput.rawTokenAmount.decimals);
           amountUSD = parseFloat(tokenInput.rawTokenAmount.tokenAmount) / Math.pow(10, tokenInput.rawTokenAmount.decimals);
           
-          // 🔥 ДОБАВЛЕНО: Логирование для отладки
           this.logger.debug(`🔍 BUY Swap | Token: ${tokenAddress.slice(0, 8)}... | RAW OUT: ${tokenOutput.rawTokenAmount.tokenAmount} | DECIMALS OUT: ${tokenOutput.rawTokenAmount.decimals} | ACTUAL TOKEN: ${tokenAmount.toLocaleString()} | RAW IN: ${tokenInput.rawTokenAmount.tokenAmount} | DECIMALS IN: ${tokenInput.rawTokenAmount.decimals} | USD: $${amountUSD.toLocaleString()}`);
           
         } else if (mainTokens.includes(tokenOutput.mint)) {
           swapType = 'sell';
           tokenAddress = tokenInput.mint;
-          // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ПРАВИЛЬНЫЙ РАСЧЕТ С DECIMALS
           tokenAmount = parseFloat(tokenInput.rawTokenAmount.tokenAmount) / Math.pow(10, tokenInput.rawTokenAmount.decimals);
           amountUSD = parseFloat(tokenOutput.rawTokenAmount.tokenAmount) / Math.pow(10, tokenOutput.rawTokenAmount.decimals);
           
-          // 🔥 ДОБАВЛЕНО: Логирование для отладки
           this.logger.debug(`🔍 SELL Swap | Token: ${tokenAddress.slice(0, 8)}... | RAW IN: ${tokenInput.rawTokenAmount.tokenAmount} | DECIMALS IN: ${tokenInput.rawTokenAmount.decimals} | ACTUAL TOKEN: ${tokenAmount.toLocaleString()} | RAW OUT: ${tokenOutput.rawTokenAmount.tokenAmount} | DECIMALS OUT: ${tokenOutput.rawTokenAmount.decimals} | USD: $${amountUSD.toLocaleString()}`);
         }
       }
@@ -763,10 +686,8 @@ export class WebhookServer {
 
       const tokenInfo = await this.getTokenInfo(tokenAddress);
       
-      // 🆕 ДОБАВЛЕНО: получение цены токена через TokenMetadataService
       const tokenPrice = await this.tokenMetadataService.getTokenPrice(tokenAddress);
       
-      // 🔥 ОТМЕЧАЕМ УСПЕШНЫЙ РАСЧЕТ USD
       this.processingStats.usdCalculationStats.correctCalculations++;
       
       return {
@@ -783,7 +704,7 @@ export class WebhookServer {
         winRate: smartWallet.winRate,
         pnl: smartWallet.totalPnL,
         totalTrades: smartWallet.totalTrades,
-        tokenPrice: tokenPrice || undefined, // 🆕 ДОБАВЛЕНО: цена токена
+        tokenPrice: tokenPrice || undefined,
         isFamilyMember: false,
         familySize: 0,
         familyId: undefined
@@ -820,12 +741,10 @@ export class WebhookServer {
     return true;
   }
 
-  // 🔧 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: ИСПОЛЬЗУЕМ ПУБЛИЧНЫЙ МЕТОД БД
   private async saveSmartMoneyTransaction(swapInfo: SmartMoneySwap): Promise<void> {
     try {
       if (!this.smDatabase || !this.telegramNotifier) return;
 
-      // ✅ ИСПРАВЛЕНО: Используем публичный метод вместо прямого доступа к БД
       await this.smDatabase.saveSmartMoneyTransaction({
         transactionId: swapInfo.transactionId,
         walletAddress: swapInfo.walletAddress,
@@ -878,7 +797,6 @@ export class WebhookServer {
     }
   }
 
-  // ✅ ИСПРАВЛЕНО: убрали Helius API, используем QuickNode/Jupiter для метаданных + ДОБАВЛЕНЫ DECIMALS
   private async getTokenInfo(tokenAddress: string): Promise<{ symbol: string; name: string; decimals: number }> {
     const cached = this.tokenInfoCache.get(tokenAddress);
     if (cached && Date.now() - cached.timestamp < 3600000) {
@@ -886,28 +804,26 @@ export class WebhookServer {
     }
 
     try {
-      // ✅ ИСПРАВЛЕНО: Используем TokenMetadataService вместо прямых API вызовов
       const metadata = await this.tokenMetadataService.getTokenMetadata(tokenAddress);
       
       let symbol = 'UNKNOWN';
       let name = 'Unknown Token';
-      let decimals = 9; // 🔥 ДОБАВЛЕНО: decimals
+      let decimals = 9;
       
       if (metadata) {
         symbol = metadata.symbol || symbol;
         name = metadata.name || name;
-        decimals = metadata.decimals || decimals; // 🔥 ДОБАВЛЕНО: decimals из метаданных
+        decimals = metadata.decimals || decimals;
       } else {
-        // Fallback: используем сокращенный адрес
         symbol = tokenAddress.slice(0, 6);
         name = `Token ${tokenAddress.slice(0, 8)}...`;
-        decimals = 9; // Fallback decimals
+        decimals = 9;
       }
       
       const tokenInfo = {
         symbol,
         name,
-        decimals, // 🔥 ДОБАВЛЕНО
+        decimals,
         timestamp: Date.now()
       };
       
@@ -917,15 +833,14 @@ export class WebhookServer {
     } catch (error) {
       this.logger.error(`Error getting token info for ${tokenAddress}:`, error);
       
-      // Fallback: используем сокращенный адрес
       const fallbackSymbol = tokenAddress ? tokenAddress.slice(0, 6) : 'UNKNOWN';
       const fallbackName = tokenAddress ? `Token ${tokenAddress.slice(0, 8)}...` : 'Unknown Token';
-      const fallbackDecimals = 9; // 🔥 ДОБАВЛЕНО
+      const fallbackDecimals = 9;
       
       this.tokenInfoCache.set(tokenAddress, {
         symbol: fallbackSymbol,
         name: fallbackName,
-        decimals: fallbackDecimals, // 🔥 ДОБАВЛЕНО
+        decimals: fallbackDecimals,
         timestamp: Date.now()
       });
 
@@ -933,55 +848,47 @@ export class WebhookServer {
     }
   }
 
-  // 🧹 АВТООЧИСТКА КЕШЕЙ
   private startCacheCleanup(): void {
     this.cacheCleanupInterval = setInterval(() => {
       const now = Date.now();
       const ONE_HOUR = 60 * 60 * 1000;
       
-      // Очищаем кеш токенов (старше 1 часа)
       for (const [key, value] of this.tokenInfoCache.entries()) {
         if (now - value.timestamp > ONE_HOUR) {
           this.tokenInfoCache.delete(key);
         }
       }
       
-      // Очищаем кеш топ холдеров (старше 30 минут)
       for (const [key, value] of this.topHoldersCache.entries()) {
         if (now - value.timestamp > 30 * 60 * 1000) {
           this.topHoldersCache.delete(key);
         }
       }
       
-      // Очищаем кеш связанных кошельков (старше 30 минут)
       for (const [key, value] of this.relatedWalletsCache.entries()) {
         if (now - value.timestamp > 30 * 60 * 1000) {
           this.relatedWalletsCache.delete(key);
         }
       }
       
-      // Очищаем кеш недавних транзакций (старше 10 минут)
       for (const [key, value] of this.recentTxCache.entries()) {
         if (now - value.timestamp > 10 * 60 * 1000) {
           this.recentTxCache.delete(key);
         }
       }
       
-    }, 5 * 60 * 1000); // Очищаем каждые 5 минут
+    }, 5 * 60 * 1000);
   }
 
-  // 🆕 МОНИТОРИНГ ПРОИЗВОДИТЕЛЬНОСТИ
   private startPerformanceMonitoring(): void {
     this.performanceInterval = setInterval(() => {
       this.processingStats.lastProcessedTime = new Date();
       
-      // Логируем статистику каждые 5 минут
       this.logger.info(`📊 Webhook Stats: Processed=${this.processingStats.totalTransactionsProcessed}, SM=${this.processingStats.smartMoneyTransactions}, Regular=${this.processingStats.regularTransactions}, Filtered=${this.processingStats.filteredTransactions}, Errors=${this.processingStats.errorCount}`);
       
-      // 🔥 ДОБАВЛЕНО: Логируем статистику USD расчетов
       this.logger.info(`💰 USD Calculation Stats: Correct=${this.processingStats.usdCalculationStats.correctCalculations}, Fallback=${this.processingStats.usdCalculationStats.fallbackCalculations}, Error=${this.processingStats.usdCalculationStats.errorCalculations}`);
       
-    }, 5 * 60 * 1000); // Каждые 5 минут
+    }, 5 * 60 * 1000);
   }
 
   private formatNumber(num: number): string {
@@ -993,7 +900,6 @@ export class WebhookServer {
     return num.toFixed(0);
   }
 
-  // 🆕 ПУБЛИЧНЫЕ МЕТОДЫ ДЛЯ ПОЛУЧЕНИЯ СТАТИСТИКИ
   getProcessingStats(): ProcessingStats {
     return { ...this.processingStats };
   }
@@ -1016,7 +922,7 @@ export class WebhookServer {
     return new Promise((resolve, reject) => {
       try {
         this.server = this.app.listen(this.port, () => {
-          this.logger.info(`🚀 Webhook server started on port ${this.port} with 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ USD РАСЧЕТОВ`);
+          this.logger.info(`🚀 Webhook server started on port ${this.port} with API economy stubs`);
           resolve();
         });
 

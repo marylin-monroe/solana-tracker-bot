@@ -1,10 +1,9 @@
-// src/services/TelegramNotifier.ts - УПРОЩЕННАЯ ВЕРСИЯ: убрана сложная дедупликация, оставлена простая защита
+// src/services/TelegramNotifier.ts - ЭТАП 2: sendLargeTransactionAlert РЕАЛИЗОВАН + оптимизация
 import TelegramBot from 'node-telegram-bot-api';
 import { SmartMoneyFlow, HotNewToken, SmartMoneySwap } from '../types';
 import { Logger } from '../utils/Logger';
 import { LargeTransaction } from './LargeTransactionMonitor';
 
-// 🎯 ИНТЕРФЕЙСЫ для команд
 interface StatsData {
   walletStats: any;
   dbStats: any;
@@ -22,7 +21,6 @@ interface WalletsData {
   totalCount: number;
 }
 
-// 🆕 ИНТЕРФЕЙСЫ для недостающих методов
 interface PositionSplittingAlert {
   walletAddress: string;
   tokenAddress: string;
@@ -63,32 +61,25 @@ interface SmartMoneyInflow {
 }
 
 export class TelegramNotifier {
-  sendLargeTransactionAlert(arg0: LargeTransaction): any {
-      throw new Error("Method not implemented.");
-  }
   private bot: TelegramBot;
   private userId: string;
   private logger: Logger;
   private commandHandlers: Map<string, () => Promise<void>> = new Map();
   
-  // 🚀 RATE LIMITING & QUEUE SYSTEM
   private messageQueue: Array<{ message: string; priority: number; retryCount: number }> = [];
   private isProcessingQueue: boolean = false;
   private lastMessageTime: number = 0;
   private messagesThisSecond: number = 0;
   private secondReset: number = 0;
   
-  // 🆕 ПРОСТАЯ дедупликация (только основная защита)
-  private recentTransactions = new Map<string, number>(); // signature -> timestamp
-  private readonly SIMPLE_DUPLICATE_WINDOW = 5 * 60 * 1000; // 5 минут простой защиты
+  private recentTransactions = new Map<string, number>();
+  private readonly SIMPLE_DUPLICATE_WINDOW = 5 * 60 * 1000;
   
-  // Rate limits: Telegram allows 30 messages per second
-  private readonly MAX_MESSAGES_PER_SECOND = 20; // Больше запаса
-  private readonly MESSAGE_DELAY = 75; // 75ms между сообщениями
+  private readonly MAX_MESSAGES_PER_SECOND = 20;
+  private readonly MESSAGE_DELAY = 75;
   private readonly MAX_RETRIES = 3;
-  private readonly RETRY_DELAY = 2000; // 2 seconds
+  private readonly RETRY_DELAY = 2000;
   
-  // Статистика
   private stats = {
     totalSent: 0,
     smartMoneySwaps: 0,
@@ -103,7 +94,8 @@ export class TelegramNotifier {
     hotTokenAlerts: 0,
     positionSplittingAlerts: 0,
     tokenNameAlerts: 0,
-    inflowsSent: 0
+    inflowsSent: 0,
+    largeTransactionAlerts: 0
   };
 
   constructor(token: string, userId: string) {
@@ -114,18 +106,13 @@ export class TelegramNotifier {
     this.setupBaseHandlers();
     this.startMessageQueueProcessor();
     this.startSimpleCleanup();
-    this.logger.info('📱 TelegramNotifier initialized with SIMPLE deduplication');
+    this.logger.info('📱 TelegramNotifier initialized with sendLargeTransactionAlert');
   }
 
-  // 🆕 БАЗОВЫЕ ОБРАБОТЧИКИ
   private setupBaseHandlers(): void {
     this.bot.on('message', (msg) => {
-      // Только от нужного пользователя
-      if (msg.from?.id.toString() !== this.userId) {
-        return;
-      }
+      if (msg.from?.id.toString() !== this.userId) return;
 
-      // Только команды
       if (msg.text && msg.text.startsWith('/')) {
         const command = msg.text.split(' ')[0];
         const handler = this.commandHandlers.get(command);
@@ -145,20 +132,16 @@ export class TelegramNotifier {
     this.bot.on('polling_error', (error) => {
       this.logger.error('Telegram polling error:', error);
     });
-
-    this.logger.info('🤖 Telegram base handlers setup completed');
   }
 
-  // 🚀 MESSAGE QUEUE SYSTEM для защиты от rate limits
   private startMessageQueueProcessor(): void {
     setInterval(async () => {
       if (!this.isProcessingQueue && this.messageQueue.length > 0) {
         await this.processMessageQueue();
       }
-    }, 100); // Проверяем очередь каждые 100ms
+    }, 100);
   }
 
-  // 🆕 ПРОСТАЯ очистка дедупликации
   private startSimpleCleanup(): void {
     setInterval(() => {
       const now = Date.now();
@@ -174,10 +157,9 @@ export class TelegramNotifier {
       if (cleaned > 0) {
         this.logger.debug(`🧹 Simple cleanup: ${cleaned} transactions removed`);
       }
-    }, 60 * 1000); // Каждую минуту
+    }, 60 * 1000);
   }
 
-  // 🔍 ПРОСТАЯ проверка на дубликаты
   private isSimpleDuplicate(transactionId: string): boolean {
     const now = Date.now();
     const lastTime = this.recentTransactions.get(transactionId);
@@ -188,7 +170,6 @@ export class TelegramNotifier {
       return true;
     }
     
-    // Регистрируем новую транзакцию
     this.recentTransactions.set(transactionId, now);
     return false;
   }
@@ -199,7 +180,6 @@ export class TelegramNotifier {
     this.isProcessingQueue = true;
     
     try {
-      // Сортируем по приоритету (высший приоритет первым)
       this.messageQueue.sort((a, b) => b.priority - a.priority);
       
       while (this.messageQueue.length > 0) {
@@ -207,12 +187,11 @@ export class TelegramNotifier {
         
         try {
           await this.sendMessageSafely(messageData.message);
-          break; // Успешно отправили, выходим
+          break;
         } catch (error) {
           messageData.retryCount++;
           
           if (messageData.retryCount < this.MAX_RETRIES) {
-            // Возвращаем в очередь для повторной попытки
             this.messageQueue.unshift(messageData);
             this.stats.retryAttempts++;
             await this.sleep(this.RETRY_DELAY);
@@ -228,10 +207,8 @@ export class TelegramNotifier {
   }
 
   private async sendMessageSafely(message: string): Promise<void> {
-    // Rate limiting check
     await this.enforceRateLimit();
     
-    // Chunking для длинных сообщений
     const chunks = this.chunkMessage(message);
     
     for (const chunk of chunks) {
@@ -243,7 +220,6 @@ export class TelegramNotifier {
       this.stats.totalSent++;
       this.stats.lastMessageTime = new Date();
       
-      // Пауза между chunks
       if (chunks.length > 1) {
         await this.sleep(200);
       }
@@ -253,13 +229,11 @@ export class TelegramNotifier {
   private async enforceRateLimit(): Promise<void> {
     const now = Date.now();
     
-    // Сброс счетчика секунды
     if (now > this.secondReset) {
       this.messagesThisSecond = 0;
       this.secondReset = now + 1000;
     }
     
-    // Проверяем лимит сообщений в секунду
     if (this.messagesThisSecond >= this.MAX_MESSAGES_PER_SECOND) {
       const waitTime = this.secondReset - now;
       if (waitTime > 0) {
@@ -269,7 +243,6 @@ export class TelegramNotifier {
       }
     }
     
-    // Минимальная задержка между сообщениями
     const timeSinceLastMessage = now - this.lastMessageTime;
     if (timeSinceLastMessage < this.MESSAGE_DELAY) {
       await this.sleep(this.MESSAGE_DELAY - timeSinceLastMessage);
@@ -295,7 +268,6 @@ export class TelegramNotifier {
           currentChunk = '';
         }
         
-        // Если одна строка слишком длинная, разбиваем её
         if (line.length > maxLength) {
           const subChunks = line.match(new RegExp(`.{1,${maxLength}}`, 'g')) || [];
           chunks.push(...subChunks);
@@ -318,7 +290,6 @@ export class TelegramNotifier {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  // 🆕 НАСТРОЙКА ОБРАБОТЧИКОВ КОМАНД
   setupCommandHandlers(handlers: Record<string, () => Promise<void>>): void {
     for (const [command, handler] of Object.entries(handlers)) {
       this.commandHandlers.set(command, handler);
@@ -326,10 +297,8 @@ export class TelegramNotifier {
     this.logger.info(`🤖 Registered ${Object.keys(handlers).length} command handlers`);
   }
 
-  // ✅ ОСНОВНОЙ МЕТОД ДЛЯ ОТПРАВКИ СООБЩЕНИЙ с Rate Limiting
   async sendCycleLog(message: string, priority: number = 1): Promise<void> {
     try {
-      // Добавляем в очередь вместо прямой отправки
       this.messageQueue.push({
         message,
         priority,
@@ -338,7 +307,6 @@ export class TelegramNotifier {
       
       this.stats.queuedMessages++;
       
-      // Если очередь небольшая и не обрабатывается, запускаем немедленно
       if (this.messageQueue.length <= 3 && !this.isProcessingQueue) {
         await this.processMessageQueue();
       }
@@ -349,7 +317,49 @@ export class TelegramNotifier {
     }
   }
 
-  // ✅ ОСНОВНЫЕ КОМАНДЫ (без изменений - они работают правильно)
+  // 🔥 ЭТАП 2: РЕАЛИЗАЦИЯ sendLargeTransactionAlert
+  async sendLargeTransactionAlert(transaction: LargeTransaction): Promise<void> {
+    try {
+      if (this.isSimpleDuplicate(transaction.signature)) {
+        return;
+      }
+
+      const riskEmoji = this.getRiskEmoji(transaction.riskScore || 0);
+      const typeEmoji = transaction.transactionType === 'buy' ? '💰' : '💸';
+      const tokenSymbol = this.getDisplayTokenSymbol(transaction.tokenSymbol, transaction.tokenAddress);
+      
+      const message = `🚨 <b>Large Transaction Alert ${riskEmoji}</b>\n\n` +
+        `${typeEmoji} <b>Type:</b> <code>${transaction.transactionType.toUpperCase()}</code>\n` +
+        `💵 <b>Amount:</b> <code>$${transaction.amountUSD.toLocaleString()}</code>\n` +
+        `📄 <b>Token:</b> <code>#${tokenSymbol}</code>\n` +
+        `🏷️ <b>Name:</b> <code>${transaction.tokenName}</code>\n\n` +
+        `👤 <b>Wallet:</b> <code>${transaction.walletAddress.slice(0, 8)}...${transaction.walletAddress.slice(-8)}</code>\n` +
+        `🪙 <b>Token:</b> <code>${transaction.tokenAddress.slice(0, 8)}...${transaction.tokenAddress.slice(-8)}</code>\n\n` +
+        `🔍 <b>Risk Score:</b> <code>${transaction.riskScore || 0}/100</code>\n` +
+        (transaction.filterReason ? `📝 <b>Analysis:</b> <code>${transaction.filterReason}</code>\n` : '') +
+        `🔗 <b>TX:</b> <code>${transaction.signature.slice(0, 16)}...</code>\n\n` +
+        `⏰ <code>${transaction.timestamp.toLocaleString()}</code>\n\n` +
+        `<a href="https://solscan.io/tx/${transaction.signature}">Transaction</a> | ` +
+        `<a href="https://solscan.io/account/${transaction.walletAddress}">Wallet</a> | ` +
+        `<a href="https://solscan.io/token/${transaction.tokenAddress}">Token</a>`;
+
+      await this.sendCycleLog(message, 8);
+      
+      this.stats.largeTransactionAlerts++;
+      this.logger.info(`🚨 Large TX alert sent: ${tokenSymbol} $${transaction.amountUSD.toLocaleString()}`);
+      
+    } catch (error) {
+      this.logger.error('Error sending large transaction alert:', error);
+      this.stats.errorsSent++;
+    }
+  }
+
+  private getRiskEmoji(riskScore: number): string {
+    if (riskScore >= 80) return '🔴';
+    if (riskScore >= 50) return '🟡'; 
+    if (riskScore >= 20) return '🟢';
+    return '✅';
+  }
 
   async sendStatsResponse(data: StatsData): Promise<void> {
     try {
@@ -361,7 +371,7 @@ export class TelegramNotifier {
       message += `🟢 <b>System Status:</b>\n`;
       message += `⏱️ Uptime: <code>${uptimeHours}h ${uptimeMinutes}m</code>\n`;
       message += `🔄 Mode: <code>${data.webhookMode === 'polling' ? 
-        'Polling (1min)' : 'Real-time Webhooks'}</code>\n`;
+        'Polling (2min)' : 'Real-time Webhooks'}</code>\n`;
       message += `📡 Monitoring: <code>${data.pollingStats?.walletsMonitored || 0}/100</code> wallets\n\n`;
       
       message += `👥 <b>Smart Money Wallets:</b>\n`;
@@ -375,9 +385,10 @@ export class TelegramNotifier {
       message += `💱 Total Swaps: <code>${data.dbStats?.totalSwaps || 0}</code>\n`;
       message += `🎯 Positions: <code>${data.dbStats?.positionAggregations || 0}</code>\n\n`;
       
-      message += `🤖 <b>Notifications (SIMPLE DEDUP):</b>\n`;
+      message += `🤖 <b>Notifications:</b>\n`;
       message += `📤 Total Sent: <code>${this.stats.totalSent}</code>\n`;
       message += `🚀 Smart Swaps: <code>${this.stats.smartMoneySwaps}</code>\n`;
+      message += `🚨 Large TX: <code>${this.stats.largeTransactionAlerts}</code>\n`;
       message += `📈 Flow Reports: <code>${this.stats.flowsSent}</code>\n`;
       message += `🔥 Hot Tokens: <code>${this.stats.hotTokenAlerts}</code>\n`;
       message += `🐲 Dragon Imports: <code>${this.stats.dragonImports}</code>\n`;
@@ -389,7 +400,7 @@ export class TelegramNotifier {
       message += `👁️ Tracked: <code>${this.recentTransactions.size}</code> transactions\n`;
       message += `⏰ Window: <code>${this.SIMPLE_DUPLICATE_WINDOW / (60 * 1000)}</code> minutes\n\n`;
       
-      message += `<code>#BotStats #SystemStatus #SimpleDedup</code>`;
+      message += `<code>#BotStats #SystemStatus</code>`;
 
       await this.sendCycleLog(message);
       this.logger.info('📊 Stats response sent');
@@ -457,7 +468,6 @@ export class TelegramNotifier {
     }
   }
 
-  // ✅ DRAGON INTEGRATION NOTIFICATIONS
   async sendDragonImportNotification(result: {
     totalParsed: number;
     added: number;
@@ -495,9 +505,6 @@ ${result.topPerformers.slice(0, 5).map((w, i) =>
     }
   }
 
-  // 🆕 НЕДОСТАЮЩИЕ МЕТОДЫ - ВОССТАНОВЛЕНЫ!
-
-  // 1. sendTopSmartMoneyInflows (для SmartMoneyFlowAnalyzer.ts)
   async sendTopSmartMoneyInflows(inflows: SmartMoneyInflow[]): Promise<void> {
     try {
       let message = `📈 <b>Top Smart Money Inflows</b>\n\n`;
@@ -520,7 +527,6 @@ ${result.topPerformers.slice(0, 5).map((w, i) =>
     }
   }
 
-  // 2. sendPositionSplittingAlert (для SolanaMonitor.ts)
   async sendPositionSplittingAlert(alert: PositionSplittingAlert): Promise<void> {
     try {
       let message = `🚨 <b>Position Splitting Detected!</b>\n\n`;
@@ -557,7 +563,6 @@ ${result.topPerformers.slice(0, 5).map((w, i) =>
     }
   }
 
-  // 3. sendTokenNameAlert (для WebhookServer.ts)
   async sendTokenNameAlert(alert: TokenNameAlert): Promise<void> {
     try {
       let message = `⚠️ <b>Token Name Alert!</b>\n\n`;
@@ -584,14 +589,11 @@ ${result.topPerformers.slice(0, 5).map((w, i) =>
     }
   }
 
-  // ✅ ДОПОЛНИТЕЛЬНЫЕ МЕТОДЫ ДЛЯ FLOWS - КОМПАКТНЫЙ ФОРМАТ
-
   async sendInflowOutflowSummary(type: 'inflow' | 'outflow', period: string, flows: any[]): Promise<void> {
     try {
       const emoji = type === 'inflow' ? '📈' : '📉';
       const title = type === 'inflow' ? 'Inflows' : 'Outflows';
       
-      // Компактный формат как у CryptoAttack
       let message = `${emoji} <b>SM ${title} (${period})</b>\n\n`;
       
       flows.slice(0, 8).forEach((flow, index) => {
@@ -612,12 +614,10 @@ ${result.topPerformers.slice(0, 5).map((w, i) =>
     }
   }
 
-  // 🔥 HOT NEW TOKEN - КОМПАКТНЫЙ ФОРМАТ
   async sendHotNewTokenAlert(token: HotNewToken): Promise<void> {
     try {
       const tokenSymbol = this.getDisplayTokenSymbol(token.symbol, token.address);
       
-      // Компактный формат как у CryptoAttack
       let message = `🔥 <b>HNT: #${tokenSymbol}</b>\n`;
       message += `💰 Buy: ${this.formatNumber(token.buyVolumeUSD || 0)} `;
       message += `Sell: ${this.formatNumber(token.sellVolumeUSD || 0)}\n`;
@@ -637,15 +637,12 @@ ${result.topPerformers.slice(0, 5).map((w, i) =>
     }
   }
 
-  // 🎯 ГЛАВНЫЙ МЕТОД SMART MONEY SWAP - УПРОЩЕННАЯ ВЕРСИЯ
   async sendSmartMoneySwapAlert(swap: SmartMoneySwap, source: string = 'Unknown'): Promise<void> {
     try {
-      // 1. ПРОСТАЯ проверка на дубликаты
       if (this.isSimpleDuplicate(swap.transactionId)) {
-        return; // Пропускаем дубликат
+        return;
       }
       
-      // 2. Отправляем индивидуальное сообщение
       await this.sendIndividualSwapMessage(swap);
       
     } catch (error) {
@@ -654,30 +651,24 @@ ${result.topPerformers.slice(0, 5).map((w, i) =>
     }
   }
 
-  // 💡 УПРОЩЕННОЕ индивидуальное сообщение в стиле CryptoAttack
   private async sendIndividualSwapMessage(swap: SmartMoneySwap): Promise<void> {
     try {
       const categoryEmoji = this.getCategoryEmoji(swap.category);
       const actionEmoji = swap.swapType === 'buy' ? '🟢' : '🔴';
       
-      // Правильное отображение символов токенов
       const tokenSymbol = this.getDisplayTokenSymbol(swap.tokenSymbol, swap.tokenAddress);
       
       const tokenAmount = this.formatTokenAmount(swap.tokenAmount || 0);
       
-      // 🎯 КОМПАКТНЫЙ ФОРМАТ КАК У CRYPTOATTACK
       let message = `${categoryEmoji} ${this.formatNumber(swap.amountUSD)} ${actionEmoji} ${tokenAmount} `;
       message += `<b>#${tokenSymbol}</b>`;
       
-      // Добавляем цену токена если есть и она валидна
       if (swap.tokenPrice && swap.tokenPrice > 0 && swap.tokenPrice < 1000000) {
         message += ` (${this.formatPrice(swap.tokenPrice)})`;
       }
       
-      // Добавляем arrow для направления как у CryptoAttack
       message += ` --> `;
       
-      // Добавляем метрики кошелька с проверками
       message += `#${swap.walletAddress.slice(0, 7)}`;
       
       if (swap.winRate !== undefined && swap.winRate > 0) {
@@ -692,15 +683,13 @@ ${result.topPerformers.slice(0, 5).map((w, i) =>
         message += ` TT: ${swap.totalTrades}`;
       }
       
-      message += ` BS DS`; // Как у CryptoAttack
+      message += ` BS DS`;
       message += `\nWallet TXN #SmartSwap${swap.swapType === 'buy' ? 'Buy' : 'Sell'}`;
       
-      // HTML-ссылки на SOLSCAN
       message += `\n🔗 <a href="https://solscan.io/tx/${swap.transactionId}">TX</a> | `;
       message += `<a href="https://solscan.io/account/${swap.walletAddress}">Wallet</a> | `;
       message += `<a href="https://solscan.io/token/${swap.tokenAddress}">Token</a>`;
       
-      // Подпись для отслеживания дублей
       message += `\n📋 ${swap.transactionId.slice(0, 12)}...${swap.transactionId.slice(-6)}`;
 
       await this.sendCycleLog(message);
@@ -712,23 +701,19 @@ ${result.topPerformers.slice(0, 5).map((w, i) =>
     }
   }
 
-  // 🆕 МЕТОД ДЛЯ ПРАВИЛЬНОГО ОТОБРАЖЕНИЯ СИМВОЛОВ ТОКЕНОВ
   private getDisplayTokenSymbol(tokenSymbol: string | undefined, tokenAddress: string): string {
-    // Проверяем, что символ валидный (не пустой, не "UNKNOWN", не часть адреса)
     if (tokenSymbol && 
         tokenSymbol !== 'UNKNOWN' && 
         tokenSymbol !== 'Unknown' && 
-        tokenSymbol.length <= 10 && // Разумная длина символа
-        !tokenSymbol.includes('...') && // Не частичный адрес
-        !/^[0-9A-Fa-f]{6,}$/.test(tokenSymbol)) { // Не hex-строка
+        tokenSymbol.length <= 10 && 
+        !tokenSymbol.includes('...') && 
+        !/^[0-9A-Fa-f]{6,}$/.test(tokenSymbol)) {
       return tokenSymbol;
     }
     
-    // Fallback к части адреса с более красивым форматом
     return `${tokenAddress.slice(0, 6).toUpperCase()}`;
   }
 
-  // 🆕 МЕТОД ДЛЯ ФОРМАТИРОВАНИЯ ЦЕНЫ ТОКЕНОВ
   private formatPrice(price: number): string {
     if (price >= 1000) {
       return `$${(price / 1000).toFixed(1)}K`;
@@ -745,7 +730,6 @@ ${result.topPerformers.slice(0, 5).map((w, i) =>
     }
   }
 
-  // ✅ UTILITY METHODS
   private getCategoryEmoji(category: string): string {
     switch (category) {
       case 'sniper': return '🔫';
@@ -777,11 +761,6 @@ ${result.topPerformers.slice(0, 5).map((w, i) =>
     }
   }
 
-  private truncateAddress(address: string): string {
-    return `${address.slice(0, 4)}...${address.slice(-4)}`;
-  }
-
-  // 🔄 ИСПРАВЛЕНИЕ ФОРМАТА ВОЗРАСТА ТРАНЗАКЦИИ - как у CryptoAttack
   private formatTransactionAge(timestamp: Date): string {
     const ageMs = Date.now() - timestamp.getTime();
     const ageMinutes = Math.floor(ageMs / (1000 * 60));
@@ -803,7 +782,6 @@ ${result.topPerformers.slice(0, 5).map((w, i) =>
     }
   }
 
-  // ✅ GET STATS с упрощенными метриками
   getNotificationStats() {
     return {
       ...this.stats,
@@ -817,17 +795,14 @@ ${result.topPerformers.slice(0, 5).map((w, i) =>
     };
   }
 
-  // 🆕 Метод для приоритетной отправки (например, для команд)
   async sendPriorityMessage(message: string): Promise<void> {
-    await this.sendCycleLog(message, 10); // Высокий приоритет
+    await this.sendCycleLog(message, 10);
   }
 
-  // 🆕 ALIAS for backward compatibility with WebhookServer.ts - ДОБАВЛЕНО ЗДЕСЬ!
   async sendSmartMoneySwap(swap: SmartMoneySwap): Promise<void> {
     return this.sendSmartMoneySwapAlert(swap, 'WebhookServer');
   }
 
-  // 🆕 МЕТОДЫ ДЛЯ УПРАВЛЕНИЯ ДЕДУПЛИКАЦИЕЙ (упрощенные)
   getDuplicationStats(): {
     totalTracked: number;
     duplicatesFiltered: number;
@@ -857,7 +832,6 @@ ${result.topPerformers.slice(0, 5).map((w, i) =>
     };
   }
 
-  // 🆕 ОЧИСТКА ДЕДУПЛИКАЦИИ
   clearDuplicationCache(): void {
     this.recentTransactions.clear();
     this.logger.info('🧹 Simple duplication cache cleared');
