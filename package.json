@@ -5,7 +5,7 @@
   "main": "dist/main.js",
   "scripts": {
     "build": "npm rebuild better-sqlite3 && tsc",
-    "start": "node dist/main.js",
+    "start": "node --max-old-space-size=256 --optimize-for-size --expose-gc dist/main.js",
     "dev": "ts-node-dev --respawn --transpile-only src/main.ts",
     "clean": "rm -rf dist",
     "rebuild": "npm run clean && npm run build",
