@@ -1,44 +1,27 @@
-// src/services/SmartMoneyDatabase.ts - DRAGON БД СИСТЕМА ПОЛНОЙ ЗАМЕНЫ + DYNAMIC EVALUATION
+// src/services/SmartMoneyDatabase.ts - DRAGON БД СИСТЕМА ПОЛНОЙ ЗАМЕНЫ + SQLITE BOOLEAN FIX
 import BetterSqlite3 from 'better-sqlite3';
 import { Logger } from '../utils/Logger';
 import { SmartMoneyWallet, TokenSwap } from '../types';
 import path from 'path';
 import fs from 'fs';
 
-// 🆕 INTERFACES FOR DYNAMIC EVALUATION (сохранены существующие)
 interface WalletPerformanceUpdate {
-  address: string;
-  currentPnL: number;
-  last30DaysPnL: number;
-  last7DaysPnL: number;
-  profitFactor: number;
-  recentWinRate: number;
-  realTimeScore: number;
-  trendDirection: 'up' | 'down' | 'stable';
-  lastUpdated: Date;
+  address: string; currentPnL: number; last30DaysPnL: number; last7DaysPnL: number;
+  profitFactor: number; recentWinRate: number; realTimeScore: number;
+  trendDirection: 'up' | 'down' | 'stable'; lastUpdated: Date;
 }
 
 interface WalletRankingMetrics {
-  address: string;
-  category: 'sniper' | 'hunter' | 'trader';
-  realTimeScore: number;
-  profitFactor: number;
-  recentPnL: number;
-  consistencyScore: number;
-  riskAdjustedReturn: number;
-  rank: number;
+  address: string; category: 'sniper' | 'hunter' | 'trader'; realTimeScore: number;
+  profitFactor: number; recentPnL: number; consistencyScore: number;
+  riskAdjustedReturn: number; rank: number;
   tier: 'elite' | 'premium' | 'good' | 'average' | 'underperforming';
 }
 
 interface ProfitFirstStats {
-  totalWallets: number;
-  eliteWallets: number;
-  premiumWallets: number;
-  avgRealTimeScore: number;
-  avgProfitFactor: number;
-  totalRecentPnL: number;
-  topPerformers: WalletRankingMetrics[];
-  underperformers: WalletRankingMetrics[];
+  totalWallets: number; eliteWallets: number; premiumWallets: number;
+  avgRealTimeScore: number; avgProfitFactor: number; totalRecentPnL: number;
+  topPerformers: WalletRankingMetrics[]; underperformers: WalletRankingMetrics[];
 }
 
 export class SmartMoneyDatabase {
@@ -50,8 +33,6 @@ export class SmartMoneyDatabase {
   private readonly PROFIT_THRESHOLDS = {
     elite: 90, premium: 80, good: 70, average: 60, underperforming: 0
   }
-
-  // ========== СТАТИСТИКА И ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ==========;
 
   constructor() {
     this.logger = Logger.getInstance();
@@ -65,7 +46,6 @@ export class SmartMoneyDatabase {
 
   async init(): Promise<void> {
     try {
-      // Создаем основные таблицы (сокращено для экономии места)
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS smart_money_wallets (
           address TEXT PRIMARY KEY,
@@ -152,7 +132,6 @@ export class SmartMoneyDatabase {
 
       await this.migrateExistingData();
 
-      // Индексы (сокращены)
       this.db.exec(`
         CREATE INDEX IF NOT EXISTS idx_sm_wallets_category ON smart_money_wallets(category);
         CREATE INDEX IF NOT EXISTS idx_sm_wallets_active ON smart_money_wallets(is_active);
@@ -210,11 +189,8 @@ export class SmartMoneyDatabase {
     }
   }
 
-  // ========== 🐲 НОВЫЕ DRAGON МЕТОДЫ ==========
+  // ========== 🐲 DRAGON МЕТОДЫ ==========
 
-  /**
-   * 🗑️ УДАЛЕНИЕ всех Dragon кошельков
-   */
   async clearAllDragonWallets(): Promise<number> {
     try {
       this.logger.info('🗑️ Clearing all Dragon wallets from database...');
@@ -249,13 +225,8 @@ export class SmartMoneyDatabase {
     }
   }
 
-  /**
-   * 🔄 ПОЛНАЯ ЗАМЕНА Dragon кошельков
-   */
   async replaceDragonWallets(newWallets: SmartMoneyWallet[]): Promise<{
-    cleared: number;
-    added: number;
-    errors: string[];
+    cleared: number; added: number; errors: string[];
   }> {
     try {
       this.logger.info(`🔄 Replacing Dragon wallets: ${newWallets.length} new wallets`);
@@ -292,22 +263,19 @@ export class SmartMoneyDatabase {
   }
 
   private determinePriority(wallet: SmartMoneyWallet): 'high' | 'medium' | 'low' {
-    if (wallet.totalPnL >= 1000000) return 'high'; // $1M+
-    if (wallet.totalPnL >= 500000) return 'high';  // $500K+
-    if (wallet.winRate >= 60) return 'high';       // 60%+ WR
+    if (wallet.totalPnL >= 1000000) return 'high';
+    if (wallet.totalPnL >= 500000) return 'high';
+    if (wallet.winRate >= 60) return 'high';
     return 'medium';
   }
 
-  /**
-   * 🔍 Проверка источника добавления кошелька
-   */
   async getWalletSource(address: string): Promise<string | null> {
     try {
       const tableInfo = this.db.prepare("PRAGMA table_info(smart_money_wallets)").all() as any[];
       const hasAddedByColumn = tableInfo.some((col: any) => col.name === 'added_by');
       
       if (!hasAddedByColumn) {
-        return null; // Колонка не существует
+        return null;
       }
       
       const row = this.db.prepare('SELECT added_by FROM smart_money_wallets WHERE address = ?').get(address) as any;
@@ -318,13 +286,8 @@ export class SmartMoneyDatabase {
     }
   }
 
-  /**
-   * 🔍 Поиск подозрительных Dragon кошельков для проверки активности
-   */
   async findSuspiciousDragonWallets(): Promise<Array<{
-    address: string;
-    last_active_at: string;
-    created_at: string;
+    address: string; last_active_at: string; created_at: string;
   }>> {
     try {
       const tableInfo = this.db.prepare("PRAGMA table_info(smart_money_wallets)").all() as any[];
@@ -335,7 +298,6 @@ export class SmartMoneyDatabase {
         return [];
       }
 
-      // SQL запрос для поиска Dragon кошельков с подозрительной активностью
       const query = `
         SELECT address, last_active_at, created_at
         FROM smart_money_wallets 
@@ -347,9 +309,7 @@ export class SmartMoneyDatabase {
       `;
 
       const rows = this.db.prepare(query).all() as Array<{
-        address: string;
-        last_active_at: string;
-        created_at: string;
+        address: string; last_active_at: string; created_at: string;
       }>;
 
       return rows;
@@ -359,15 +319,8 @@ export class SmartMoneyDatabase {
     }
   }
 
-  /**
-   * 📊 Статистика по источникам кошельков
-   */
   async getWalletsBySource(): Promise<{
-    manual: number;
-    dragon: number;
-    discovery: number;
-    other: number;
-    total: number;
+    manual: number; dragon: number; discovery: number; other: number; total: number;
   }> {
     try {
       const stmt = this.db.prepare(`
@@ -401,15 +354,11 @@ export class SmartMoneyDatabase {
     }
   }
 
-  // ========== ОСНОВНЫЕ МЕТОДЫ (сохранены, сокращены комментарии) ==========
+  // ========== ОСНОВНЫЕ МЕТОДЫ ==========
 
   async saveSmartWallet(wallet: SmartMoneyWallet, config?: {
-    nickname?: string;
-    description?: string;
-    minTradeAlert?: number;
-    priority?: 'high' | 'medium' | 'low';
-    enabled?: boolean;
-    verified?: boolean;
+    nickname?: string; description?: string; minTradeAlert?: number;
+    priority?: 'high' | 'medium' | 'low'; enabled?: boolean; verified?: boolean;
     addedBy?: 'manual' | 'discovery' | 'dragon';
   }): Promise<void> {
 
@@ -452,7 +401,7 @@ export class SmartMoneyDatabase {
         wallet.isActive ? 1 : 0,
         config?.verified !== undefined ? (config.verified ? 1 : 0) : 0,
         wallet.lastActiveAt.toISOString(),
-        false,
+        0, // 🔥 ИСПРАВЛЕНО: было false, стало 0
         null,
         0,
         wallet.stealthLevel || null,
@@ -473,7 +422,7 @@ export class SmartMoneyDatabase {
         wallet.address, wallet.category, wallet.winRate, wallet.totalPnL, wallet.totalTrades,
         wallet.avgTradeSize, wallet.maxTradeSize, wallet.minTradeSize, wallet.performanceScore,
         wallet.sharpeRatio || null, wallet.maxDrawdown || null, wallet.lastActiveAt.toISOString(),
-        wallet.isActive ? 1 : 0, false, null, 0, wallet.stealthLevel || null,
+        wallet.isActive ? 1 : 0, 0, null, 0, wallet.stealthLevel || null, // 🔥 ИСПРАВЛЕНО: 0 вместо false
         wallet.earlyEntryRate || null, wallet.avgHoldTime || null, wallet.volumeScore || null
       );
     }
@@ -507,9 +456,7 @@ export class SmartMoneyDatabase {
   }
 
   async updateWalletSettings(address: string, settings: {
-    minTradeAlert?: number;
-    priority?: 'high' | 'medium' | 'low';
-    enabled?: boolean;
+    minTradeAlert?: number; priority?: 'high' | 'medium' | 'low'; enabled?: boolean;
   }): Promise<void> {
     const tableInfo = this.db.prepare("PRAGMA table_info(smart_money_wallets)").all() as any[];
     const columnNames = tableInfo.map((col: any) => col.name);
@@ -527,7 +474,7 @@ export class SmartMoneyDatabase {
     }
     if (settings.enabled !== undefined && columnNames.includes('enabled')) {
       updates.push('enabled = ?');
-      params.push(settings.enabled ? 1 : 0);
+      params.push(settings.enabled ? 1 : 0); // 🔥 ИСПРАВЛЕНО: явная конвертация в 1/0
     }
 
     if (updates.length > 0) {
@@ -539,11 +486,8 @@ export class SmartMoneyDatabase {
   }
 
   async getWalletSettings(address: string): Promise<{
-    minTradeAlert: number;
-    priority: 'high' | 'medium' | 'low';
-    enabled: boolean;
-    nickname?: string;
-    description?: string;
+    minTradeAlert: number; priority: 'high' | 'medium' | 'low'; enabled: boolean;
+    nickname?: string; description?: string;
   } | null> {
     const tableInfo = this.db.prepare("PRAGMA table_info(smart_money_wallets)").all() as any[];
     const columnNames = tableInfo.map((col: any) => col.name);
@@ -578,7 +522,7 @@ export class SmartMoneyDatabase {
     this.logger.info(`⚠️ Deactivated wallet ${address}: ${reason}`);
   }
 
-  // ========== СУЩЕСТВУЮЩИЕ PERFORMANCE МЕТОДЫ (сокращены) ==========
+  // ========== PERFORMANCE МЕТОДЫ ==========
 
   private async initializeWalletPerformanceMetrics(address: string, initialScore: number = 50): Promise<void> {
     try {
@@ -628,15 +572,9 @@ export class SmartMoneyDatabase {
       const row = this.db.prepare(`SELECT * FROM wallet_performance_metrics WHERE address = ?`).get(address) as any;
       if (!row) return null;
       return {
-        address: row.address,
-        currentPnL: row.current_pnl,
-        last30DaysPnL: row.last_30days_pnl,
-        last7DaysPnL: row.last_7days_pnl,
-        profitFactor: row.profit_factor,
-        recentWinRate: row.recent_win_rate,
-        realTimeScore: row.real_time_score,
-        trendDirection: row.trend_direction,
-        lastUpdated: new Date(row.last_updated)
+        address: row.address, currentPnL: row.current_pnl, last30DaysPnL: row.last_30days_pnl,
+        last7DaysPnL: row.last_7days_pnl, profitFactor: row.profit_factor, recentWinRate: row.recent_win_rate,
+        realTimeScore: row.real_time_score, trendDirection: row.trend_direction, lastUpdated: new Date(row.last_updated)
       };
     } catch (error) {
       this.logger.error(`❌ Error getting performance metrics for ${address}:`, error);
@@ -644,25 +582,19 @@ export class SmartMoneyDatabase {
     }
   }
 
-  /**
-   * 🚀 НОВЫЙ МЕТОД: Безопасная замена всех кошельков с performance metrics
-   */
   async safeReplaceAllWallets(newWallets: SmartMoneyWallet[], configs?: any[]): Promise<void> {
     const transaction = this.db.transaction(() => {
       try {
-        // 1. Удаляем в правильном порядке
         this.db.prepare('DELETE FROM wallet_performance_history').run();
         this.db.prepare('DELETE FROM wallet_performance_metrics').run();
         this.db.prepare('DELETE FROM smart_money_transactions').run();
         const walletResult = this.db.prepare('DELETE FROM smart_money_wallets').run();
         this.logger.info(`🧹 Cleared ${walletResult.changes} existing wallets`);
         
-        // 2. Добавляем новые кошельки с performance metrics
         for (let i = 0; i < newWallets.length; i++) {
           const wallet = newWallets[i];
           const config = configs?.[i];
           
-          // Добавляем основной кошелек
           const stmt = this.db.prepare(`
             INSERT INTO smart_money_wallets (
               address, category, nickname, description,
@@ -679,37 +611,20 @@ export class SmartMoneyDatabase {
           const safeEnabled = config?.verified !== undefined ? (config.verified ? 1 : 0) : 0;
 
           stmt.run(
-            wallet.address,
-            wallet.category,
+            wallet.address, wallet.category,
             config?.nickname || `${wallet.category.charAt(0).toUpperCase() + wallet.category.slice(1)} ${wallet.address.slice(0, 8)}`,
             config?.description || `Автоматически добавленный ${wallet.category} кошелек`,
-            wallet.winRate,
-            wallet.totalPnL,
-            wallet.totalTrades,
-            wallet.avgTradeSize,
-            wallet.maxTradeSize,
-            wallet.minTradeSize,
-            wallet.performanceScore,
-            wallet.sharpeRatio || null,
-            wallet.maxDrawdown || null,
-            wallet.volumeScore || null,
-            wallet.earlyEntryRate || null,
-            wallet.avgHoldTime || null,
+            wallet.winRate, wallet.totalPnL, wallet.totalTrades, wallet.avgTradeSize, wallet.maxTradeSize, wallet.minTradeSize,
+            wallet.performanceScore, wallet.sharpeRatio || null, wallet.maxDrawdown || null, wallet.volumeScore || null,
+            wallet.earlyEntryRate || null, wallet.avgHoldTime || null,
             config?.minTradeAlert || (wallet.category === 'trader' ? 15000 : wallet.category === 'hunter' ? 5000 : 3000),
             config?.priority || (wallet.performanceScore > 85 ? 'high' : 'medium'),
             1, // enabled
-            wallet.isActive ? 1 : 0,
-            safeEnabled, // verified
-            wallet.lastActiveAt.toISOString(),
-            false, // is_family_member
-            null,  // family_addresses
-            0,     // coordination_score
-            wallet.stealthLevel || null,
-            normalizedAddedBy,
-            new Date().toISOString()
+            wallet.isActive ? 1 : 0, safeEnabled, wallet.lastActiveAt.toISOString(),
+            0, null, 0, wallet.stealthLevel || null, // 🔥 ИСПРАВЛЕНО: 0 вместо false
+            normalizedAddedBy, new Date().toISOString()
           );
 
-          // 🆕 Добавляем performance metrics
           const tier = this.calculateTierFromScore(wallet.performanceScore);
           const perfStmt = this.db.prepare(`
             INSERT INTO wallet_performance_metrics (
@@ -730,9 +645,7 @@ export class SmartMoneyDatabase {
   }
 
   async getWalletStats(): Promise<{
-    total: number;
-    active: number;
-    enabled: number;
+    total: number; active: number; enabled: number;
     byCategory: { sniper: number; hunter: number; trader: number };
     byPriority: { high: number; medium: number; low: number };
     familyMembers: number;
@@ -754,12 +667,8 @@ export class SmartMoneyDatabase {
       };
 
       return {
-        total: diagnostics.totalWallets,
-        active: diagnostics.activeWallets,
-        enabled: diagnostics.enabledWallets,
-        byCategory,
-        byPriority,
-        familyMembers: 0
+        total: diagnostics.totalWallets, active: diagnostics.activeWallets, enabled: diagnostics.enabledWallets,
+        byCategory, byPriority, familyMembers: 0
       };
     } catch (error) {
       this.logger.error('❌ Error getting wallet stats:', error);
@@ -773,11 +682,8 @@ export class SmartMoneyDatabase {
   }
 
   async getDiagnosticInfo(): Promise<{
-    totalWallets: number;
-    activeWallets: number;
-    enabledWallets: number;
-    recentAddresses: string[];
-    oldestAddresses: string[];
+    totalWallets: number; activeWallets: number; enabledWallets: number;
+    recentAddresses: string[]; oldestAddresses: string[];
   }> {
     try {
       const totalRow = this.db.prepare('SELECT COUNT(*) as count FROM smart_money_wallets').get() as any;
@@ -796,11 +702,8 @@ export class SmartMoneyDatabase {
       const oldestRows = this.db.prepare(`SELECT address FROM smart_money_wallets ORDER BY created_at ASC, address ASC LIMIT 5`).all() as any[];
 
       return {
-        totalWallets: totalRow.count,
-        activeWallets: activeRow.count,
-        enabledWallets: enabledCount,
-        recentAddresses: recentRows.map(row => row.address),
-        oldestAddresses: oldestRows.map(row => row.address)
+        totalWallets: totalRow.count, activeWallets: activeRow.count, enabledWallets: enabledCount,
+        recentAddresses: recentRows.map(row => row.address), oldestAddresses: oldestRows.map(row => row.address)
       };
     } catch (error) {
       this.logger.error('❌ Error getting diagnostic info:', error);
@@ -810,26 +713,13 @@ export class SmartMoneyDatabase {
 
   private mapRowToWallet(row: any): SmartMoneyWallet {
     return {
-      address: row.address,
-      category: row.category,
-      winRate: row.win_rate,
-      totalPnL: row.total_pnl,
-      totalTrades: row.total_trades,
-      avgTradeSize: row.avg_trade_size,
-      maxTradeSize: row.max_trade_size,
-      minTradeSize: row.min_trade_size,
-      sharpeRatio: row.sharpe_ratio,
-      maxDrawdown: row.max_drawdown,
-      lastActiveAt: new Date(row.last_active_at),
-      performanceScore: row.performance_score,
-      volumeScore: row.volume_score,
-      isActive: !!row.is_active,
-      isFamilyMember: false,
-      familyAddresses: undefined,
-      coordinationScore: 0,
-      stealthLevel: row.stealth_level,
-      earlyEntryRate: row.early_entry_rate,
-      avgHoldTime: row.avg_hold_time,
+      address: row.address, category: row.category, winRate: row.win_rate, totalPnL: row.total_pnl,
+      totalTrades: row.total_trades, avgTradeSize: row.avg_trade_size, maxTradeSize: row.max_trade_size,
+      minTradeSize: row.min_trade_size, sharpeRatio: row.sharpe_ratio, maxDrawdown: row.max_drawdown,
+      lastActiveAt: new Date(row.last_active_at), performanceScore: row.performance_score,
+      volumeScore: row.volume_score, isActive: !!row.is_active, isFamilyMember: false,
+      familyAddresses: undefined, coordinationScore: 0, stealthLevel: row.stealth_level,
+      earlyEntryRate: row.early_entry_rate, avgHoldTime: row.avg_hold_time,
       createdAt: row.created_at ? new Date(row.created_at) : undefined,
       updatedAt: row.updated_at ? new Date(row.updated_at) : undefined
     };
@@ -843,7 +733,7 @@ export class SmartMoneyDatabase {
     return 'underperforming';
   }
 
-  // ========== СОКРАЩЕННЫЕ ОСТАЛЬНЫЕ МЕТОДЫ ==========
+  // ========== ОСТАЛЬНЫЕ МЕТОДЫ ==========
 
   async saveSmartMoneyTransaction(swapInfo: any): Promise<void> {
     try {
@@ -878,29 +768,15 @@ export class SmartMoneyDatabase {
     `).all(walletAddress, afterDate.toISOString()) as any[];
 
     return rows.map(row => ({
-      transactionId: row.transaction_id,
-      walletAddress: row.wallet_address,
-      tokenAddress: row.token_address,
-      tokenSymbol: row.token_symbol,
-      tokenName: row.token_name,
-      amount: row.amount,
-      amountUSD: row.amount_usd,
-      timestamp: new Date(row.timestamp),
-      dex: row.dex,
-      isNewWallet: false,
-      isReactivatedWallet: false,
-      walletAge: 0,
-      daysSinceLastActivity: 0,
-      swapType: row.swap_type as 'buy' | 'sell'
+      transactionId: row.transaction_id, walletAddress: row.wallet_address, tokenAddress: row.token_address,
+      tokenSymbol: row.token_symbol, tokenName: row.token_name, amount: row.amount, amountUSD: row.amount_usd,
+      timestamp: new Date(row.timestamp), dex: row.dex, isNewWallet: false, isReactivatedWallet: false,
+      walletAge: 0, daysSinceLastActivity: 0, swapType: row.swap_type as 'buy' | 'sell'
     }));
   }
 
   async updateWalletPerformance(address: string, metrics: {
-    winRate: number;
-    totalPnL: number;
-    totalTrades: number;
-    lastActiveAt: Date;
-    performanceScore?: number;
+    winRate: number; totalPnL: number; totalTrades: number; lastActiveAt: Date; performanceScore?: number;
   }): Promise<void> {
     this.db.prepare(`
       UPDATE smart_money_wallets 
