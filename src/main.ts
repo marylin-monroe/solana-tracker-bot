@@ -339,7 +339,7 @@ class SmartMoneyBotRunner {
       this.logger.info('🚀 Starting Optimized Smart Money Bot with CORRECT swap logic...');
 
       await Promise.all([this.database.init(), this.smDatabase.init()]);
-      const loadedWallets = await this.smartWalletLoader.loadWalletsFromConfig();
+      const smartWallets = await this.smDatabase.getAllActiveSmartWallets();
       
       this.isRunning = true;
       this.setupTelegramCommands();
