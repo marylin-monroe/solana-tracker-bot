@@ -96,6 +96,8 @@ export class SmartMoneyFlowAnalyzer {
   private telegramNotifier: TelegramNotifier;
   private readonly tokenMetadataService: TokenMetadataService;
   private logger: Logger;
+  private readonly CONCURRENT_ENRICH_CALLS = 3;
+  private readonly DELAY_BETWEEN_SUB_BATCHES = 500
 
   // 🚀 ОПТИМИЗИРОВАННЫЕ КЕШИ
   private holdingsCache = new Map<string, { data: TokenHolding[]; timestamp: number }>();
@@ -261,39 +263,56 @@ export class SmartMoneyFlowAnalyzer {
     };
   }
 
-  // 🚀 НОВЫЙ МЕТОД: БАТЧИНГ FDV ЗАПРОСОВ
+  // 🚨 КЛЮЧЕВОЙ МЕТОД: КОНТРОЛИРУЕМЫЙ БАТЧИНГ FDV (БЕЗ ВЗРЫВНОЙ НАГРУЗКИ!)
   private async batchGetTokenMetadata(tokens: string[]): Promise<Map<string, any>> {
     const results = new Map();
-    const BATCH_SIZE = 20; // 20 токенов за раз
     
-    for (let i = 0; i < tokens.length; i += BATCH_SIZE) {
-      const batch = tokens.slice(i, i + BATCH_SIZE);
-      
-      const batchPromises = batch.map(async (token) => {
+    this.logger.info(`[BatchMetadata] Processing ${tokens.length} tokens with controlled batching (max ${this.CONCURRENT_ENRICH_CALLS} concurrent calls)...`);
+
+    // 🔥 КОНТРОЛИРУЕМОЕ обработка под-батчами (НЕ взрывная нагрузка!)
+    for (let i = 0; i < tokens.length; i += this.CONCURRENT_ENRICH_CALLS) {
+      const subBatch = tokens.slice(i, i + this.CONCURRENT_ENRICH_CALLS);
+      this.logger.debug(`[BatchMetadata] Processing sub-batch ${Math.floor(i/this.CONCURRENT_ENRICH_CALLS) + 1}: [${subBatch.map(t => t.slice(0,8)).join(', ')}]`);
+
+      const batchPromises = subBatch.map(async (token) => {
         try {
+          this.logger.debug(`[BatchMetadata] → Requesting enriched info for ${token.slice(0,8)}...`);
+          const startTime = Date.now();
+          
+          // 🔥 Каждый getEnrichedTokenInfoWithFDV делает 2-3 fetch, но мы ограничиваем количество одновременных вызовов
           const data = await this.getEnrichedTokenInfoWithFDV(token);
+          
+          const duration = Date.now() - startTime;
+          if (data) {
+            this.logger.debug(`[BatchMetadata] ✅ Received enriched info for ${token.slice(0,8)} (${duration}ms)`);
+          } else {
+            this.logger.warn(`[BatchMetadata] ⚠️ No enriched data received for ${token.slice(0,8)} (${duration}ms)`);
+          }
+          
           return { token, data };
         } catch (error) {
-          this.logger.warn(`Failed to get FDV for ${token}:`, error);
+          this.logger.warn(`[BatchMetadata] ❌ Failed to get enriched metadata for ${token.slice(0,8)}:`, error);
           return { token, data: null };
         }
       });
-      
+
+      // 🔥 Ждем завершения под-батча (максимум 3 одновременных запроса)
       const batchResults = await Promise.allSettled(batchPromises);
-      
+
       batchResults.forEach((result) => {
         if (result.status === 'fulfilled' && result.value.data) {
           results.set(result.value.token, result.value.data);
         }
       });
-      
-      // Пауза между батчами для rate limiting
-      if (i + BATCH_SIZE < tokens.length) {
-        await this.sleep(1000); // 1 секунда
+
+      // 🔥 Пауза между под-батчами (даем API передышку)
+      if (i + this.CONCURRENT_ENRICH_CALLS < tokens.length) {
+        this.logger.debug(`[BatchMetadata] 💤 Pausing ${this.DELAY_BETWEEN_SUB_BATCHES}ms between sub-batches...`);
+        await this.sleep(this.DELAY_BETWEEN_SUB_BATCHES);
       }
     }
     
-    this.logger.info(`✅ Batched ${tokens.length} tokens, got ${results.size} results`);
+    this.logger.info(`✅ [BatchMetadata] Controlled batching completed: ${tokens.length} tokens processed, ${results.size} successful enrichments`);
     return results;
   }
 

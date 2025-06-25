@@ -1,4 +1,4 @@
-// src/services/QuickNodeWebhookManager.ts - 🔥 API OPTIMIZED: 2min intervals, 20 batch wallets, 3 signatures
+// src/services/QuickNodeWebhookManager.ts - 🔥 ИСПРАВЛЕНО: КОНТРОЛЬ ПАРАЛЛЕЛИЗМА
 import { Logger } from '../utils/Logger';
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
 import { TelegramNotifier } from './TelegramNotifier';
@@ -64,10 +64,12 @@ export class QuickNodeWebhookManager {
   private telegramNotifier: TelegramNotifier | null = null;
   private tokenMetadataService: TokenMetadataService;
   
-  // 🔥 ОПТИМИЗИРОВАННЫЕ КОНСТАНТЫ
-  private readonly POLLING_INTERVAL = 2 * 60 * 1000; // 2 минуты (было 1 минута)
-  private readonly MAX_WALLETS_PER_BATCH = 20; // максимум 20 кошельков за раз
-  private readonly SIGNATURES_LIMIT = 3; // только 3 последние транзакции (было 5)
+  // 🔥 КОНСТАНТЫ С КОНТРОЛЕМ ПАРАЛЛЕЛИЗМА
+  private readonly POLLING_INTERVAL = 2 * 60 * 1000; // 2 минуты
+  private readonly MAX_WALLETS_PER_BATCH = 20; // общий размер батча
+  private readonly CONCURRENT_WALLET_PROCESSING = 3; // 🆕 МАКСИМУМ 3 КОШЕЛЬКА ОДНОВРЕМЕННО
+  private readonly DELAY_BETWEEN_WALLET_SUB_BATCHES = 1000; // 🆕 ПАУЗА МЕЖДУ ПОД-БАТЧАМИ
+  private readonly SIGNATURES_LIMIT = 3; // только 3 последние транзакции
   
   private isPollingActive: boolean = false;
   private pollingInterval: NodeJS.Timeout | null = null;
@@ -95,7 +97,7 @@ export class QuickNodeWebhookManager {
     this.initializeProviders();
     this.startLimitResetTimer();
     this.startCacheCleanup();
-    this.logger.info('🔥 QuickNodeWebhookManager optimized: 2min intervals, 20 batch wallets, 3 signatures');
+    this.logger.info(`🔥 QuickNodeWebhookManager: concurrency limited to ${this.CONCURRENT_WALLET_PROCESSING} wallets`);
   }
 
   private initializeProviders(): void {
@@ -368,10 +370,9 @@ export class QuickNodeWebhookManager {
     }
   }
 
-  // 🔥 OPTIMIZED POLLING MODE: 2 минуты интервал
   async startPollingMode(smartWallets: SmartMoneyWallet[]): Promise<string> {
     try {
-      this.logger.info('🚀 Starting OPTIMIZED POLLING mode for Smart Money monitoring...');
+      this.logger.info('🚀 Starting CONTROLLED POLLING mode for Smart Money monitoring...');
       
       this.monitoredWallets = smartWallets;
       this.isPollingActive = true;
@@ -380,7 +381,7 @@ export class QuickNodeWebhookManager {
       
       await this.pollWalletsForTransactions();
       
-      this.logger.info(`✅ Optimized polling started for ${smartWallets.length} wallets (${this.POLLING_INTERVAL/1000}s interval)`);
+      this.logger.info(`✅ Controlled polling started for ${smartWallets.length} wallets (${this.POLLING_INTERVAL/1000}s interval, max ${this.CONCURRENT_WALLET_PROCESSING} concurrent)`);
       return 'polling-mode';
       
     } catch (error) {
@@ -398,28 +399,34 @@ export class QuickNodeWebhookManager {
     this.logger.info('⏹️ Polling mode stopped');
   }
 
-  // 🔥 БАТЧИНГ КОШЕЛЬКОВ: 20 за раз
+  // 🔥 ИСПРАВЛЕНО: КОНТРОЛЬ ПАРАЛЛЕЛИЗМА - НЕ БОЛЕЕ 3 КОШЕЛЬКОВ ОДНОВРЕМЕННО
   private async pollWalletsForTransactions(): Promise<void> {
     if (!this.isPollingActive) return;
 
-    this.logger.info(`🔍 Polling ${this.monitoredWallets.length} Smart Money wallets in batches of ${this.MAX_WALLETS_PER_BATCH}...`);
+    this.logger.info(`🔍 Polling ${this.monitoredWallets.length} SM wallets. Concurrency: ${this.CONCURRENT_WALLET_PROCESSING}`);
     
-    for (let i = 0; i < this.monitoredWallets.length; i += this.MAX_WALLETS_PER_BATCH) {
+    const activeWallets = this.monitoredWallets;
+
+    // 🆕 ОБРАБОТКА ПО ПОД-БАТЧАМ С ОГРАНИЧЕННОЙ ПАРАЛЛЕЛИЗАЦИЕЙ
+    for (let i = 0; i < activeWallets.length; i += this.CONCURRENT_WALLET_PROCESSING) {
       if (!this.isPollingActive) break;
+
+      const walletSubBatch = activeWallets.slice(i, i + this.CONCURRENT_WALLET_PROCESSING);
+      this.logger.debug(`[Polling] Processing wallet sub-batch ${Math.floor(i/this.CONCURRENT_WALLET_PROCESSING) + 1}: [${walletSubBatch.map(w => w.address.slice(0,6)).join(', ')}]`);
+
+      // 🔥 ТОЛЬКО 3 КОШЕЛЬКА ОДНОВРЕМЕННО (вместо 20)
+      const batchPromises = walletSubBatch.map(wallet => this.processWalletBatch(wallet));
       
-      const batch = this.monitoredWallets.slice(i, i + this.MAX_WALLETS_PER_BATCH);
-      
-      await Promise.allSettled(
-        batch.map(wallet => this.processWalletBatch(wallet))
-      );
-      
-      // Пауза между батчами
-      if (i + this.MAX_WALLETS_PER_BATCH < this.monitoredWallets.length) {
-        await this.sleep(2000); // 2 секунды между батчами
-        this.logger.info(`📊 Processed batch ${Math.floor(i/this.MAX_WALLETS_PER_BATCH) + 1}/${Math.ceil(this.monitoredWallets.length/this.MAX_WALLETS_PER_BATCH)}`);
+      await Promise.allSettled(batchPromises); // Дожидаемся завершения под-батча
+
+      // Пауза между под-батчами
+      if (i + this.CONCURRENT_WALLET_PROCESSING < activeWallets.length) {
+        this.logger.debug(`[Polling] 💤 Pausing ${this.DELAY_BETWEEN_WALLET_SUB_BATCHES}ms between wallet sub-batches...`);
+        await this.sleep(this.DELAY_BETWEEN_WALLET_SUB_BATCHES);
       }
     }
     
+    this.logger.info(`[Polling] Cycle finished for ${activeWallets.length} wallets.`);
     this.logApiUsageWithProviderStats();
   }
 
@@ -453,7 +460,6 @@ export class QuickNodeWebhookManager {
     }
   }
 
-  // 🔥 УМЕНЬШЕННЫЙ ЛИМИТ СИГНАТУР: 3 вместо 5
   private async getWalletSignatures(walletAddress: string, beforeSignature?: string): Promise<Array<{signature: string; blockTime: number}>> {
     try {
       const params: any = [
@@ -563,7 +569,6 @@ export class QuickNodeWebhookManager {
     return `${ageMinutes}m`;
   }
 
-  // 🔥 ИСПРАВЛЕНО: правильный расчет USD с decimals + улучшенная логика
   private async extractSwapsFromTransaction(transaction: any, wallet: SmartMoneyWallet): Promise<SmartMoneySwap[]> {
     const swaps: SmartMoneySwap[] = [];
 
@@ -579,12 +584,10 @@ export class QuickNodeWebhookManager {
 
         const preBalance = preTokenBalances.find((pre: any) => pre.accountIndex === postBalance.accountIndex);
 
-        // 🔥 ИСПРАВЛЕНО: Используем правильное поле API
         const postRawAmount = parseFloat(postBalance.uiTokenAmount.amount || '0');
         const preRawAmount = preBalance ? parseFloat(preBalance.uiTokenAmount.amount || '0') : 0;
         const rawDifference = postRawAmount - preRawAmount;
         
-        // 🔥 ИСПРАВЛЕНО: Правильные fallback decimals
         const tokenMint = postBalance.mint;
         const decimals = postBalance.uiTokenAmount.decimals || this.getDefaultDecimals(tokenMint);
         const actualDifference = rawDifference / Math.pow(10, decimals);
@@ -648,7 +651,6 @@ export class QuickNodeWebhookManager {
     return true;
   }
 
-  // 🔥 ИСПРАВЛЕНО: добавлен метод getDefaultDecimals
   private getDefaultDecimals(tokenMint: string): number {
     if (tokenMint === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') return 6; // USDC
     if (tokenMint === 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB') return 6; // USDT  
@@ -806,6 +808,7 @@ export class QuickNodeWebhookManager {
     pollingInterval: string;
     maxWalletsPerBatch: number;
     signaturesLimit: number;
+    concurrentWalletProcessing: number; // 🆕
   } {
     return {
       isActive: this.isPollingActive,
@@ -815,7 +818,8 @@ export class QuickNodeWebhookManager {
       botStartTime: new Date(this.botStartTime).toISOString(),
       pollingInterval: `${this.POLLING_INTERVAL/1000}s`,
       maxWalletsPerBatch: this.MAX_WALLETS_PER_BATCH,
-      signaturesLimit: this.SIGNATURES_LIMIT
+      signaturesLimit: this.SIGNATURES_LIMIT,
+      concurrentWalletProcessing: this.CONCURRENT_WALLET_PROCESSING // 🆕 НОВАЯ МЕТРИКА
     };
   }
 }
