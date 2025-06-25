@@ -418,11 +418,11 @@ export class DragonResultsParser {
         totalPnL: wallet.pnl, totalTrades: wallet.trades,
         avgTradeSize: wallet.trades > 0 ? wallet.volume / wallet.trades : 0,
         maxTradeSize: wallet.volume * 0.1, minTradeSize: wallet.volume * 0.01,
-        performanceScore: wallet.score || 70, sharpeRatio: undefined, maxDrawdown: undefined,
+        performanceScore: wallet.score || 70, sharpeRatio: null, maxDrawdown: null,
         lastActiveAt: new Date(wallet.last_active * 1000), isActive: true,
-        isFamilyMember: false, familyAddresses: undefined, coordinationScore: 0,
-        stealthLevel: undefined, earlyEntryRate: undefined, avgHoldTime: undefined,
-        volumeScore: undefined, createdAt: new Date(), updatedAt: new Date()
+        isFamilyMember: false, familyAddresses: null, coordinationScore: 0,
+        stealthLevel: null, earlyEntryRate: null, avgHoldTime: null,
+        volumeScore: null, createdAt: new Date(), updatedAt: new Date()
       } as SmartMoneyWallet;
     });
   }
