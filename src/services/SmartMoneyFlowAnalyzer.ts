@@ -1,4 +1,4 @@
-// src/services/SmartMoneyFlowAnalyzer.ts - 🔥 API OPTIMIZED: Батчинг FDV + 50% меньше запросов
+// src/services/SmartMoneyFlowAnalyzer.ts - 🔥 ОПТИМИЗАЦИЯ HNT + БАТЧИНГ FDV + 50% МЕНЬШЕ API
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
 import { Database } from './Database';
 import { TelegramNotifier } from './TelegramNotifier';
@@ -74,7 +74,6 @@ export interface WalletPerformanceMetrics {
   recentHitRate: number;
 }
 
-// 🔥 НОВЫЙ ИНТЕРФЕЙС для типизации
 interface WalletTokenData {
   category: 'sniper' | 'hunter' | 'trader';
   buyVolume: number;
@@ -123,7 +122,7 @@ export class SmartMoneyFlowAnalyzer {
     this.telegramNotifier = telegramNotifier;
     this.tokenMetadataService = tokenMetadataService;
     this.logger = Logger.getInstance();
-    this.logger.info('📊 SmartMoneyFlowAnalyzer initialized with BATCHING optimization');
+    this.logger.info('📊 SmartMoneyFlowAnalyzer initialized with HNT OPTIMIZATION');
   }
 
   // 🔍 ГЛАВНЫЙ МЕТОД с батчингом
@@ -143,7 +142,7 @@ export class SmartMoneyFlowAnalyzer {
         this.calculateFlowsWithFDVBatched(smartWallets, '24h')
       ]);
 
-      // 🚀 Hot New Tokens с батчингом FDV
+      // 🚀 Hot New Tokens с оптимизированным батчингом FDV
       const hotNewTokens = await this.findProfitableHotNewTokensBatched(smartWallets);
 
       const topInflowsLastHour = hourlyFlows.inflows
@@ -298,8 +297,8 @@ export class SmartMoneyFlowAnalyzer {
     return results;
   }
 
-  // 🚀 ОПТИМИЗИРОВАННЫЙ Hot New Tokens с батчингом
-  private async findProfitableHotNewTokensBatched(smartWallets: SmartMoneyWallet[]): Promise<HotNewToken[]> {
+  // 🚀 ОПТИМИЗИРОВАННЫЙ Hot New Tokens с ЭКОНОМИЕЙ API
+  async findProfitableHotNewTokensBatched(smartWallets: SmartMoneyWallet[]): Promise<HotNewToken[]> {
     const cutoffTime = new Date(Date.now() - 24 * 60 * 60 * 1000);
     
     const hotTokens = new Map<string, {
@@ -310,7 +309,7 @@ export class SmartMoneyFlowAnalyzer {
       marketCap: number | null; currentPrice: number | null; profitScore: number;
     }>();
 
-    // Собираем все токены и транзакции
+    // 🚀 1. ПЕРВИЧНЫЙ СБОР БЕЗ FDV
     const allHotTokens = new Set<string>();
     for (const wallet of smartWallets) {
       const transactions = await this.getWalletTransactionsAfter(wallet.address, cutoffTime);
@@ -348,30 +347,52 @@ export class SmartMoneyFlowAnalyzer {
       }
     }
 
-    // 🚀 БАТЧИНГ FDV для всех hot токенов
-    const hotTokenMetadata = await this.batchGetTokenMetadata(Array.from(allHotTokens));
+    // 🚀 2. ПЕРВИЧНАЯ ФИЛЬТРАЦИЯ БЕЗ FDV (экономия API)
+    const candidateTokens = [];
+    for (const [tokenAddress, token] of hotTokens) {
+      // Базовые фильтры без FDV
+      if (token.ageHours > 24 || 
+          token.uniqueSmWallets.size < this.PROFIT_CONFIG.minUniqueWallets || 
+          token.buyVolumeUSD < this.PROFIT_CONFIG.minSmBuyVolume) {
+        continue;
+      }
+      candidateTokens.push(tokenAddress);
+    }
 
-    // Обогащаем данными и применяем фильтры
+    this.logger.info(`🔥 Pre-filtered to ${candidateTokens.length}/${allHotTokens.size} hot tokens (saved ${allHotTokens.size - candidateTokens.length} API calls)`);
+
+    // 🚀 3. БАТЧИНГ FDV только для ЛУЧШИХ кандидатов
+    const topCandidates = candidateTokens
+      .sort((a, b) => {
+        const tokenA = hotTokens.get(a)!;
+        const tokenB = hotTokens.get(b)!;
+        return tokenB.buyVolumeUSD - tokenA.buyVolumeUSD;
+      })
+      .slice(0, 15); // Только топ-15 для FDV запросов
+
+    this.logger.info(`🔥 Getting FDV for TOP ${topCandidates.length} candidates only`);
+    const topTokenMetadata = await this.batchGetTokenMetadata(topCandidates);
+
+    // 🚀 4. Обогащаем ТОЛЬКО топ кандидатов
     const result: HotNewToken[] = [];
     
-    for (const [tokenAddress, token] of hotTokens) {
-      const metadata = hotTokenMetadata.get(tokenAddress);
+    for (const tokenAddress of topCandidates) {
+      const token = hotTokens.get(tokenAddress)!;
+      const metadata = topTokenMetadata.get(tokenAddress);
+      
       if (metadata) {
         token.tokenSymbol = metadata.symbol;
         token.tokenName = metadata.name;
         token.fdv = metadata.fdv;
         token.marketCap = metadata.marketCap;
         token.currentPrice = metadata.price;
+      } else {
+        // Базовые данные если нет метаданных
+        token.tokenSymbol = `TOKEN_${tokenAddress.slice(0, 6)}`;
+        token.tokenName = 'Unknown Token';
       }
 
-      // Базовые фильтры
-      if (token.ageHours > 24 || 
-          token.uniqueSmWallets.size < this.PROFIT_CONFIG.minUniqueWallets || 
-          token.buyVolumeUSD < this.PROFIT_CONFIG.minSmBuyVolume) {
-        continue;
-      }
-
-      // FDV фильтрация
+      // FDV фильтрация только если данные есть
       if (token.fdv && (token.fdv < this.PROFIT_CONFIG.minFDV || token.fdv > this.PROFIT_CONFIG.maxFDV)) {
         continue;
       }
@@ -406,15 +427,34 @@ export class SmartMoneyFlowAnalyzer {
       });
     }
 
-    // Сортируем по profit score
+    // 🚀 5. Добавляем токены БЕЗ FDV данных (но с базовой информацией)
+    for (const tokenAddress of candidateTokens.slice(15)) {
+      const token = hotTokens.get(tokenAddress)!;
+      
+      // Простые базовые данные
+      token.tokenSymbol = `TOKEN_${tokenAddress.slice(0, 6)}`;
+      token.tokenName = 'Hot New Token';
+      
+      result.push({
+        address: token.tokenAddress, symbol: token.tokenSymbol, name: token.tokenName,
+        fdv: 0, smStakeUSD: Math.max(0, token.smStakeUSD), ageHours: token.ageHours,
+        buyVolumeUSD: token.buyVolumeUSD, sellVolumeUSD: token.sellVolumeUSD,
+        buyCount: token.buyCount, sellCount: token.sellCount,
+        uniqueSmWallets: token.uniqueSmWallets.size, topBuyers: token.topBuyers.slice(0, 5)
+      });
+    }
+
+    // Сортируем по profit score и активности
     const sortedTokens = result.sort((a, b) => {
       const aToken = hotTokens.get(a.address);
       const bToken = hotTokens.get(b.address);
-      return (bToken?.profitScore || 0) - (aToken?.profitScore || 0);
+      const aScore = (aToken?.profitScore || 0) + (a.buyVolumeUSD / 10000);
+      const bScore = (bToken?.profitScore || 0) + (b.buyVolumeUSD / 10000);
+      return bScore - aScore;
     });
 
-    this.logger.info(`🔥 Found ${sortedTokens.length} profitable hot tokens with batched FDV`);
-    return sortedTokens;
+    this.logger.info(`🔥 Found ${sortedTokens.length} hot tokens with OPTIMIZED API usage (${topCandidates.length} FDV calls instead of ${allHotTokens.size})`);
+    return sortedTokens.slice(0, 10); // Топ-10 для уведомлений
   }
 
   // 🆕 ОПТИМИЗИРОВАННОЕ обновление метрик кошельков (только 10 за раз)
@@ -474,7 +514,7 @@ export class SmartMoneyFlowAnalyzer {
       }
     }
 
-    this.logger.info(`✅ Updated ${walletsToUpdate.length}/${smartWallets.length} wallets (optimized)`);
+    this.logger.info(`✅ Updated ${walletsToUpdate.length}/${smartWallets.length} wallets (API optimized)`);
   }
 
   // 🔥 HOLDINGS с БАТЧИНГ FDV
@@ -567,8 +607,18 @@ export class SmartMoneyFlowAnalyzer {
       }
     }
 
-    // 🚀 БАТЧИНГ FDV для всех токенов
-    const tokenMetadata = await this.batchGetTokenMetadata(Array.from(allTokensSet));
+    // 🚀 БАТЧИНГ FDV для топ-20 токенов по балансу
+    const topTokensByBalance = Array.from(tokenData.entries())
+      .map(([address, data]) => ({
+        address,
+        totalBalance: Array.from(data.wallets.values()).reduce((sum, w) => sum + Math.max(0, w.netPosition), 0)
+      }))
+      .sort((a, b) => b.totalBalance - a.totalBalance)
+      .slice(0, 20) // Только топ-20 для FDV
+      .map(item => item.address);
+
+    this.logger.info(`🔥 Getting FDV for TOP ${topTokensByBalance.length} holdings (instead of ${allTokensSet.size})`);
+    const tokenMetadata = await this.batchGetTokenMetadata(topTokensByBalance);
 
     // Преобразуем в TokenHolding
     const holdings: TokenHolding[] = [];
@@ -746,7 +796,7 @@ export class SmartMoneyFlowAnalyzer {
       );
 
       if (report.byWalletCount.length > 0) {
-        let message = `👥 <b>Top Tokens (Batched FDV)</b>\n\n`;
+        let message = `👥 <b>Top Tokens (Optimized FDV)</b>\n\n`;
         report.byWalletCount.slice(0, 10).forEach((token, i) => {
           const medal = i < 3 ? ['🥇', '🥈', '🥉'][i] : `${i + 1}.`;
           message += `${medal} <b>${token.tokenSymbol}</b>\n`;

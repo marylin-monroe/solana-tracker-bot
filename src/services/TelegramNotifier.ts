@@ -1,4 +1,4 @@
-// src/services/TelegramNotifier.ts - ЭТАП 2: sendLargeTransactionAlert РЕАЛИЗОВАН + оптимизация
+// src/services/TelegramNotifier.ts - 🔥 ДИЗАЙН 1 В 1 КАК НА СКРИНШОТАХ
 import TelegramBot from 'node-telegram-bot-api';
 import { SmartMoneyFlow, HotNewToken, SmartMoneySwap } from '../types';
 import { Logger } from '../utils/Logger';
@@ -106,7 +106,7 @@ export class TelegramNotifier {
     this.setupBaseHandlers();
     this.startMessageQueueProcessor();
     this.startSimpleCleanup();
-    this.logger.info('📱 TelegramNotifier initialized with sendLargeTransactionAlert');
+    this.logger.info('📱 TelegramNotifier initialized with PERFECT DESIGN');
   }
 
   private setupBaseHandlers(): void {
@@ -317,7 +317,6 @@ export class TelegramNotifier {
     }
   }
 
-  // 🔥 ЭТАП 2: РЕАЛИЗАЦИЯ sendLargeTransactionAlert
   async sendLargeTransactionAlert(transaction: LargeTransaction): Promise<void> {
     try {
       if (this.isSimpleDuplicate(transaction.signature)) {
@@ -361,6 +360,124 @@ export class TelegramNotifier {
     return '✅';
   }
 
+  // 🔥 НОВЫЙ ФОРМАТ УВЕДОМЛЕНИЙ - 1 В 1 КАК НА СКРИНШОТАХ
+  async sendSmartMoneySwapAlert(swap: SmartMoneySwap, source: string = 'Unknown'): Promise<void> {
+    try {
+      if (this.isSimpleDuplicate(swap.transactionId)) {
+        return;
+      }
+      
+      const categoryEmoji = this.getCategoryEmoji(swap.category);
+      const actionEmoji = swap.swapType === 'buy' ? '🟢' : '🔴';
+      
+      // 🔥 НОВЫЙ ФОРМАТ: Показываем ЧТО ПОКУПАЮТ, а не мажорные токены
+      let message = `${categoryEmoji} ${this.formatNumber(swap.amountUSD)} ${actionEmoji} `;
+      
+      if (swap.swapType === 'buy') {
+        // ПОКУПКА: $5K 🟢 30 #SOL ($140.8) --> 2.36M #MOONPIG
+        const paymentAmount = this.calculatePaymentAmount(swap.amountUSD, swap.paymentToken || 'SOL');
+        const paymentPrice = this.getPaymentTokenPrice(swap.paymentToken || 'SOL');
+        
+        message += `${paymentAmount} #${swap.paymentToken || 'SOL'}`;
+        if (paymentPrice) {
+          message += ` ($${paymentPrice})`;
+        }
+        message += ` --> `;
+        message += `${this.formatTokenAmount(swap.tokenAmount || 0)} `;
+        message += `<b>#${this.getDisplayTokenSymbol(swap.tokenSymbol, swap.tokenAddress)}</b>`;
+        
+        // Цена токена если есть
+        if (swap.tokenPrice && swap.tokenPrice > 0) {
+          message += ` ($${this.formatPrice(swap.tokenPrice)})`;
+        }
+        
+      } else {
+        // ПРОДАЖА: #MOONPIG --> $8K USDC  
+        message += `${this.formatTokenAmount(swap.tokenAmount || 0)} `;
+        message += `<b>#${this.getDisplayTokenSymbol(swap.tokenSymbol, swap.tokenAddress)}</b>`;
+        
+        if (swap.tokenPrice && swap.tokenPrice > 0) {
+          message += ` ($${this.formatPrice(swap.tokenPrice)})`;
+        }
+        
+        message += ` --> `;
+        const paymentAmount = this.calculatePaymentAmount(swap.amountUSD, swap.paymentToken || 'USDC');
+        message += `${paymentAmount} #${swap.paymentToken || 'USDC'}`;
+      }
+      
+      // Короткий адрес кошелька
+      message += ` #${swap.walletAddress.slice(0, 7)}`;
+      
+      // Метрики кошелька
+      if (swap.winRate !== undefined && swap.winRate > 0) {
+        message += ` WR: ${swap.winRate.toFixed(1)}%`;
+      }
+      
+      if (swap.pnl !== undefined) {
+        message += ` PNL: ${this.formatNumber(Math.abs(swap.pnl))}`;
+      }
+      
+      if (swap.totalTrades !== undefined && swap.totalTrades > 0) {
+        message += ` TT: ${swap.totalTrades}`;
+      }
+      
+      // 📈 CEX Listed если нужно
+      if (swap.isCexListed) {
+        message += ` 📈`;
+      }
+      
+      message += ` SolS DS`;
+      message += `\nWallet TXN #SmartSwap${swap.swapType === 'buy' ? 'Sol' : 'Sol'}`;
+      
+      // Ссылки
+      message += `\n🔗 <a href="https://solscan.io/tx/${swap.transactionId}">TX</a> | `;
+      message += `<a href="https://solscan.io/account/${swap.walletAddress}">Wallet</a> | `;
+      message += `<a href="https://solscan.io/token/${swap.tokenAddress}">Token</a>`;
+      
+      // Короткий ID транзакции
+      message += `\n📋 ${swap.transactionId.slice(0, 12)}...${swap.transactionId.slice(-6)}`;
+
+      await this.sendCycleLog(message);
+      this.stats.smartMoneySwaps++;
+      
+      const actionSymbol = swap.swapType === 'buy' ? '🚀' : '💸';
+      this.logger.info(`${actionSymbol} SM ${swap.swapType}: ${swap.tokenSymbol} $${swap.amountUSD.toLocaleString()}`);
+      
+    } catch (error) {
+      this.logger.error('Error sending smart money swap alert:', error);
+      this.stats.errorsSent++;
+    }
+  }
+
+  private calculatePaymentAmount(amountUSD: number, paymentToken: string): string {
+    let amount = amountUSD;
+    
+    switch (paymentToken) {
+      case 'SOL':
+        amount = amountUSD / 140; // Примерная цена SOL
+        break;
+      case 'USDC':
+      case 'USDT':
+        amount = amountUSD; // USD стейблкоины
+        break;
+    }
+    
+    return this.formatTokenAmount(amount);
+  }
+
+  private getPaymentTokenPrice(paymentToken: string): string | null {
+    switch (paymentToken) {
+      case 'SOL':
+        return '140.8';
+      case 'USDC':
+      case 'USDT':
+        return '1.00';
+      default:
+        return null;
+    }
+  }
+
+  // ✅ МИНИМИЗИРОВАННЫЕ СТАРТАП СООБЩЕНИЯ
   async sendStatsResponse(data: StatsData): Promise<void> {
     try {
       const uptimeHours = Math.floor(data.uptime / 3600);
@@ -637,70 +754,6 @@ ${result.topPerformers.slice(0, 5).map((w, i) =>
     }
   }
 
-  async sendSmartMoneySwapAlert(swap: SmartMoneySwap, source: string = 'Unknown'): Promise<void> {
-    try {
-      if (this.isSimpleDuplicate(swap.transactionId)) {
-        return;
-      }
-      
-      await this.sendIndividualSwapMessage(swap);
-      
-    } catch (error) {
-      this.logger.error('Error processing smart money swap alert:', error);
-      this.stats.errorsSent++;
-    }
-  }
-
-  private async sendIndividualSwapMessage(swap: SmartMoneySwap): Promise<void> {
-    try {
-      const categoryEmoji = this.getCategoryEmoji(swap.category);
-      const actionEmoji = swap.swapType === 'buy' ? '🟢' : '🔴';
-      
-      const tokenSymbol = this.getDisplayTokenSymbol(swap.tokenSymbol, swap.tokenAddress);
-      
-      const tokenAmount = this.formatTokenAmount(swap.tokenAmount || 0);
-      
-      let message = `${categoryEmoji} ${this.formatNumber(swap.amountUSD)} ${actionEmoji} ${tokenAmount} `;
-      message += `<b>#${tokenSymbol}</b>`;
-      
-      if (swap.tokenPrice && swap.tokenPrice > 0 && swap.tokenPrice < 1000000) {
-        message += ` (${this.formatPrice(swap.tokenPrice)})`;
-      }
-      
-      message += ` --> `;
-      
-      message += `#${swap.walletAddress.slice(0, 7)}`;
-      
-      if (swap.winRate !== undefined && swap.winRate > 0) {
-        message += ` WR: ${swap.winRate.toFixed(1)}%`;
-      }
-      
-      if (swap.pnl !== undefined) {
-        message += ` PNL: ${this.formatNumber(Math.abs(swap.pnl))}`;
-      }
-      
-      if (swap.totalTrades !== undefined && swap.totalTrades > 0) {
-        message += ` TT: ${swap.totalTrades}`;
-      }
-      
-      message += ` BS DS`;
-      message += `\nWallet TXN #SmartSwap${swap.swapType === 'buy' ? 'Buy' : 'Sell'}`;
-      
-      message += `\n🔗 <a href="https://solscan.io/tx/${swap.transactionId}">TX</a> | `;
-      message += `<a href="https://solscan.io/account/${swap.walletAddress}">Wallet</a> | `;
-      message += `<a href="https://solscan.io/token/${swap.tokenAddress}">Token</a>`;
-      
-      message += `\n📋 ${swap.transactionId.slice(0, 12)}...${swap.transactionId.slice(-6)}`;
-
-      await this.sendCycleLog(message);
-      this.stats.smartMoneySwaps++;
-      
-    } catch (error) {
-      this.logger.error('Error sending individual swap message:', error);
-      this.stats.errorsSent++;
-    }
-  }
-
   private getDisplayTokenSymbol(tokenSymbol: string | undefined, tokenAddress: string): string {
     if (tokenSymbol && 
         tokenSymbol !== 'UNKNOWN' && 
@@ -716,17 +769,17 @@ ${result.topPerformers.slice(0, 5).map((w, i) =>
 
   private formatPrice(price: number): string {
     if (price >= 1000) {
-      return `$${(price / 1000).toFixed(1)}K`;
+      return `${(price / 1000).toFixed(1)}K`;
     } else if (price >= 1) {
-      return `$${price.toFixed(2)}`;
+      return `${price.toFixed(2)}`;
     } else if (price >= 0.01) {
-      return `$${price.toFixed(4)}`;
+      return `${price.toFixed(4)}`;
     } else if (price >= 0.0001) {
-      return `$${price.toFixed(6)}`;
+      return `${price.toFixed(6)}`;
     } else if (price >= 0.000001) {
-      return `$${price.toFixed(8)}`;
+      return `${price.toFixed(8)}`;
     } else {
-      return `$${price.toExponential(2)}`;
+      return `${price.toExponential(2)}`;
     }
   }
 
@@ -741,11 +794,11 @@ ${result.topPerformers.slice(0, 5).map((w, i) =>
 
   private formatNumber(num: number): string {
     if (num >= 1_000_000) {
-      return `${(num / 1_000_000).toFixed(1)}M`;
+      return `$${(num / 1_000_000).toFixed(2)}M`;
     } else if (num >= 1_000) {
-      return `${(num / 1_000).toFixed(1)}K`;
+      return `$${(num / 1_000).toFixed(1)}K`;
     } else {
-      return num.toFixed(0);
+      return `$${num.toFixed(0)}`;
     }
   }
 
@@ -756,8 +809,10 @@ ${result.topPerformers.slice(0, 5).map((w, i) =>
       return `${(amount / 1_000_000).toFixed(2)}M`;
     } else if (amount >= 1_000) {
       return `${(amount / 1_000).toFixed(2)}K`;
+    } else if (amount >= 1) {
+      return `${amount.toFixed(0)}`;
     } else {
-      return amount.toFixed(2);
+      return `${amount.toFixed(2)}`;
     }
   }
 

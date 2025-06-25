@@ -219,6 +219,8 @@ export interface SmartMoneySwap {
   decimals?: number;
   rawTokenAmount?: number;
   actualTokenAmount?: number;
+  paymentToken?: string;
+  isCexListed?: boolean;
 }
 
 // ===== ТИПЫ ДЛЯ АГРЕГАЦИИ ПОЗИЦИЙ =====
