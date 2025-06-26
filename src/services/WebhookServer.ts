@@ -1,4 +1,4 @@
-// src/services/WebhookServer.ts - 🔥 ИСПРАВЛЕНА ЛОГИКА СВАПОВ для идеального заработка
+// src/services/WebhookServer.ts - 🔥 ИСПРАВЛЕНО: PAYMENT_ASSETS логика для LST токенов
 import express from 'express';
 import { Database } from './Database';
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
@@ -59,25 +59,10 @@ interface SolanaWebhookPayload {
   };
 }
 
-interface TokenNameAlert {
-  tokenName: string;
-  contractAddress: string;
-  holders: number;
-  similarTokens: number;
-}
-
-interface SmartMoneyValidationResult {
-  isValid: boolean;
-  reason?: string;
-  riskScore: number;
-  suspiciousFactors: string[];
-}
-
 interface ProcessingStats {
   totalTransactionsProcessed: number;
   smartMoneyTransactions: number;
   regularTransactions: number;
-  positionAggregations: number;
   alertsSent: number;
   filteredTransactions: number;
   errorCount: number;
@@ -87,11 +72,6 @@ interface ProcessingStats {
     swaps: number;
     transfers: number;
     other: number;
-  };
-  riskLevels: {
-    high: number;
-    medium: number;
-    low: number;
   };
   usdCalculationStats: {
     correctCalculations: number;
@@ -124,35 +104,33 @@ export class WebhookServer {
     timestamp: number; 
   }>();
 
-  private tokenPriceCache = new Map<string, { 
-    price: number; 
-    timestamp: number; 
-  }>();
-
-  private topHoldersCache = new Map<string, { 
-    holders: Array<{address: string; percentage: number; rank: number}>;
-    timestamp: number;
-  }>();
-  
-  private relatedWalletsCache = new Map<string, {
-    relatedWallets: string[];
-    timestamp: number;
-  }>();
-  
-  private recentTxCache = new Map<string, {
-    transactions: Array<{
-      walletAddress: string;
-      timestamp: Date;
-      amountUSD: number;
-      swapType: 'buy' | 'sell';
-    }>;
-    timestamp: number;
-  }>();
-  
-  private cacheCleanupInterval: NodeJS.Timeout | null = null;
   private readonly PRICE_CACHE_TTL = 5 * 60 * 1000; // 5 минут
 
-  // 🔥 МАЖОРНЫЕ ТОКЕНЫ - ТО ЧЕМ ПЛАТЯТ ЗА НОВЫЕ ТОКЕНЫ
+  // 🔥 ИСПРАВЛЕНО: Отдельный PAYMENT_ASSETS с LST токенами
+  private readonly PAYMENT_ASSETS = new Set([
+    // Базовые стейблы и SOL
+    'So11111111111111111111111111111111111111112', // SOL
+    'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+    'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
+    
+    // LST токены (Liquid Staking Tokens)
+    'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So', // mSOL (Marinade)
+    'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn', // JitoSOL (Jito)
+    '7Q2afV64in6N6SeZsAAB81TJzwDoD6zpqmHkzi9Dcavn', // stSOL (Lido)
+    'bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1', // bSOL (Blaze)
+    'he1iusmfkpAdwvxLNGV8Y1iSbj4rUy6yMhEA3fotn9A', // hSOL (Helius)
+    
+    // Популярные ликвидные токены
+    'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263', // BONK
+    'WENWENvqqNya429ubCdR81ZmD69brwQaaBYY6p3LCpk', // WEN
+    'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN', // JUP (Jupiter)
+    
+    // Дополнительные стейблкоины
+    'A9mUU4qviSctJVPJdBJWkb28deg915LYJKrzQ19ji3FM', // UXD
+    'USDH1SM1ojwWUga67PGrgFWUHibbjqMvuMaDkRJTgkX' // USDH
+  ]);
+
+  // 🔥 ОСТАВЛЯЕМ MAJOR_TOKENS для совместимости в других местах
   private readonly MAJOR_TOKENS = new Set([
     'So11111111111111111111111111111111111111112', // SOL
     'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
@@ -168,14 +146,13 @@ export class WebhookServer {
     'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn', // JitoSOL
     'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263', // Bonk
     'WENWENvqqNya429ubCdR81ZmD69brwQaaBYY6p3LCpk', // WEN
-    'CLoUDKc4Ane7HeQcPpE3YHnznRxhMimJ4MyaUqyHFzAu' // CLOUD
+    'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN' // JUP
   ]);
 
   private processingStats: ProcessingStats = {
     totalTransactionsProcessed: 0,
     smartMoneyTransactions: 0,
     regularTransactions: 0,
-    positionAggregations: 0,
     alertsSent: 0,
     filteredTransactions: 0,
     errorCount: 0,
@@ -185,11 +162,6 @@ export class WebhookServer {
       swaps: 0,
       transfers: 0,
       other: 0
-    },
-    riskLevels: {
-      high: 0,
-      medium: 0,
-      low: 0
     },
     usdCalculationStats: {
       correctCalculations: 0,
@@ -202,7 +174,6 @@ export class WebhookServer {
     oldTransactionsFiltered: 0
   };
 
-  private performanceInterval: NodeJS.Timeout | null = null;
   private requestCounters = {
     lastMinuteRequests: 0,
     lastMinuteErrors: 0,
@@ -227,7 +198,7 @@ export class WebhookServer {
     this.setupMiddleware();
     this.setupRoutes();
     this.startCacheCleanup();
-    this.startPerformanceMonitoring();
+    this.logger.info('🚀 WebhookServer FIXED: PAYMENT_ASSETS with LST support');
   }
 
   private setupMiddleware(): void {
@@ -297,11 +268,7 @@ export class WebhookServer {
       res.json({
         ...this.processingStats,
         cacheStats: {
-          tokenInfoCache: this.tokenInfoCache.size,
-          tokenPriceCache: this.tokenPriceCache.size,
-          topHoldersCache: this.topHoldersCache.size,
-          relatedWalletsCache: this.relatedWalletsCache.size,
-          recentTxCache: this.recentTxCache.size
+          tokenInfoCache: this.tokenInfoCache.size
         },
         requestCounters: this.requestCounters
       });
@@ -316,7 +283,7 @@ export class WebhookServer {
     const startTime = Date.now();
     
     try {
-      // 🔥 ФИЛЬТР ВРЕМЕНИ - ТОЛЬКО СВЕЖИЕ ТРАНЗАКЦИИ
+      // Фильтр времени - только свежие транзакции
       if (!this.isTransactionRecentAndValid(txData)) {
         this.processingStats.oldTransactionsFiltered++;
         return;
@@ -342,7 +309,6 @@ export class WebhookServer {
     }
   }
 
-  // 🔥 ФИЛЬТР ВРЕМЕНИ - ТОЛЬКО СВЕЖИЕ ТРАНЗАКЦИИ (2 МИНУТЫ)
   private isTransactionRecentAndValid(txData: SolanaWebhookPayload): boolean {
     if (!txData || !txData.timestamp) return false;
     
@@ -350,8 +316,7 @@ export class WebhookServer {
     const now = Date.now();
     const timeSinceTransaction = now - transactionTime;
     
-    // 🔥 ТОЛЬКО ТРАНЗАКЦИИ ЗА ПОСЛЕДНИЕ 2 МИНУТЫ
-    const MAX_AGE = 2 * 60 * 1000;
+    const MAX_AGE = 2 * 60 * 1000; // 2 минуты
     
     if (timeSinceTransaction > MAX_AGE) {
       this.logger.debug(`🚫 Transaction too old: ${Math.floor(timeSinceTransaction / (60 * 1000))} minutes`);
@@ -363,8 +328,6 @@ export class WebhookServer {
 
   private async processWebhookTransaction(txData: SolanaWebhookPayload): Promise<void> {
     try {
-      await this.checkTokenNameAlerts(txData);
-
       if (!txData.events?.swap || txData.events.swap.length === 0) {
         return;
       }
@@ -396,11 +359,10 @@ export class WebhookServer {
         return;
       }
 
-      // 🔥 ИСПРАВЛЕННАЯ ЛОГИКА СВАПОВ ДЛЯ ЗАРАБОТКА
+      // 🔥 ИСПРАВЛЕНО: Используем PAYMENT_ASSETS в extractSwapInfo
       const swapInfo = await this.extractSwapInfo(txData, swapEvent, smartWallet);
       if (!swapInfo) return;
 
-      // ✅ ФИЛЬТРЫ ПО КАТЕГОРИЯМ  
       if (!this.shouldProcessSmartMoneySwap(swapInfo, smartWallet)) {
         this.processingStats.filteredTransactions++;
         return;
@@ -433,57 +395,7 @@ export class WebhookServer {
     }
   }
 
-  // 💰 ПОЛУЧЕНИЕ АКТУАЛЬНОЙ ЦЕНЫ ТОКЕНА
-  private async getTokenPrice(tokenMint: string): Promise<number> {
-    const cached = this.tokenPriceCache.get(tokenMint);
-    if (cached && Date.now() - cached.timestamp < this.PRICE_CACHE_TTL) {
-      return cached.price;
-    }
-
-    try {
-      let price = 1.0;
-      
-      if (tokenMint === 'So11111111111111111111111111111111111111112') {
-        const solPrice = await this.tokenMetadataService.getTokenPrice(tokenMint);
-        price = solPrice || 140.8;
-        
-        if (!solPrice) {
-          this.processingStats.usdCalculationStats.fallbackCalculations++;
-        } else {
-          this.processingStats.usdCalculationStats.correctCalculations++;
-        }
-      } else {
-        price = 1.0; // USDC/USDT
-        this.processingStats.usdCalculationStats.correctCalculations++;
-      }
-
-      this.tokenPriceCache.set(tokenMint, { price, timestamp: Date.now() });
-      return price;
-    } catch (error) {
-      this.logger.error(`❌ Error getting price for ${tokenMint}:`, error);
-      this.processingStats.usdCalculationStats.errorCalculations++;
-      return tokenMint === 'So11111111111111111111111111111111111111112' ? 140.8 : 1.0;
-    }
-  }
-
-  // 🔢 ПОЛУЧЕНИЕ DECIMALS ТОКЕНА
-  private async getTokenDecimals(tokenMint: string, fallback: number = 9): Promise<number> {
-    try {
-      // Известные мажорные токены
-      if (tokenMint === 'So11111111111111111111111111111111111111112') return 9; // SOL
-      if (tokenMint === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') return 6; // USDC
-      if (tokenMint === 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB') return 6; // USDT
-      
-      // Пытаемся получить из метаданных
-      const metadata = await this.tokenMetadataService.getTokenMetadata(tokenMint);
-      return metadata?.decimals || fallback;
-    } catch (error) {
-      this.logger.debug(`⚠️ Could not get decimals for ${tokenMint}, using fallback ${fallback}`);
-      return fallback;
-    }
-  }
-
-  // 🔥 ИСПРАВЛЕННАЯ ЛОГИКА СВАПОВ - ТОЛЬКО ДЛЯ ЗАРАБОТКА
+  // 🔥 ИСПРАВЛЕНО: Используем PAYMENT_ASSETS вместо MAJOR_TOKENS
   private async extractSwapInfo(txData: SolanaWebhookPayload, swapEvent: any, smartWallet: SmartMoneyWallet): Promise<SmartMoneySwap | null> {
     try {
       if (!swapEvent || !swapEvent.tokenInputs || !swapEvent.tokenOutputs || 
@@ -495,7 +407,6 @@ export class WebhookServer {
       const tokenInputData = swapEvent.tokenInputs[0];
       const tokenOutputData = swapEvent.tokenOutputs[0];
 
-      // Проверяем наличие необходимых полей
       if (!tokenInputData.mint || !tokenOutputData.mint || 
           !tokenInputData.rawTokenAmount || !tokenOutputData.rawTokenAmount) {
         this.logger.debug(`[extractSwapInfo] Missing mint or rawTokenAmount in swapEvent for TX ${txData.signature}`);
@@ -505,7 +416,6 @@ export class WebhookServer {
       const inputMint = tokenInputData.mint;
       const outputMint = tokenOutputData.mint;
 
-      // 🔥 ГЛАВНОЕ ИСПРАВЛЕНИЕ: Игнорируем свап одного и того же токена
       if (inputMint === outputMint) {
         this.logger.debug(`[extractSwapInfo] Ignoring same-token swap: ${inputMint} -> ${outputMint} for TX ${txData.signature}`);
         this.processingStats.ignoredSameTokenSwaps++;
@@ -516,77 +426,80 @@ export class WebhookServer {
       let paymentToken = '';
       let amountUSD = 0;
       let swapType: 'buy' | 'sell' = 'buy';
-      let tokenAmount = 0; // Количество купленного/проданного ЦЕЛЕВОГО токена
-      let tokenPrice = 0;  // Цена ЦЕЛЕВОГО токена
+      let tokenAmount = 0;
+      let tokenPrice = 0;
 
-      // 🚀 ПОКУПКА: МАЖОРНЫЙ → НЕ-МАЖОРНЫЙ (ЭТО НАМ НУЖНО!)
-      if (this.MAJOR_TOKENS.has(inputMint) && !this.MAJOR_TOKENS.has(outputMint)) {
+      // 🔥 ИСПРАВЛЕНО: ПОКУПКА PAYMENT_ASSET → НЕ-PAYMENT_ASSET
+      if (this.PAYMENT_ASSETS.has(inputMint) && !this.PAYMENT_ASSETS.has(outputMint)) {
         swapType = 'buy';
-        targetToken = outputMint; // Токен который покупают (не-мажорный)
-        paymentToken = inputMint;  // Чем платят (мажорный)
+        targetToken = outputMint;
+        paymentToken = inputMint;
         
-        // Decimals для корректного расчета
+        // 🔥 ИСПРАВЛЕНО: Правильные decimals через TokenMetadataService
+        const [paymentMetadata, targetMetadata] = await Promise.all([
+          this.tokenMetadataService.getTokenMetadata(paymentToken),
+          this.tokenMetadataService.getTokenMetadata(targetToken)
+        ]);
+        
         const inputDecimals = tokenInputData.rawTokenAmount.decimals !== undefined ? 
-          tokenInputData.rawTokenAmount.decimals : await this.getTokenDecimals(paymentToken, 6); // Фоллбэк для USDC/USDT
+          tokenInputData.rawTokenAmount.decimals : (paymentMetadata?.decimals || this.getDefaultDecimals(paymentToken));
         const outputDecimals = tokenOutputData.rawTokenAmount.decimals !== undefined ? 
-          tokenOutputData.rawTokenAmount.decimals : await this.getTokenDecimals(targetToken, 9); // Фоллбэк для новых токенов
+          tokenOutputData.rawTokenAmount.decimals : (targetMetadata?.decimals || this.getDefaultDecimals(targetToken));
         
         const inputRawAmount = parseFloat(tokenInputData.rawTokenAmount.tokenAmount || '0');
         const outputRawAmount = parseFloat(tokenOutputData.rawTokenAmount.tokenAmount || '0');
 
-        const actualInputAmount = inputRawAmount / Math.pow(10, inputDecimals); // Количество потраченного мажорного токена
-        tokenAmount = outputRawAmount / Math.pow(10, outputDecimals);          // Количество полученного целевого токена
+        const actualInputAmount = inputRawAmount / Math.pow(10, inputDecimals);
+        tokenAmount = outputRawAmount / Math.pow(10, outputDecimals);
         
-        const paymentTokenPrice = await this.getTokenPrice(paymentToken); // Цена мажорного токена (для SOL)
-        amountUSD = actualInputAmount * paymentTokenPrice;                 // Общая USD стоимость сделки
+        // 🔥 ИСПРАВЛЕНО: Правильная цена через TokenMetadataService
+        const paymentTokenPrice = await this.tokenMetadataService.getTokenPrice(paymentToken);
+        amountUSD = actualInputAmount * (paymentTokenPrice || this.getFallbackPrice(paymentToken));
         
         if (tokenAmount > 0 && amountUSD > 0) {
-          tokenPrice = amountUSD / tokenAmount; // Цена за единицу целевого токена
+          tokenPrice = amountUSD / tokenAmount;
         }
         
-        const paymentSymbol = await this.getTokenSymbolWithFallback(paymentToken);
-        const targetSymbol = await this.getTokenSymbolWithFallback(targetToken);
-        this.logger.info(`🚀 BUY: ${this.formatNumber(amountUSD)} ${paymentSymbol} → ${tokenAmount.toFixed(4)} #${targetSymbol} @ $${tokenPrice.toFixed(6)}`);
+        this.processingStats.usdCalculationStats.correctCalculations++;
         
-      } else if (!this.MAJOR_TOKENS.has(inputMint) && this.MAJOR_TOKENS.has(outputMint)) {
-        // 🔥 ПРОДАЖА: НЕ-МАЖОРНЫЙ → МАЖОРНЫЙ
+      } else if (!this.PAYMENT_ASSETS.has(inputMint) && this.PAYMENT_ASSETS.has(outputMint)) {
+        // 🔥 ИСПРАВЛЕНО: ПРОДАЖА НЕ-PAYMENT_ASSET → PAYMENT_ASSET
         swapType = 'sell';
-        targetToken = inputMint;   // Токен который продают (не-мажорный)
-        paymentToken = outputMint; // Что получают (мажорный)
+        targetToken = inputMint;
+        paymentToken = outputMint;
 
+        const [targetMetadata, paymentMetadata] = await Promise.all([
+          this.tokenMetadataService.getTokenMetadata(targetToken),
+          this.tokenMetadataService.getTokenMetadata(paymentToken)
+        ]);
+        
         const inputDecimals = tokenInputData.rawTokenAmount.decimals !== undefined ? 
-          tokenInputData.rawTokenAmount.decimals : await this.getTokenDecimals(targetToken, 9);
+          tokenInputData.rawTokenAmount.decimals : (targetMetadata?.decimals || this.getDefaultDecimals(targetToken));
         const outputDecimals = tokenOutputData.rawTokenAmount.decimals !== undefined ? 
-          tokenOutputData.rawTokenAmount.decimals : await this.getTokenDecimals(paymentToken, 6);
+          tokenOutputData.rawTokenAmount.decimals : (paymentMetadata?.decimals || this.getDefaultDecimals(paymentToken));
         
         const inputRawAmount = parseFloat(tokenInputData.rawTokenAmount.tokenAmount || '0');
         const outputRawAmount = parseFloat(tokenOutputData.rawTokenAmount.tokenAmount || '0');
 
-        tokenAmount = inputRawAmount / Math.pow(10, inputDecimals);          // Количество проданного целевого токена
-        const actualOutputAmount = outputRawAmount / Math.pow(10, outputDecimals); // Количество полученного мажорного токена
+        tokenAmount = inputRawAmount / Math.pow(10, inputDecimals);
+        const actualOutputAmount = outputRawAmount / Math.pow(10, outputDecimals);
         
-        const paymentTokenPrice = await this.getTokenPrice(paymentToken); // Цена мажорного токена (для SOL)
-        amountUSD = actualOutputAmount * paymentTokenPrice;                 // Общая USD стоимость сделки (сколько получили)
+        const paymentTokenPrice = await this.tokenMetadataService.getTokenPrice(paymentToken);
+        amountUSD = actualOutputAmount * (paymentTokenPrice || this.getFallbackPrice(paymentToken));
         
         if (tokenAmount > 0 && amountUSD > 0) {
-          tokenPrice = amountUSD / tokenAmount; // Цена за единицу целевого токена
+          tokenPrice = amountUSD / tokenAmount;
         }
         
-        const targetSymbol = await this.getTokenSymbolWithFallback(targetToken);
-        const paymentSymbol = await this.getTokenSymbolWithFallback(paymentToken);
-        this.logger.info(`🔥 SELL: ${tokenAmount.toFixed(4)} #${targetSymbol} @ $${tokenPrice.toFixed(6)} → ${this.formatNumber(amountUSD)} ${paymentSymbol}`);
+        this.processingStats.usdCalculationStats.correctCalculations++;
           
       } else {
-        // 🚫 ИГНОРИРУЕМ МАЖОРНЫЙ → МАЖОРНЫЙ и НЕ-МАЖОРНЫЙ -> НЕ-МАЖОРНЫЙ
+        // 🚫 ИГНОРИРУЕМ PAYMENT_ASSET → PAYMENT_ASSET и НЕ-PAYMENT_ASSET → НЕ-PAYMENT_ASSET
         this.processingStats.ignoredMajorSwaps++;
-        const inputSymbol = await this.getTokenSymbolWithFallback(inputMint);
-        const outputSymbol = await this.getTokenSymbolWithFallback(outputMint);
-        this.logger.debug(`[extractSwapInfo] ⏭️ Ignoring swap: ${inputSymbol} (${inputMint.slice(0,6)}) → ${outputSymbol} (${outputMint.slice(0,6)}) for TX ${txData.signature} (Not a major-to-alt or alt-to-major)`);
+        this.logger.debug(`[extractSwapInfo] ⏭️ Ignoring swap: ${inputMint.slice(0,6)} → ${outputMint.slice(0,6)} for TX ${txData.signature} (Not payment-to-alt or alt-to-payment)`);
         return null;
       }
 
-      // Пороги по категориям (согласованы с shouldProcessSmartMoneySwap)
-      // Этот фильтр можно оставить здесь ИЛИ полностью полагаться на shouldProcessSmartMoneySwap
       const minAmountCategory = smartWallet.category === 'sniper' ? 5000 : 
                                smartWallet.category === 'hunter' ? 20000 : 50000;                       
       if (amountUSD < minAmountCategory) {
@@ -594,27 +507,27 @@ export class WebhookServer {
         return null;
       }
 
-      const tokenInfo = await this.getTokenInfo(targetToken); // Информация о ЦЕЛЕВОМ токене
+      const tokenInfo = await this.getTokenInfo(targetToken);
       
       return {
         transactionId: txData.signature,
         walletAddress: smartWallet.address,
         tokenAddress: targetToken,
-        tokenSymbol: tokenInfo.symbol, // Символ целевого токена
-        tokenName: tokenInfo.name,     // Имя целевого токена
-        tokenAmount,                   // Количество целевого токена
-        tokenPrice,                    // Цена целевого токена
-        amountUSD,                     // Общая USD стоимость операции
+        tokenSymbol: tokenInfo.symbol,
+        tokenName: tokenInfo.name,
+        tokenAmount,
+        tokenPrice,
+        amountUSD,
         swapType,
         timestamp: new Date(txData.timestamp * 1000),
         category: smartWallet.category,
         winRate: smartWallet.winRate,
         pnl: smartWallet.totalPnL,
         totalTrades: smartWallet.totalTrades,
-        paymentToken: await this.getTokenSymbolWithFallback(paymentToken), // Символ платежного токена
+        paymentToken: await this.getTokenSymbolWithFallback(paymentToken),
         isCexListed: this.CEX_TOKENS.has(targetToken),
-        isFamilyMember: false, // Отключено
-        familySize: 0        // Отключено
+        isFamilyMember: false,
+        familySize: 0
       };
 
     } catch (error) {
@@ -624,33 +537,57 @@ export class WebhookServer {
     }
   }
 
-  // 🔤 Вспомогательный метод для получения символа с фоллбэком (чтобы не дублировать логику)
+  private getDefaultDecimals(tokenMint: string): number {
+    if (tokenMint === 'So11111111111111111111111111111111111111112') return 9; // SOL
+    if (tokenMint === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') return 6; // USDC
+    if (tokenMint === 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB') return 6; // USDT
+    if (tokenMint === 'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So') return 9; // mSOL
+    if (tokenMint === 'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn') return 9; // JitoSOL
+    if (tokenMint === '7Q2afV64in6N6SeZsAAB81TJzwDoD6zpqmHkzi9Dcavn') return 9; // stSOL
+    return 9;
+  }
+
+  private getFallbackPrice(tokenMint: string): number {
+    // Стейблкоины
+    if (tokenMint === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') return 1.0; // USDC
+    if (tokenMint === 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB') return 1.0; // USDT
+    if (tokenMint === 'A9mUU4qviSctJVPJdBJWkb28deg915LYJKrzQ19ji3FM') return 1.0; // UXD
+    if (tokenMint === 'USDH1SM1ojwWUga67PGrgFWUHibbjqMvuMaDkRJTgkX') return 1.0; // USDH
+    
+    // SOL и LST токены
+    if (tokenMint === 'So11111111111111111111111111111111111111112') return 140.8; // SOL
+    if (tokenMint === 'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So') return 140.0; // mSOL
+    if (tokenMint === 'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn') return 140.0; // JitoSOL
+    if (tokenMint === '7Q2afV64in6N6SeZsAAB81TJzwDoD6zpqmHkzi9Dcavn') return 140.0; // stSOL
+    if (tokenMint === 'bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1') return 140.0; // bSOL
+    if (tokenMint === 'he1iusmfkpAdwvxLNGV8Y1iSbj4rUy6yMhEA3fotn9A') return 140.0; // hSOL
+    
+    // Популярные токены (примерные цены)
+    if (tokenMint === 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263') return 0.00002; // BONK
+    if (tokenMint === 'WENWENvqqNya429ubCdR81ZmD69brwQaaBYY6p3LCpk') return 0.0001; // WEN
+    if (tokenMint === 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN') return 0.8; // JUP
+    
+    return 1.0; // Общий фоллбэк
+  }
+
   private async getTokenSymbolWithFallback(mint: string): Promise<string> {
-    if (this.MAJOR_TOKENS.has(mint)) {
-      return this.getTokenSymbol(mint); // ваш существующий синхронный метод
+    if (this.PAYMENT_ASSETS.has(mint)) {
+      return this.getTokenSymbol(mint);
     }
-    const info = await this.getTokenInfo(mint); // асинхронный для остальных
+    const info = await this.getTokenInfo(mint);
     return info.symbol;
   }
 
-  // ✅ ФИЛЬТРЫ ПО КАТЕГОРИЯМ
   private shouldProcessSmartMoneySwap(swapInfo: SmartMoneySwap, smartWallet: SmartMoneyWallet): boolean {
-    // 🔫 Sniper: $2,5K - $19,999
     if (smartWallet.category === 'sniper') {
       if (swapInfo.amountUSD < 2500 || swapInfo.amountUSD > 19999) {
         return false;
       }
-    }
-    
-    // 💡 Hunter: $20K - $49,999  
-    else if (smartWallet.category === 'hunter') {
+    } else if (smartWallet.category === 'hunter') {
       if (swapInfo.amountUSD < 20000 || swapInfo.amountUSD > 49999) {
         return false;
       }
-    }
-    
-    // 🐳 Trader: $50K+
-    else if (smartWallet.category === 'trader') {
+    } else if (smartWallet.category === 'trader') {
       if (swapInfo.amountUSD < 50000) {
         return false;
       }
@@ -677,6 +614,14 @@ export class WebhookServer {
       case 'So11111111111111111111111111111111111111112': return 'SOL';
       case 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': return 'USDC';
       case 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB': return 'USDT';
+      case 'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So': return 'mSOL';
+      case 'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn': return 'JitoSOL';
+      case '7Q2afV64in6N6SeZsAAB81TJzwDoD6zpqmHkzi9Dcavn': return 'stSOL';
+      case 'bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1': return 'bSOL';
+      case 'he1iusmfkpAdwvxLNGV8Y1iSbj4rUy6yMhEA3fotn9A': return 'hSOL';
+      case 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263': return 'BONK';
+      case 'WENWENvqqNya429ubCdR81ZmD69brwQaaBYY6p3LCpk': return 'WEN';
+      case 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN': return 'JUP';
       default: return 'TOKEN';
     }
   }
@@ -686,7 +631,7 @@ export class WebhookServer {
     tokenAddress: string,
     amountUSD: number,
     swapType: 'buy' | 'sell'
-  ): Promise<SmartMoneyValidationResult> {
+  ): Promise<{ isValid: boolean; reason?: string; riskScore: number; suspiciousFactors: string[] }> {
     
     const suspiciousFactors: string[] = [];
     let riskScore = 0;
@@ -714,39 +659,6 @@ export class WebhookServer {
         riskScore: 0,
         suspiciousFactors: ['Validation error']
       };
-    }
-  }
-
-  private async checkTokenNameAlerts(txData: SolanaWebhookPayload): Promise<void> {
-    try {
-      if (!txData.tokenTransfers || txData.tokenTransfers.length === 0) return;
-
-      for (const transfer of txData.tokenTransfers) {
-        const tokenInfo = await this.getTokenInfo(transfer.mint);
-        
-        const suspiciousPatterns = [
-          /bitcoin/i, /ethereum/i, /bnb/i, /solana/i,
-          /usdt/i, /usdc/i, /doge/i, /shib/i
-        ];
-
-        const isSuspicious = suspiciousPatterns.some(pattern => 
-          pattern.test(tokenInfo.name) || pattern.test(tokenInfo.symbol)
-        );
-
-        if (isSuspicious) {
-          const alert: TokenNameAlert = {
-            tokenName: tokenInfo.name,
-            contractAddress: transfer.mint,
-            holders: 0,
-            similarTokens: 1
-          };
-
-          await this.telegramNotifier.sendTokenNameAlert(alert);
-        }
-      }
-
-    } catch (error) {
-      this.logger.error('Error checking token name alerts:', error);
     }
   }
 
@@ -882,7 +794,7 @@ export class WebhookServer {
   }
 
   private startCacheCleanup(): void {
-    this.cacheCleanupInterval = setInterval(() => {
+    setInterval(() => {
       const now = Date.now();
       const ONE_HOUR = 60 * 60 * 1000;
       
@@ -892,76 +804,18 @@ export class WebhookServer {
         }
       }
       
-      for (const [key, value] of this.tokenPriceCache.entries()) {
-        if (now - value.timestamp > this.PRICE_CACHE_TTL) {
-          this.tokenPriceCache.delete(key);
-        }
-      }
-      
-      for (const [key, value] of this.topHoldersCache.entries()) {
-        if (now - value.timestamp > 30 * 60 * 1000) {
-          this.topHoldersCache.delete(key);
-        }
-      }
-      
-      for (const [key, value] of this.relatedWalletsCache.entries()) {
-        if (now - value.timestamp > 30 * 60 * 1000) {
-          this.relatedWalletsCache.delete(key);
-        }
-      }
-      
-      for (const [key, value] of this.recentTxCache.entries()) {
-        if (now - value.timestamp > 10 * 60 * 1000) {
-          this.recentTxCache.delete(key);
-        }
-      }
-      
     }, 5 * 60 * 1000);
-  }
-
-  private startPerformanceMonitoring(): void {
-    this.performanceInterval = setInterval(() => {
-      this.processingStats.lastProcessedTime = new Date();
-      
-      this.logger.info(`📊 PROFIT Stats: Total=${this.processingStats.totalTransactionsProcessed}, PROFITABLE=${this.processingStats.profitableSwaps}, IGNORED=${this.processingStats.ignoredMajorSwaps}, SAME_TOKEN=${this.processingStats.ignoredSameTokenSwaps}, Errors=${this.processingStats.errorCount}`);
-      
-    }, 5 * 60 * 1000);
-  }
-
-  private formatNumber(num: number): string {
-    if (num >= 1_000_000) {
-      return `${(num / 1_000_000).toFixed(1)}M`;
-    } else if (num >= 1_000) {
-      return `${(num / 1_000).toFixed(1)}K`;
-    }
-    return num.toFixed(0);
   }
 
   getProcessingStats(): ProcessingStats {
     return { ...this.processingStats };
   }
 
-  getCacheStats(): {
-    tokenInfoCache: number;
-    tokenPriceCache: number;
-    topHoldersCache: number;
-    relatedWalletsCache: number;
-    recentTxCache: number;
-  } {
-    return {
-      tokenInfoCache: this.tokenInfoCache.size,
-      tokenPriceCache: this.tokenPriceCache.size,
-      topHoldersCache: this.topHoldersCache.size,
-      relatedWalletsCache: this.relatedWalletsCache.size,
-      recentTxCache: this.recentTxCache.size
-    };
-  }
-
   async start(): Promise<void> {
     return new Promise((resolve, reject) => {
       try {
         this.server = this.app.listen(this.port, () => {
-          this.logger.info(`🚀 Webhook server started on port ${this.port} with PROFIT-FIRST logic`);
+          this.logger.info(`🚀 Webhook server started on port ${this.port} with PAYMENT_ASSETS logic`);
           resolve();
         });
 
@@ -979,14 +833,6 @@ export class WebhookServer {
 
   async stop(): Promise<void> {
     return new Promise((resolve) => {
-      if (this.cacheCleanupInterval) {
-        clearInterval(this.cacheCleanupInterval);
-      }
-      
-      if (this.performanceInterval) {
-        clearInterval(this.performanceInterval);
-      }
-
       if (this.server) {
         this.server.close(() => {
           this.logger.info('⏹️ Webhook server stopped');

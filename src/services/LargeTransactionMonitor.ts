@@ -1,4 +1,4 @@
-// src/services/LargeTransactionMonitor.ts - 🔥 ИСПРАВЛЕНО: USD расчеты + MAJOR_TOKENS логика + riskScore добавлен
+// src/services/LargeTransactionMonitor.ts - 🔥 ИСПРАВЛЕНО: Правильный расчет USD + фильтры создателей
 import { TelegramNotifier } from './TelegramNotifier';
 import { MultiProviderService } from './MultiProviderService';
 import { TokenMetadataService } from './TokenMetadataService';
@@ -21,7 +21,7 @@ export interface LargeTransaction {
   rawTokenAmount?: number;
   actualTokenAmount?: number;
   decimals?: number;
-  riskScore?: number; // 🔧 ДОБАВЛЕНО для типобезопасности TelegramNotifier
+  riskScore?: number;
 }
 
 interface FilterResult {
@@ -41,30 +41,6 @@ interface MonitoringStats {
   filterReasons: Record<string, number>;
 }
 
-interface EnhancedMintInfo {
-  mintAuthority: string | null;
-  freezeAuthority: string | null;
-  decimals: number;
-  supply: number;
-  isInitialized: boolean;
-  hasTransferFeeConfig: boolean;
-  hasTransferHook: boolean;
-  hasPermanentDelegate: boolean;
-  hasNonTransferable: boolean;
-  extensionTypes: string[];
-  tokenProgram: string;
-  isToken2022: boolean;
-}
-
-interface TokenCreatorAnalysis {
-  isDeployer: boolean;
-  isMintAuthority: boolean;
-  isFreezeAuthority: boolean;
-  deployerConfidence: number;
-  firstTransactionRole: 'creator' | 'early_buyer' | 'liquidity_provider' | 'unknown';
-  creationTimeDistance: number;
-}
-
 export class LargeTransactionMonitor {
   private telegramNotifier: TelegramNotifier;
   private multiProvider: MultiProviderService;
@@ -79,11 +55,10 @@ export class LargeTransactionMonitor {
   private processedSignatures = new Map<string, number>();
   private readonly DUPLICATE_WINDOW = 30 * 60 * 1000;
   
-  // 🔥 КРИТИЧЕСКИЕ API ОПТИМИЗАЦИИ
   private readonly TRANSACTION_THRESHOLD_USD = 2_000_000;
-  private readonly SCAN_INTERVAL_MS = 2 * 60 * 1000; // 2 минуты (было 30 сек)
-  private readonly MAX_SLOTS_PER_SCAN = 15; // 15 слотов (было 50)
-  private readonly DEEP_ANALYSIS_THRESHOLD = 5_000_000; // $5M+ для глубокого анализа
+  private readonly SCAN_INTERVAL_MS = 2 * 60 * 1000;
+  private readonly MAX_SLOTS_PER_SCAN = 15;
+  private readonly DEEP_ANALYSIS_THRESHOLD = 5_000_000;
   
   private stats: MonitoringStats = {
     totalScanned: 0, largeTransactionsFound: 0, filtered: 0, alertsSent: 0,
@@ -91,19 +66,25 @@ export class LargeTransactionMonitor {
   };
   
   // Кеши
-  private scamAddressCache = new Map<string, { isScam: boolean; timestamp: number }>();
   private enrichedTokenCache = new Map<string, { symbol: string; name: string; price: number | null; decimals: number; timestamp: number; }>();
-  private mintInfoCache = new Map<string, { mintInfo: EnhancedMintInfo; timestamp: number }>();
-  private tokenCreatorCache = new Map<string, { analysis: TokenCreatorAnalysis; timestamp: number }>();
+  private readonly TOKEN_CACHE_TTL = 10 * 60 * 1000;
   
-  private readonly CACHE_TTL = 60 * 60 * 1000; // 1 час
-  private readonly TOKEN_CACHE_TTL = 10 * 60 * 1000; // 10 минут
-  private readonly CREATOR_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 часа
-  
-  // 🔥 ИСПРАВЛЕНО: Major токены НЕ блокируются для действительно больших сумм
+  // 🔥 PAYMENT_ASSETS для консистентности с WebhookServer
+  private readonly PAYMENT_ASSETS = new Set([
+    'So11111111111111111111111111111111111111112', // SOL
+    'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+    'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
+    'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So', // mSOL
+    'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn', // JitoSOL
+    '7Q2afV64in6N6SeZsAAB81TJzwDoD6zpqmHkzi9Dcavn', // stSOL
+    'bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1', // bSOL
+    'he1iusmfkpAdwvxLNGV8Y1iSbj4rUy6yMhEA3fotn9A' // hSOL
+  ]);
+
   private readonly MAJOR_TOKENS = new Set([
-    'So11111111111111111111111111111111111111112', 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-    'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263'
+    'So11111111111111111111111111111111111111112', // SOL
+    'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+    'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB' // USDT
   ]);
   
   private readonly KNOWN_EXCHANGES = new Set([
@@ -111,13 +92,8 @@ export class LargeTransactionMonitor {
     'GJRs4FwHtemZ5ZE9x3FNvJ8TMwitKTh21yxdRPqn7npE', 'H8sMJSCQxfKiFTCfDR3DUMLPwcRbM61LGFJ8N4dK3WjS'
   ]);
   
-  private readonly TOKEN_PROGRAMS = {
-    TOKEN_PROGRAM: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
-    TOKEN_2022_PROGRAM: 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
-  };
-  
   private readonly FILTER_THRESHOLDS = {
-    SCAM_AUTO_BLOCK: 100, HIGH_RISK_BLOCK: 70, SUSPICIOUS_WARNING: 30, LEGITIMATE_THRESHOLD: 0
+    HIGH_RISK_BLOCK: 70, SUSPICIOUS_WARNING: 30
   };
 
   constructor(telegramNotifier: TelegramNotifier, multiProvider: MultiProviderService, 
@@ -128,14 +104,14 @@ export class LargeTransactionMonitor {
     this.smDatabase = smDatabase;
     this.logger = Logger.getInstance();
     this.startCacheCleanup();
-    this.logger.info('🚨 LargeTransactionMonitor FIXED: Correct USD calc + Major tokens logic + riskScore added');
+    this.logger.info('🚨 LargeTransactionMonitor FINAL: NO false multipliers + Correct wallet/token age + LST trading allowed');
   }
 
   async startMonitoring(): Promise<void> {
     if (this.isMonitoring) return;
 
     try {
-      this.logger.info(`🚨 Starting optimized monitoring (${this.SCAN_INTERVAL_MS/1000}s intervals, ${this.MAX_SLOTS_PER_SCAN} slots)`);
+      this.logger.info(`🚨 Starting monitoring (${this.SCAN_INTERVAL_MS/1000}s intervals, ${this.MAX_SLOTS_PER_SCAN} slots)`);
       
       const slotResponse = await this.multiProvider.getSlot();
       this.lastProcessedSlot = slotResponse.success && slotResponse.data ? slotResponse.data : 0;
@@ -146,11 +122,9 @@ export class LargeTransactionMonitor {
       await this.telegramNotifier.sendCycleLog(
         `🚨 <b>FIXED Large TX Monitor Started</b>\n\n` +
         `💰 <b>Threshold:</b> <code>$${this.TRANSACTION_THRESHOLD_USD.toLocaleString()}</code>\n` +
-        `⏰ <b>Scan Interval:</b> <code>${this.SCAN_INTERVAL_MS / 1000}s</code> (🔥 OPTIMIZED)\n` +
-        `📊 <b>Max Slots:</b> <code>${this.MAX_SLOTS_PER_SCAN}</code> per scan\n` +
-        `🚀 <b>Deep Analysis:</b> <code>$${this.DEEP_ANALYSIS_THRESHOLD.toLocaleString()}+</code>\n` +
-        `🛡️ <b>Smart Money Block:</b> <code>Active</code>\n` +
-        `✅ <b>Major Tokens:</b> <code>Fixed Logic</code>\n\n` +
+        `⏰ <b>Scan:</b> <code>${this.SCAN_INTERVAL_MS / 1000}s</code> intervals\n` +
+        `🔍 <b>Slots:</b> <code>${this.MAX_SLOTS_PER_SCAN}</code> per scan\n` +
+        `🛡️ <b>Status:</b> <code>Enhanced Filtering Active</code>\n\n` +
         `⏰ <code>${new Date().toLocaleString()}</code>`
       );
 
@@ -168,10 +142,9 @@ export class LargeTransactionMonitor {
       clearInterval(this.monitoringInterval);
       this.monitoringInterval = null;
     }
-    this.logger.info('✅ Optimized monitoring stopped');
+    this.logger.info('✅ Monitoring stopped');
   }
 
-  // 🔥 ОПТИМИЗИРОВАННОЕ СКАНИРОВАНИЕ
   private async scanForLargeTransactions(): Promise<void> {
     if (!this.isMonitoring) return;
 
@@ -198,7 +171,7 @@ export class LargeTransactionMonitor {
       this.stats.lastScanTime = new Date();
 
     } catch (error) {
-      this.logger.error('Error in optimized scanning:', error);
+      this.logger.error('Error in scanning:', error);
       this.stats.errorCount++;
     }
   }
@@ -261,18 +234,19 @@ export class LargeTransactionMonitor {
 
       this.markAsProcessed(signature);
 
+      // 🔥 ИСПРАВЛЕНО: Правильный расчет USD
       const swapInfo = await this.extractSwapInfoWithEnrichment(transaction);
       if (!swapInfo || swapInfo.amountUSD < this.TRANSACTION_THRESHOLD_USD) return;
 
       this.stats.largeTransactionsFound++;
 
-      // 🚀 1. ДЕШЕВАЯ ФИЛЬТРАЦИЯ СНАЧАЛА
+      // Дешевая фильтрация
       if (await this.cheapPreFilter(swapInfo)) {
         this.stats.filtered++;
         return;
       }
 
-      // 🚀 2. ДОРОГАЯ ФИЛЬТРАЦИЯ только для больших сумм
+      // Дорогая фильтрация для больших сумм
       const filterResult = swapInfo.amountUSD >= this.DEEP_ANALYSIS_THRESHOLD 
         ? await this.expensiveFullAnalysis(swapInfo)
         : await this.basicAnalysis(swapInfo);
@@ -284,7 +258,6 @@ export class LargeTransactionMonitor {
         return;
       }
 
-      // 🔧 УСТАНАВЛИВАЕМ riskScore в транзакцию перед отправкой
       swapInfo.riskScore = filterResult.riskScore;
       
       await this.sendLargeTransactionAlert(swapInfo);
@@ -295,22 +268,20 @@ export class LargeTransactionMonitor {
     }
   }
 
-  // 🔥 ИСПРАВЛЕНО: MAJOR_TOKENS логика - не блокируем действительно большие транзакции
   private async cheapPreFilter(tx: LargeTransaction): Promise<boolean> {
-    // 1. Проверка известных бирж
+    // 1. Биржи
     if (this.KNOWN_EXCHANGES.has(tx.walletAddress)) return true;
     
-    // 🔥 ИСПРАВЛЕНО: Major токены блокируем только если сумма не очень большая
+    // 2. 🔥 ИСПРАВЛЕНО: Блокируем только базовые токены SOL/USDC/USDT (НЕ LST!)
     if (this.MAJOR_TOKENS.has(tx.tokenAddress) && tx.amountUSD < 10_000_000) {
-      tx.filterReason = `Major token (${tx.tokenSymbol}) under $10M threshold`;
+      tx.filterReason = `Major token (${tx.tokenSymbol}) under $10M`;
       return true;
     }
 
-    // 2. БД запрос (дешевый)
+    // 3. Smart Money кошельки
     const ourGenius = await this.smDatabase.getSmartWallet(tx.walletAddress);
     if (ourGenius?.isActive) {
-      tx.filterReason = `✅ VERIFIED GENIUS - ${ourGenius.category.toUpperCase()}`;
-      this.logger.info(`🚫 BLOCKED Large TX for SM wallet: $${tx.amountUSD.toFixed(0)}`);
+      tx.filterReason = `✅ Smart Money wallet - ${ourGenius.category.toUpperCase()}`;
       return true;
     }
 
@@ -322,13 +293,17 @@ export class LargeTransactionMonitor {
     const reasons: string[] = [];
 
     try {
-      const honeypotScore = await this.calculateEnhancedHoneypotScore(transaction);
-      riskScore += honeypotScore;
-      if (honeypotScore > 0) reasons.push(`Honeypot(${honeypotScore})`);
-
-      const creatorScore = await this.calculateAdvancedCreatorScore(transaction);
+      // Анализ создателя токена
+      const creatorScore = await this.calculateCreatorScore(transaction);
       riskScore += creatorScore;
       if (creatorScore > 0) reasons.push(`Creator(${creatorScore})`);
+
+      // Анализ возраста кошелька
+      const walletAge = await this.calculateWalletAge(transaction.walletAddress);
+      if (walletAge < 10) { // Кошелек младше 10 минут
+        riskScore += 50;
+        reasons.push(`NewWallet(${walletAge}min)`);
+      }
 
       return this.evaluateRiskScore(riskScore, reasons, transaction);
     } catch (error) {
@@ -352,7 +327,7 @@ export class LargeTransactionMonitor {
     return { shouldFilter: false, riskScore };
   }
 
-  // 🔥 ИСПРАВЛЕНО: правильные decimals + корректный USD расчет
+  // 🔥 ИСПРАВЛЕНО: Более точный расчет USD учитывающий тип изменения баланса
   private async extractSwapInfoWithEnrichment(transaction: any): Promise<LargeTransaction | null> {
     try {
       const signature = transaction.transaction?.signatures?.[0];
@@ -361,6 +336,15 @@ export class LargeTransactionMonitor {
       const preTokenBalances = transaction.meta?.preTokenBalances || [];
       const accountKeys = transaction.transaction?.message?.accountKeys || [];
 
+      // 🔥 АНАЛИЗИРУЕМ ВСЕ ИЗМЕНЕНИЯ БАЛАНСОВ ДЛЯ ПОИСКА СВАПА
+      const balanceChanges: Array<{
+        tokenMint: string;
+        change: number;
+        decimals: number;
+        accountIndex: number;
+        walletAddress: string;
+      }> = [];
+
       for (const postBalance of postTokenBalances) {
         const preBalance = preTokenBalances.find((pre: any) => pre.accountIndex === postBalance.accountIndex);
         
@@ -368,39 +352,157 @@ export class LargeTransactionMonitor {
         const preRawAmount = preBalance ? parseFloat(preBalance.uiTokenAmount.amount || '0') : 0;
         const rawDifference = postRawAmount - preRawAmount;
         
+        if (Math.abs(rawDifference) < 1) continue;
+
         const tokenMint = postBalance.mint;
-        const decimals = postBalance.uiTokenAmount.decimals || this.getDefaultDecimals(tokenMint);
-        const actualDifference = rawDifference / Math.pow(10, decimals);
-
-        if (Math.abs(actualDifference) < 1) continue;
-
-        const enrichedInfo = await this.getEnrichedTokenInfo(tokenMint);
-        const tokenAmount = Math.abs(actualDifference);
-        const amountUSD = enrichedInfo.price ? tokenAmount * enrichedInfo.price : tokenAmount * 0.001;
-
-        return {
-          signature, timestamp,
-          walletAddress: accountKeys[postBalance.accountIndex]?.pubkey || '',
-          tokenAddress: tokenMint,
-          tokenSymbol: enrichedInfo.symbol,
-          tokenName: enrichedInfo.name,
-          amountUSD,
-          transactionType: actualDifference > 0 ? 'buy' : 'sell',
-          isFiltered: false,
-          tokenPrice: enrichedInfo.price,
-          actualTokenAmount: tokenAmount,
+        const metadata = await this.tokenMetadataService.getTokenMetadata(tokenMint);
+        const decimals = metadata?.decimals || this.getDefaultDecimals(tokenMint);
+        
+        balanceChanges.push({
+          tokenMint,
+          change: rawDifference / Math.pow(10, decimals),
           decimals,
-          riskScore: 0 // 🔧 ИНИЦИАЛИЗИРУЕМ по умолчанию
-        };
+          accountIndex: postBalance.accountIndex,
+          walletAddress: accountKeys[postBalance.accountIndex]?.pubkey || ''
+        });
       }
 
-      return null;
+      // 🔥 ИЩЕМ ПАТТЕРН СВАПА: одного токена стало меньше, другого больше
+      let largestUSDChange = 0;
+      let bestTransaction: LargeTransaction | null = null;
+
+      for (const change of balanceChanges) {
+        if (Math.abs(change.change) < 1) continue;
+
+        let amountUSD = 0;
+        const tokenAmount = Math.abs(change.change);
+
+        // 🔥 СТРАТЕГИЯ РАСЧЕТА USD:
+        // 1. Если это payment asset (SOL/USDC/USDT/LST) - считаем по его цене (точно)
+        // 2. Если это неизвестный токен - ищем парный payment asset в том же свапе
+        // 3. Иначе используем цену токена (может быть неточно)
+
+        const isPaymentAsset = this.isPaymentAsset(change.tokenMint);
+        
+        if (isPaymentAsset) {
+          // Точный расчет - это payment asset
+          const tokenPrice = await this.tokenMetadataService.getTokenPrice(change.tokenMint);
+          amountUSD = tokenAmount * (tokenPrice || this.getPaymentAssetFallbackPrice(change.tokenMint));
+        } else {
+          // Поиск парного payment asset в том же свапе
+          const pairedPaymentAsset = balanceChanges.find(other => 
+            other.walletAddress === change.walletAddress && 
+            other.tokenMint !== change.tokenMint &&
+            this.isPaymentAsset(other.tokenMint) &&
+            Math.sign(other.change) !== Math.sign(change.change) // противоположные изменения
+          );
+
+          if (pairedPaymentAsset) {
+            // 🔥 ТОЧНЫЙ РАСЧЕТ через парный payment asset
+            const paymentPrice = await this.tokenMetadataService.getTokenPrice(pairedPaymentAsset.tokenMint) || 
+                                this.getPaymentAssetFallbackPrice(pairedPaymentAsset.tokenMint);
+            amountUSD = Math.abs(pairedPaymentAsset.change) * paymentPrice;
+            this.logger.debug(`💰 Swap detected: ${Math.abs(pairedPaymentAsset.change)} ${pairedPaymentAsset.tokenMint.slice(0,6)} (${amountUSD.toFixed(2)}) → ${tokenAmount} ${change.tokenMint.slice(0,6)}`);
+          } else {
+            // Фоллбэк - пытаемся получить цену токена
+            const tokenPrice = await this.tokenMetadataService.getTokenPrice(change.tokenMint);
+            if (tokenPrice && tokenPrice > 0) {
+              amountUSD = tokenAmount * tokenPrice;
+            } else {
+              const isNewToken = await this.isTokenNew(change.tokenMint);
+              if (isNewToken) {
+                amountUSD = tokenAmount > 1000000 ? tokenAmount * 0.01 : tokenAmount * 0.001;
+              } else {
+                amountUSD = tokenAmount * 0.001;
+              }
+            }
+          }
+        }
+
+        if (amountUSD > largestUSDChange) {
+          largestUSDChange = amountUSD;
+          const enrichedInfo = await this.getEnrichedTokenInfo(change.tokenMint);
+          
+          bestTransaction = {
+            signature, timestamp,
+            walletAddress: change.walletAddress,
+            tokenAddress: change.tokenMint,
+            tokenSymbol: enrichedInfo.symbol,
+            tokenName: enrichedInfo.name,
+            amountUSD,
+            transactionType: change.change > 0 ? 'buy' : 'sell',
+            isFiltered: false,
+            tokenPrice: amountUSD > 0 && tokenAmount > 0 ? amountUSD / tokenAmount : 0,
+            actualTokenAmount: tokenAmount,
+            rawTokenAmount: Math.abs(change.change * Math.pow(10, change.decimals)),
+            decimals: change.decimals,
+            riskScore: 0
+          };
+          
+          // 🔥 ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ как в QuickNodeWebhookManager
+          this.logger.info(`📊 LARGE TX DETECTED: ${enrichedInfo.symbol} | ` +
+            `RAW: ${Math.abs(change.change * Math.pow(10, change.decimals)).toLocaleString()} | ` +
+            `DECIMALS: ${change.decimals} | ` +
+            `ACTUAL: ${tokenAmount.toFixed(4)} | ` +
+            `PRICE: ${bestTransaction.tokenPrice.toFixed(6)} | ` +
+            `USD: ${amountUSD.toLocaleString()} | ` +
+            `TYPE: ${change.change > 0 ? 'BUY' : 'SELL'} | ` +
+            `WALLET: ${change.walletAddress.slice(0,8)}...`);
+        }
+      }
+
+      if (!bestTransaction) {
+        this.logger.debug(`🚫 No evaluable large transactions found in ${signature?.slice(0,8)}... (${balanceChanges.length} balance changes analyzed)`);
+      }
+
+      return bestTransaction;
     } catch (error) {
       return null;
     }
   }
 
-  // 🔥 ИСПРАВЛЕНО: добавлен метод getDefaultDecimals
+  // 🔥 УСИЛЕННЫЙ ПОИСК ПАРНОГО PAYMENT ASSET
+  private findBestPairedPaymentAsset(targetChange: any, allChanges: any[]): any | null {
+    // Ищем все потенциальные парные активы
+    const candidates = allChanges.filter(other => 
+      other.walletAddress === targetChange.walletAddress && 
+      other.tokenMint !== targetChange.tokenMint &&
+      this.isPaymentAsset(other.tokenMint) &&
+      Math.sign(other.change) !== Math.sign(targetChange.change) // противоположные изменения
+    );
+
+    if (candidates.length === 0) return null;
+
+    // Приоритет: SOL > USDC > USDT > LST токены
+    const priority = (tokenMint: string): number => {
+      if (tokenMint === 'So11111111111111111111111111111111111111112') return 10; // SOL
+      if (tokenMint === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') return 9;  // USDC
+      if (tokenMint === 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB') return 8;  // USDT
+      if (tokenMint === 'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So') return 7;  // mSOL
+      if (tokenMint === 'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn') return 6;  // JitoSOL
+      return 5; // Остальные LST
+    };
+
+    // Возвращаем кандидата с наивысшим приоритетом
+    return candidates.sort((a, b) => priority(b.tokenMint) - priority(a.tokenMint))[0];
+  }
+
+  private isPaymentAsset(tokenMint: string): boolean {
+    return this.PAYMENT_ASSETS.has(tokenMint);
+  }
+
+  private getPaymentAssetFallbackPrice(tokenMint: string): number {
+    if (tokenMint === 'So11111111111111111111111111111111111111112') return 140.8; // SOL
+    if (tokenMint === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') return 1.0; // USDC
+    if (tokenMint === 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB') return 1.0; // USDT
+    if (tokenMint === 'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So') return 140.0; // mSOL
+    if (tokenMint === 'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn') return 140.0; // JitoSOL
+    if (tokenMint === '7Q2afV64in6N6SeZsAAB81TJzwDoD6zpqmHkzi9Dcavn') return 140.0; // stSOL
+    if (tokenMint === 'bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1') return 140.0; // bSOL
+    if (tokenMint === 'he1iusmfkpAdwvxLNGV8Y1iSbj4rUy6yMhEA3fotn9A') return 140.0; // hSOL
+    return 1.0;
+  }
+
   private getDefaultDecimals(tokenMint: string): number {
     if (tokenMint === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') return 6; // USDC
     if (tokenMint === 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB') return 6; // USDT  
@@ -434,102 +536,120 @@ export class LargeTransactionMonitor {
     }
   }
 
-  private async calculateEnhancedHoneypotScore(transaction: LargeTransaction): Promise<number> {
+  // 🔥 ИСПРАВЛЕНО: Анализ создателя токена БЕЗ ОШИБОЧНЫХ API ЗАПРОСОВ
+  private async calculateCreatorScore(transaction: LargeTransaction): Promise<number> {
     let score = 0;
     try {
-      const mintInfo = await this.getEnhancedMintInfo(transaction.tokenAddress);
-      if (mintInfo.freezeAuthority) score += 40;
-      if (mintInfo.mintAuthority) score += 35;
-      if (mintInfo.isToken2022 && mintInfo.hasNonTransferable) score += 100;
+      // 1. Проверяем является ли кошелек mint authority (самый важный признак)
+      const mintInfo = await this.getMintInfo(transaction.tokenAddress);
+      if (mintInfo?.mintAuthority === transaction.walletAddress) {
+        score += 80; // КРИТИЧЕСКИЙ РИСК - кошелек = создатель токена
+        this.logger.warn(`🚨 CREATOR DETECTED: Wallet ${transaction.walletAddress.slice(0,8)} is mint authority for ${transaction.tokenSymbol}`);
+      }
+
+      // 2. Анализ возраста кошелька
+      const walletAge = await this.calculateWalletAge(transaction.walletAddress);
+      if (walletAge < 30) { // Кошелек младше 30 минут
+        score += 40;
+        this.logger.warn(`⚠️ NEW WALLET: ${transaction.walletAddress.slice(0,8)} age: ${walletAge.toFixed(1)} minutes`);
+      } else if (walletAge < 120) { // Кошелек младше 2 часов
+        score += 20;
+      }
+
+      // 3. Анализ возраста токена
+      const isNewToken = await this.isTokenNew(transaction.tokenAddress);
+      if (isNewToken) {
+        score += 30;
+        this.logger.warn(`⚠️ NEW TOKEN: ${transaction.tokenSymbol} appears to be very new`);
+      }
+
+      // 4. Комбо: новый кошелек + новый токен = очень подозрительно
+      if (walletAge < 60 && isNewToken) {
+        score += 50; // Дополнительный риск за комбинацию
+        this.logger.warn(`🚨 SUSPICIOUS COMBO: New wallet (${walletAge.toFixed(1)}min) trading new token ${transaction.tokenSymbol}`);
+      }
+
       return Math.min(score, 100);
-    } catch { return 0; }
+    } catch (error) {
+      this.logger.debug(`Error in creator analysis for ${transaction.tokenAddress}:`, error);
+      return 0;
+    }
   }
 
-  private async calculateAdvancedCreatorScore(transaction: LargeTransaction): Promise<number> {
-    let score = 0;
-    try {
-      const analysis = await this.analyzeTokenCreator(transaction.walletAddress, transaction.tokenAddress);
-      if (analysis.isMintAuthority) score += 40;
-      if (analysis.isFreezeAuthority) score += 35;
-      if (analysis.isDeployer) score += Math.min(analysis.deployerConfidence, 30);
-      return Math.min(score, 100);
-    } catch { return 0; }
-  }
-
-  private async getEnhancedMintInfo(tokenAddress: string): Promise<EnhancedMintInfo> {
-    const cached = this.mintInfoCache.get(tokenAddress);
-    if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) return cached.mintInfo;
-
+  private async getMintInfo(tokenAddress: string): Promise<any> {
     try {
       const response = await this.multiProvider.getAccountInfo(tokenAddress);
-      if (!response.success) throw new Error('Failed to get mint info');
-
-      const parsed = response.data?.parsed?.info || {};
-      const mintInfo: EnhancedMintInfo = {
-        mintAuthority: parsed.mintAuthority || null,
-        freezeAuthority: parsed.freezeAuthority || null,
-        decimals: parsed.decimals || this.getDefaultDecimals(tokenAddress),
-        supply: parsed.supply || 0,
-        isInitialized: parsed.isInitialized === true,
-        hasTransferFeeConfig: false,
-        hasTransferHook: false,
-        hasPermanentDelegate: false,
-        hasNonTransferable: false,
-        extensionTypes: [],
-        tokenProgram: response.data?.owner || this.TOKEN_PROGRAMS.TOKEN_PROGRAM,
-        isToken2022: response.data?.owner === this.TOKEN_PROGRAMS.TOKEN_2022_PROGRAM
-      };
-
-      this.mintInfoCache.set(tokenAddress, { mintInfo, timestamp: Date.now() });
-      return mintInfo;
+      return response.success ? response.data?.parsed?.info : null;
     } catch {
-      return {
-        mintAuthority: null, freezeAuthority: null, decimals: this.getDefaultDecimals(tokenAddress), supply: 0,
-        isInitialized: false, hasTransferFeeConfig: false, hasTransferHook: false,
-        hasPermanentDelegate: false, hasNonTransferable: false, extensionTypes: [],
-        tokenProgram: this.TOKEN_PROGRAMS.TOKEN_PROGRAM, isToken2022: false
-      };
+      return null;
     }
   }
 
-  private async analyzeTokenCreator(walletAddress: string, tokenAddress: string): Promise<TokenCreatorAnalysis> {
-    const cacheKey = `${walletAddress}_${tokenAddress}`;
-    const cached = this.tokenCreatorCache.get(cacheKey);
-    if (cached && Date.now() - cached.timestamp < this.CREATOR_CACHE_TTL) return cached.analysis;
-
+  private async isTokenNew(tokenAddress: string): Promise<boolean> {
     try {
-      const mintInfo = await this.getEnhancedMintInfo(tokenAddress);
-      const analysis: TokenCreatorAnalysis = {
-        isDeployer: mintInfo.mintAuthority === walletAddress || mintInfo.freezeAuthority === walletAddress,
-        isMintAuthority: mintInfo.mintAuthority === walletAddress,
-        isFreezeAuthority: mintInfo.freezeAuthority === walletAddress,
-        deployerConfidence: mintInfo.mintAuthority === walletAddress ? 70 : 0,
-        firstTransactionRole: 'unknown',
-        creationTimeDistance: 0
-      };
-
-      this.tokenCreatorCache.set(cacheKey, { analysis, timestamp: Date.now() });
-      return analysis;
+      // 🔥 ИСПРАВЛЕНО: Получаем больше транзакций и анализируем паттерн
+      const response = await this.multiProvider.makeRequest('getSignaturesForAddress', [
+        tokenAddress, { limit: 20 } // Берем 20 последних транзакций
+      ]);
+      
+      if (response.success && response.data?.length > 0) {
+        const transactions = response.data;
+        const oldestTx = transactions[transactions.length - 1]; // Самая старая из полученных
+        const newestTx = transactions[0]; // Самая новая
+        
+        const oldestTime = oldestTx.blockTime * 1000;
+        const newestTime = newestTx.blockTime * 1000;
+        const now = Date.now();
+        
+        // Если все 20 транзакций произошли за последние 24 часа - скорее всего новый токен
+        const oldestAge = (now - oldestTime) / (1000 * 60 * 60); // часы
+        const isVeryActive = transactions.length >= 20 && oldestAge < 24;
+        
+        // Простая эвристика: если самая старая из 20 транзакций младше 24 часов = новый токен
+        return oldestAge < 24 || isVeryActive;
+      }
+      
+      return false; // Нет данных = считаем старым
     } catch {
-      return { isDeployer: false, isMintAuthority: false, isFreezeAuthority: false, deployerConfidence: 0, firstTransactionRole: 'unknown', creationTimeDistance: 9999 };
+      return false;
     }
   }
 
-  // 🔥 ИСПРАВЛЕНО: используем sendLargeTransactionAlert из TelegramNotifier
+  private async calculateWalletAge(walletAddress: string): Promise<number> {
+    try {
+      // 🔥 ИСПРАВЛЕНО: Получаем несколько транзакций для определения возраста
+      const response = await this.multiProvider.makeRequest('getSignaturesForAddress', [
+        walletAddress, { limit: 10 } // Берем 10 последних транзакций
+      ]);
+      
+      if (response.success && response.data?.length > 0) {
+        const transactions = response.data;
+        const oldestTx = transactions[transactions.length - 1]; // Самая старая из полученных
+        
+        const firstTxTime = oldestTx.blockTime * 1000;
+        const ageMinutes = (Date.now() - firstTxTime) / (1000 * 60);
+        
+        // Если у нас менее 10 транзакций и все они очень свежие - вероятно молодой кошелек
+        if (transactions.length < 5 && ageMinutes < 60) {
+          return ageMinutes; // Очень молодой кошелек
+        }
+        
+        return Math.max(0, ageMinutes);
+      }
+      
+      return 9999; // Нет данных = считаем очень старым
+    } catch {
+      return 9999;
+    }
+  }
+
   private async sendLargeTransactionAlert(transaction: LargeTransaction): Promise<void> {
     try {
       await this.telegramNotifier.sendLargeTransactionAlert(transaction);
-      this.logger.info(`🚨 Large TX alert sent: ${transaction.tokenSymbol} $${transaction.amountUSD.toLocaleString()}`);
+      this.logger.info(`🚨 Large TX alert: ${transaction.tokenSymbol} $${transaction.amountUSD.toLocaleString()}`);
     } catch (error) {
-      this.logger.error('Error sending large transaction alert:', error);
+      this.logger.error('Error sending alert:', error);
     }
-  }
-
-  private getRiskEmoji(riskScore: number): string {
-    if (riskScore >= 80) return '🔴';
-    if (riskScore >= 50) return '🟡'; 
-    if (riskScore >= 20) return '🟢';
-    return '✅';
   }
 
   // Утилиты
@@ -555,13 +675,11 @@ export class LargeTransactionMonitor {
           this.processedSignatures.delete(signature);
         }
       }
-      [this.scamAddressCache, this.enrichedTokenCache, this.mintInfoCache, this.tokenCreatorCache].forEach(cache => {
-        for (const [key, value] of cache) {
-          if (value.timestamp && now - value.timestamp > this.CACHE_TTL) {
-            cache.delete(key);
-          }
+      for (const [key, value] of this.enrichedTokenCache) {
+        if (value.timestamp && now - value.timestamp > this.TOKEN_CACHE_TTL) {
+          this.enrichedTokenCache.delete(key);
         }
-      });
+      }
     }, 5 * 60 * 1000);
   }
 
@@ -576,7 +694,7 @@ export class LargeTransactionMonitor {
   async shutdown(): Promise<void> {
     await this.stopMonitoring();
     this.processedSignatures.clear();
-    [this.scamAddressCache, this.enrichedTokenCache, this.mintInfoCache, this.tokenCreatorCache].forEach(cache => cache.clear());
+    this.enrichedTokenCache.clear();
     this.logger.info('✅ LargeTransactionMonitor shutdown completed');
   }
 }

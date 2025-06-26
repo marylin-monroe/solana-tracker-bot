@@ -1,4 +1,4 @@
-// src/services/TokenMetadataService.ts - 🔥 ЭТАП 4: ФИНАЛЬНАЯ ОПТИМИЗАЦИЯ TTL + БАТЧИНГ
+// src/services/TokenMetadataService.ts - 🔥 ИСПРАВЛЕНО: Добавлены LST токены + оптимизация
 import { Logger } from '../utils/Logger';
 
 interface TokenMetadata {
@@ -29,41 +29,6 @@ interface BirdeyeTokenData {
   marketCap?: number;
 }
 
-interface SolanaTokenListEntry {
-  chainId: number;
-  address: string;
-  symbol: string;
-  name: string;
-  decimals: number;
-  logoURI?: string;
-  tags?: string[];
-}
-
-interface JupiterQuoteResponse {
-  inputMint: string;
-  inAmount: string;
-  outputMint: string;
-  outAmount: string;
-  otherAmountThreshold: string;
-  swapMode: string;
-  slippageBps: number;
-  platformFee?: any;
-  priceImpactPct: string;
-  routePlan: any[];
-  contextSlot?: number;
-  timeTaken?: number;
-}
-
-interface BirdeyeTokenListResponse {
-  success: boolean;
-  data: {
-    tokens: BirdeyeTokenData[];
-    total: number;
-    totalPage: number;
-    currentPage: number;
-  };
-}
-
 interface BirdeyePriceResponse {
   success: boolean;
   data: {
@@ -73,16 +38,6 @@ interface BirdeyePriceResponse {
     priceChange24h: number;
     marketCap?: number;
   };
-}
-
-interface SolanaTokenListResponse {
-  name: string;
-  logoURI: string;
-  keywords: string[];
-  tags: Record<string, any>;
-  timestamp: string;
-  tokens: SolanaTokenListEntry[];
-  version: { major: number; minor: number; patch: number; };
 }
 
 interface TokenSupplyResponse {
@@ -102,40 +57,30 @@ interface RPCResponse {
   error?: { code: number; message: string; };
 }
 
-interface EnhancedTokenInfo {
-  symbol: string;
-  name: string;
-  decimals: number;
-  price: number | null;
-  totalSupply: number | null;
-  fdv: number | null;
-  marketCap: number | null;
-}
-
 export class TokenMetadataService {
   private logger: Logger;
   private cache = new Map<string, { metadata: TokenMetadata; timestamp: number }>();
   private jupiterTokenList: Map<string, JupiterTokenData> = new Map();
   private lastJupiterUpdate = 0;
 
-  // 🔥 ЭТАП 4: ОПТИМИЗИРОВАННЫЕ TTL для экономии API
   private readonly CACHE_TTL = {
-    TOKEN_METADATA: 60 * 60 * 1000,      // 1 час (было 24 часа - слишком долго)
-    PRICE_DATA: 5 * 60 * 1000,           // 5 минут ✅
-    FDV_DATA: 15 * 60 * 1000,            // 15 минут (было 10)
-    BIRDEYE_DATA: 30 * 60 * 1000,        // 30 минут (новый)
-    SUPPLY_DATA: 60 * 60 * 1000,         // 1 час ✅
-    JUPITER_UPDATE: 60 * 60 * 1000       // 1 час ✅
+    TOKEN_METADATA: 60 * 60 * 1000,      // 1 час
+    PRICE_DATA: 5 * 60 * 1000,           // 5 минут
+    FDV_DATA: 15 * 60 * 1000,            // 15 минут
+    BIRDEYE_DATA: 30 * 60 * 1000,        // 30 минут
+    SUPPLY_DATA: 60 * 60 * 1000,         // 1 час
+    JUPITER_UPDATE: 60 * 60 * 1000       // 1 час
   };
 
   // Кеши
   private priceCache = new Map<string, { price: number; timestamp: number }>();
   private supplyCache = new Map<string, { supply: number; decimals: number; timestamp: number }>();
   private fdvCache = new Map<string, { fdv: number; timestamp: number }>();
-  private birdeyeCache = new Map<string, { data: any; timestamp: number }>(); // 🔥 НОВЫЙ КЕШ
+  private birdeyeCache = new Map<string, { data: any; timestamp: number }>();
 
-  // Известные токены
+  // 🔥 ИСПРАВЛЕНО: Добавлены LST токены в известные токены
   private readonly WELL_KNOWN_TOKENS = new Map<string, TokenMetadata>([
+    // Базовые токены
     ['So11111111111111111111111111111111111111112', {
       symbol: 'SOL', name: 'Solana', decimals: 9,
       address: 'So11111111111111111111111111111111111111112', totalSupply: 588_000_000
@@ -148,6 +93,30 @@ export class TokenMetadataService {
       symbol: 'USDT', name: 'Tether USD', decimals: 6,
       address: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'
     }],
+    
+    // 🔥 LST токены (Liquid Staking Tokens)
+    ['mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So', {
+      symbol: 'mSOL', name: 'Marinade Staked SOL', decimals: 9,
+      address: 'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So'
+    }],
+    ['J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn', {
+      symbol: 'JitoSOL', name: 'Jito Staked SOL', decimals: 9,
+      address: 'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn'
+    }],
+    ['7Q2afV64in6N6SeZsAAB81TJzwDoD6zpqmHkzi9Dcavn', {
+      symbol: 'stSOL', name: 'Lido Staked SOL', decimals: 9,
+      address: '7Q2afV64in6N6SeZsAAB81TJzwDoD6zpqmHkzi9Dcavn'
+    }],
+    ['bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1', {
+      symbol: 'bSOL', name: 'BlazeStake Staked SOL', decimals: 9,
+      address: 'bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1'
+    }],
+    ['he1iusmfkpAdwvxLNGV8Y1iSbj4rUy6yMhEA3fotn9A', {
+      symbol: 'hSOL', name: 'Helius Staked SOL', decimals: 9,
+      address: 'he1iusmfkpAdwvxLNGV8Y1iSbj4rUy6yMhEA3fotn9A'
+    }],
+    
+    // Популярные токены
     ['DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263', {
       symbol: 'BONK', name: 'Bonk', decimals: 5,
       address: 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263'
@@ -155,15 +124,33 @@ export class TokenMetadataService {
     ['7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs', {
       symbol: 'WIF', name: 'dogwifhat', decimals: 6,
       address: '7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs'
+    }],
+    ['WENWENvqqNya429ubCdR81ZmD69brwQaaBYY6p3LCpk', {
+      symbol: 'WEN', name: 'Wen Token', decimals: 5,
+      address: 'WENWENvqqNya429ubCdR81ZmD69brwQaaBYY6p3LCpk'
+    }],
+    ['JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN', {
+      symbol: 'JUP', name: 'Jupiter', decimals: 6,
+      address: 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN'
+    }],
+    
+    // Дополнительные стейблкоины
+    ['A9mUU4qviSctJVPJdBJWkb28deg915LYJKrzQ19ji3FM', {
+      symbol: 'UXD', name: 'UXD Stablecoin', decimals: 6,
+      address: 'A9mUU4qviSctJVPJdBJWkb28deg915LYJKrzQ19ji3FM'
+    }],
+    ['USDH1SM1ojwWUga67PGrgFWUHibbjqMvuMaDkRJTgkX', {
+      symbol: 'USDH', name: 'USDH', decimals: 6,
+      address: 'USDH1SM1ojwWUga67PGrgFWUHibbjqMvuMaDkRJTgkX'
     }]
   ]);
 
   constructor() {
     this.logger = Logger.getInstance();
-    this.logger.info('🏷️ TokenMetadataService initialized with OPTIMIZED CACHING');
+    this.logger.info('🏷️ TokenMetadataService FIXED: LST tokens added + optimized caching');
   }
 
-  // 🎯 ГЛАВНЫЙ МЕТОД: Получение метаданных с decimals
+  // 🎯 ГЛАВНЫЙ МЕТОД: Получение метаданных с правильными decimals
   async getTokenMetadata(mintAddress: string): Promise<TokenMetadata | null> {
     try {
       if (!mintAddress || mintAddress === 'UNKNOWN') return null;
@@ -177,6 +164,7 @@ export class TokenMetadataService {
         return wellKnown;
       }
 
+      // Пробуем RPC для получения decimals
       const rpcMetadata = await this.getTokenMetadataFromRPC(mintAddress);
       if (rpcMetadata) {
         const enriched = await this.enrichTokenMetadata(rpcMetadata);
@@ -184,7 +172,8 @@ export class TokenMetadataService {
         return enriched;
       }
 
-      const sources = [this.getFromJupiter(mintAddress), this.getFromBirdeye(mintAddress), this.getFromSolanaTokenList(mintAddress)];
+      // Пробуем внешние источники
+      const sources = [this.getFromJupiter(mintAddress), this.getFromBirdeye(mintAddress)];
       const results = await Promise.allSettled(sources);
       
       for (const result of results) {
@@ -204,7 +193,7 @@ export class TokenMetadataService {
     }
   }
 
-  // 🔥 RPC метаданные с decimals
+  // 🔥 RPC метаданные с правильными decimals
   private async getTokenMetadataFromRPC(mintAddress: string): Promise<TokenMetadata | null> {
     try {
       const rpcUrl = process.env.QUICKNODE_HTTP_URL || process.env.ALCHEMY_HTTP_URL;
@@ -263,6 +252,143 @@ export class TokenMetadataService {
     }
   }
 
+  // 🔥 Jupiter API с кешированием
+  private async getFromJupiter(mintAddress: string): Promise<TokenMetadata | null> {
+    try {
+      await this.updateJupiterTokenList();
+      const jupiterToken = this.jupiterTokenList.get(mintAddress);
+      if (jupiterToken) {
+        const decimals = typeof jupiterToken.decimals === 'number' && jupiterToken.decimals >= 0 ? jupiterToken.decimals : 9;
+        return { symbol: jupiterToken.symbol, name: jupiterToken.name, decimals, logoURI: jupiterToken.logoURI, address: mintAddress };
+      }
+      return null;
+    } catch (error) {
+      this.logger.debug(`Jupiter API error for ${mintAddress}:`, error);
+      return null;
+    }
+  }
+
+  // 🔥 Birdeye API с кешированием
+  private async getFromBirdeye(mintAddress: string): Promise<TokenMetadata | null> {
+    try {
+      // Проверяем кеш сначала
+      const cached = this.birdeyeCache.get(`token_${mintAddress}`);
+      if (cached && Date.now() - cached.timestamp < this.CACHE_TTL.BIRDEYE_DATA) {
+        return cached.data as TokenMetadata;
+      }
+
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), 5000);
+
+      const response = await fetch(`https://public-api.birdeye.so/public/tokenlist?sort_by=v24hUSD&sort_type=desc&offset=0&limit=50`, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json', 'User-Agent': 'Smart-Money-Bot/1.0' },
+        signal: controller.signal
+      });
+
+      if (response.ok) {
+        const data = await response.json() as any;
+        if (data?.data?.tokens && Array.isArray(data.data.tokens)) {
+          const token = data.data.tokens.find((t: BirdeyeTokenData) => t.address === mintAddress);
+          if (token) {
+            const decimals = typeof token.decimals === 'number' && token.decimals >= 0 ? token.decimals : 9;
+            const result = {
+              symbol: token.symbol || this.generateSymbolFromAddress(mintAddress),
+              name: token.name || `Token ${mintAddress.slice(0, 8)}...`,
+              decimals, logoURI: token.logoURI, address: mintAddress
+            };
+            
+            // 🔥 КЕШИРУЕМ результат
+            this.birdeyeCache.set(`token_${mintAddress}`, { data: result, timestamp: Date.now() });
+            return result;
+          }
+        }
+      }
+      return null;
+    } catch (error) {
+      this.logger.debug(`Birdeye API error for ${mintAddress}:`, error);
+      return null;
+    }
+  }
+
+  // Обновление Jupiter списка
+  private async updateJupiterTokenList(): Promise<void> {
+    try {
+      const now = Date.now();
+      if (now - this.lastJupiterUpdate < this.CACHE_TTL.JUPITER_UPDATE) return;
+
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), 15000);
+
+      const response = await fetch('https://token.jup.ag/all', {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json', 'User-Agent': 'Smart-Money-Bot/1.0' },
+        signal: controller.signal
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (Array.isArray(data)) {
+          this.jupiterTokenList.clear();
+          for (const token of data) {
+            if (this.isJupiterTokenData(token) && typeof token.decimals === 'number' && 
+                token.decimals >= 0 && token.decimals <= 18) {
+              this.jupiterTokenList.set(token.address, token);
+            }
+          }
+          this.lastJupiterUpdate = now;
+          this.logger.info(`✅ Updated Jupiter list: ${this.jupiterTokenList.size} tokens`);
+        }
+      }
+    } catch (error) {
+      this.logger.error('Jupiter list update error:', error);
+    }
+  }
+
+  // 🔥 ИСПРАВЛЕНО: Цена токена БЕЗ рекурсии
+  async getTokenPrice(tokenAddress: string): Promise<number | null> {
+    try {
+      if (!tokenAddress || tokenAddress === 'UNKNOWN') return null;
+
+      const cached = this.priceCache.get(tokenAddress);
+      if (cached && Date.now() - cached.timestamp < this.CACHE_TTL.PRICE_DATA) return cached.price;
+
+      // Стейблкоины
+      if (tokenAddress === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' || 
+          tokenAddress === 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB' ||
+          tokenAddress === 'A9mUU4qviSctJVPJdBJWkb28deg915LYJKrzQ19ji3FM' ||
+          tokenAddress === 'USDH1SM1ojwWUga67PGrgFWUHibbjqMvuMaDkRJTgkX') {
+        this.priceCache.set(tokenAddress, { price: 1.0, timestamp: Date.now() });
+        return 1.0;
+      }
+
+      // 🔥 ИСПРАВЛЕНО: Для всех остальных токенов (включая SOL) идем в Birdeye
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 20000); // 20 секунд таймаут
+
+      const response = await fetch(`https://public-api.birdeye.so/public/price?address=${tokenAddress}`, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json', 'User-Agent': 'Smart-Money-Bot/1.0' },
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        const data = await response.json();
+        if (this.isBirdeyePriceResponse(data) && data.data.value) {
+          const price = data.data.value;
+          this.priceCache.set(tokenAddress, { price, timestamp: Date.now() });
+          return price;
+        }
+      }
+      return null;
+    } catch (error) {
+      this.logger.warn(`Price API error for ${tokenAddress}:`, error);
+      return null;
+    }
+  }
+
   // 🔥 SUPPLY с кешированием
   async getTokenSupply(mintAddress: string): Promise<number | null> {
     try {
@@ -308,7 +434,7 @@ export class TokenMetadataService {
     }
   }
 
-  // 🔥 FDV с увеличенным кешированием
+  // 🔥 FDV с кешированием
   async getTokenFDV(mintAddress: string): Promise<number | null> {
     try {
       if (!mintAddress || mintAddress === 'UNKNOWN') return null;
@@ -320,7 +446,7 @@ export class TokenMetadataService {
       if (price && supply && price > 0 && supply > 0) {
         const fdv = price * supply;
         this.fdvCache.set(mintAddress, { fdv, timestamp: Date.now() });
-        this.logger.debug(`💎 FDV calculated for ${mintAddress}: $${fdv.toLocaleString()}`);
+        this.logger.debug(`💎 FDV calculated for ${mintAddress}: ${fdv.toLocaleString()}`);
         return fdv;
       }
       return null;
@@ -330,26 +456,8 @@ export class TokenMetadataService {
     }
   }
 
-  // 🔥 ЭТАП 4: БАТЧИНГ FDV запросов (15 токенов за раз)
-  async getBatchTokenFDV(mintAddresses: string[]): Promise<Map<string, number | null>> {
-    const results = new Map<string, number | null>();
-    const BATCH_SIZE = 15; // 🔥 Увеличен с 3 до 15
-    
-    for (let i = 0; i < mintAddresses.length; i += BATCH_SIZE) {
-      const batch = mintAddresses.slice(i, i + BATCH_SIZE);
-      const batchPromises = batch.map(async address => {
-        const fdv = await this.getTokenFDV(address);
-        results.set(address, fdv);
-      });
-      
-      await Promise.all(batchPromises);
-      if (i + BATCH_SIZE < mintAddresses.length) await this.sleep(2000); // 2 сек пауза
-    }
-    return results;
-  }
-
   // Расширенная информация о токене
-  async getEnhancedTokenInfo(mintAddress: string): Promise<EnhancedTokenInfo | null> {
+  async getEnhancedTokenInfo(mintAddress: string): Promise<{ symbol: string; name: string; decimals: number; price: number | null; totalSupply: number | null; fdv: number | null; marketCap: number | null; } | null> {
     try {
       if (!mintAddress || mintAddress === 'UNKNOWN') return null;
 
@@ -375,157 +483,7 @@ export class TokenMetadataService {
     }
   }
 
-  // 🔥 Jupiter API с кешированием
-  private async getFromJupiter(mintAddress: string): Promise<TokenMetadata | null> {
-    try {
-      await this.updateJupiterTokenList();
-      const jupiterToken = this.jupiterTokenList.get(mintAddress);
-      if (jupiterToken) {
-        const decimals = typeof jupiterToken.decimals === 'number' && jupiterToken.decimals >= 0 ? jupiterToken.decimals : 9;
-        return { symbol: jupiterToken.symbol, name: jupiterToken.name, decimals, logoURI: jupiterToken.logoURI, address: mintAddress };
-      }
-      return null;
-    } catch (error) {
-      this.logger.debug(`Jupiter API error for ${mintAddress}:`, error);
-      return null;
-    }
-  }
-
-  // 🔥 Birdeye API с кешированием
-  private async getFromBirdeye(mintAddress: string): Promise<TokenMetadata | null> {
-    try {
-      const controller = new AbortController();
-      setTimeout(() => controller.abort(), 5000);
-
-      const response = await fetch(`https://public-api.birdeye.so/public/tokenlist?sort_by=v24hUSD&sort_type=desc&offset=0&limit=50`, {
-        method: 'GET',
-        headers: { 'Content-Type': 'application/json', 'User-Agent': 'Smart-Money-Bot/1.0' },
-        signal: controller.signal
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        if (this.isBirdeyeTokenListResponse(data)) {
-          const token = data.data.tokens.find((t: BirdeyeTokenData) => t.address === mintAddress);
-          if (token) {
-            const decimals = typeof token.decimals === 'number' && token.decimals >= 0 ? token.decimals : 9;
-            return {
-              symbol: token.symbol || this.generateSymbolFromAddress(mintAddress),
-              name: token.name || `Token ${mintAddress.slice(0, 8)}...`,
-              decimals, logoURI: token.logoURI, address: mintAddress
-            };
-          }
-        }
-      }
-      return null;
-    } catch (error) {
-      this.logger.debug(`Birdeye API error for ${mintAddress}:`, error);
-      return null;
-    }
-  }
-
-  // Solana Token List
-  private async getFromSolanaTokenList(mintAddress: string): Promise<TokenMetadata | null> {
-    try {
-      const controller = new AbortController();
-      setTimeout(() => controller.abort(), 10000);
-
-      const response = await fetch('https://cdn.jsdelivr.net/gh/solana-labs/token-list@main/src/tokens/solana.tokenlist.json', {
-        method: 'GET',
-        headers: { 'Content-Type': 'application/json', 'User-Agent': 'Smart-Money-Bot/1.0' },
-        signal: controller.signal
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        if (this.isSolanaTokenListResponse(data)) {
-          const token = data.tokens.find((t: SolanaTokenListEntry) => t.address === mintAddress);
-          if (token) {
-            const decimals = typeof token.decimals === 'number' && token.decimals >= 0 ? token.decimals : 9;
-            return { symbol: token.symbol, name: token.name, decimals, logoURI: token.logoURI, address: mintAddress };
-          }
-        }
-      }
-      return null;
-    } catch (error) {
-      this.logger.debug(`Solana Token List error for ${mintAddress}:`, error);
-      return null;
-    }
-  }
-
-  // Обновление Jupiter списка
-  private async updateJupiterTokenList(): Promise<void> {
-    try {
-      const now = Date.now();
-      if (now - this.lastJupiterUpdate < this.CACHE_TTL.JUPITER_UPDATE) return;
-
-      const controller = new AbortController();
-      setTimeout(() => controller.abort(), 15000);
-
-      const response = await fetch('https://token.jup.ag/all', {
-        method: 'GET',
-        headers: { 'Content-Type': 'application/json', 'User-Agent': 'Smart-Money-Bot/1.0' },
-        signal: controller.signal
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        if (Array.isArray(data)) {
-          this.jupiterTokenList.clear();
-          for (const token of data) {
-            if (this.isJupiterTokenData(token) && typeof token.decimals === 'number' && 
-                token.decimals >= 0 && token.decimals <= 18) {
-              this.jupiterTokenList.set(token.address, token);
-            }
-          }
-          this.lastJupiterUpdate = now;
-          this.logger.info(`✅ Updated Jupiter list: ${this.jupiterTokenList.size} tokens`);
-        }
-      }
-    } catch (error) {
-      this.logger.error('Jupiter list update error:', error);
-    }
-  }
-
-  // Цена токена
-  async getTokenPrice(tokenAddress: string): Promise<number | null> {
-    try {
-      if (!tokenAddress || tokenAddress === 'UNKNOWN') return null;
-
-      const cached = this.priceCache.get(tokenAddress);
-      if (cached && Date.now() - cached.timestamp < this.CACHE_TTL.PRICE_DATA) return cached.price;
-
-      if (tokenAddress === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' || 
-          tokenAddress === 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB') {
-        this.priceCache.set(tokenAddress, { price: 1.0, timestamp: Date.now() });
-        return 1.0;
-      }
-
-      const controller = new AbortController();
-      setTimeout(() => controller.abort(), 5000);
-
-      const response = await fetch(`https://public-api.birdeye.so/public/price?address=${tokenAddress}`, {
-        method: 'GET',
-        headers: { 'Content-Type': 'application/json', 'User-Agent': 'Smart-Money-Bot/1.0' },
-        signal: controller.signal
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        if (this.isBirdeyePriceResponse(data) && data.data.value) {
-          const price = data.data.value;
-          this.priceCache.set(tokenAddress, { price, timestamp: Date.now() });
-          return price;
-        }
-      }
-      return null;
-    } catch (error) {
-      this.logger.debug(`Price error for ${tokenAddress}:`, error);
-      return null;
-    }
-  }
-
-  // 🔥 ЭТАП 4: Кешированные Birdeye данные
+  // 🔥 Кешированные Birdeye данные
   private async getBirdeyeMarketDataCached(mintAddress: string): Promise<{ marketCap?: number } | null> {
     const cached = this.birdeyeCache.get(mintAddress);
     if (cached && Date.now() - cached.timestamp < this.CACHE_TTL.BIRDEYE_DATA) return cached.data;
@@ -554,25 +512,6 @@ export class TokenMetadataService {
       return null;
     }
   }
-
-  // Пакетные методы
-  async getBatchTokenPrices(tokenAddresses: string[]): Promise<Map<string, number | null>> {
-    const results = new Map<string, number | null>();
-    const BATCH_SIZE = 5;
-    
-    for (let i = 0; i < tokenAddresses.length; i += BATCH_SIZE) {
-      const batch = tokenAddresses.slice(i, i + BATCH_SIZE);
-      const batchPromises = batch.map(async address => {
-        const price = await this.getTokenPrice(address);
-        results.set(address, price);
-      });
-      
-      await Promise.all(batchPromises);
-      if (i + BATCH_SIZE < tokenAddresses.length) await this.sleep(200);
-    }
-    return results;
-  }
-
   async getBatchTokenMetadata(mintAddresses: string[]): Promise<Map<string, TokenMetadata | null>> {
     const results = new Map<string, TokenMetadata | null>();
     const BATCH_SIZE = 10;
@@ -586,6 +525,23 @@ export class TokenMetadataService {
       
       await Promise.all(batchPromises);
       if (i + BATCH_SIZE < mintAddresses.length) await this.sleep(100);
+    }
+    return results;
+  }
+
+  async getBatchTokenPrices(tokenAddresses: string[]): Promise<Map<string, number | null>> {
+    const results = new Map<string, number | null>();
+    const BATCH_SIZE = 5;
+    
+    for (let i = 0; i < tokenAddresses.length; i += BATCH_SIZE) {
+      const batch = tokenAddresses.slice(i, i + BATCH_SIZE);
+      const batchPromises = batch.map(async address => {
+        const price = await this.getTokenPrice(address);
+        results.set(address, price);
+      });
+      
+      await Promise.all(batchPromises);
+      if (i + BATCH_SIZE < tokenAddresses.length) await this.sleep(200);
     }
     return results;
   }
@@ -652,33 +608,6 @@ export class TokenMetadataService {
     return Array.from(this.WELL_KNOWN_TOKENS.values());
   }
 
-  async getTokenMetadataWithPrice(mintAddress: string): Promise<TokenMetadata & { price?: number; marketCap?: number } | null> {
-    try {
-      const basicMetadata = await this.getTokenMetadata(mintAddress);
-      if (!basicMetadata) return null;
-
-      const controller = new AbortController();
-      setTimeout(() => controller.abort(), 5000);
-
-      const response = await fetch(`https://public-api.birdeye.so/public/price?address=${mintAddress}`, {
-        method: 'GET',
-        headers: { 'Content-Type': 'application/json', 'User-Agent': 'Smart-Money-Bot/1.0' },
-        signal: controller.signal
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        if (this.isBirdeyePriceResponse(data)) {
-          return { ...basicMetadata, price: data.data.value || undefined, marketCap: data.data.marketCap || undefined };
-        }
-      }
-      return basicMetadata;
-    } catch (error) {
-      this.logger.debug(`Price data error for ${mintAddress}:`, error);
-      return await this.getTokenMetadata(mintAddress);
-    }
-  }
-
   // Статистика и управление
   getCacheStats(): {
     totalCached: number;
@@ -687,7 +616,6 @@ export class TokenMetadataService {
     supplyCacheSize: number;
     fdvCacheSize: number;
     birdeyCacheSize: number;
-    cacheHitRate: number;
     lastJupiterUpdate: Date | null;
   } {
     return {
@@ -697,7 +625,6 @@ export class TokenMetadataService {
       supplyCacheSize: this.supplyCache.size,
       fdvCacheSize: this.fdvCache.size,
       birdeyCacheSize: this.birdeyeCache.size,
-      cacheHitRate: 0,
       lastJupiterUpdate: this.lastJupiterUpdate ? new Date(this.lastJupiterUpdate) : null
     };
   }
@@ -717,20 +644,8 @@ export class TokenMetadataService {
   }
 
   // Type Guards
-  private isJupiterQuoteResponse(data: any): data is JupiterQuoteResponse {
-    return data && typeof data === 'object' && typeof data.inputMint === 'string' && typeof data.outputMint === 'string';
-  }
-
-  private isBirdeyeTokenListResponse(data: any): data is BirdeyeTokenListResponse {
-    return data && typeof data === 'object' && data.data && typeof data.data === 'object' && Array.isArray(data.data.tokens);
-  }
-
   private isBirdeyePriceResponse(data: any): data is BirdeyePriceResponse {
     return data && typeof data === 'object' && data.data && typeof data.data === 'object' && typeof data.data.value === 'number';
-  }
-
-  private isSolanaTokenListResponse(data: any): data is SolanaTokenListResponse {
-    return data && typeof data === 'object' && Array.isArray(data.tokens);
   }
 
   private isJupiterTokenData(data: any): data is JupiterTokenData {
