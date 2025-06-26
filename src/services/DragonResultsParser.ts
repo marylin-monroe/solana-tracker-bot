@@ -1,6 +1,7 @@
-// src/services/DragonResultsParser.ts - ИСПРАВЛЕНА КРИТИЧЕСКАЯ УТЕЧКА ПАМЯТИ
+// src/services/DragonResultsParser.ts - ИСПРАВЛЕНА КРИТИЧЕСКАЯ УТЕЧКА ПАМЯТИ + TIER СИСТЕМА + PRE-FILTERING
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
 import { TelegramNotifier } from './TelegramNotifier';
+import { MultiProviderService } from './MultiProviderService';
 import { Logger } from '../utils/Logger';
 import { SmartMoneyWallet } from '../types';
 import * as fs from 'fs';
@@ -13,7 +14,7 @@ const execAsync = promisify(exec);
 
 interface DragonWallet {
   wallet: string; pnl: number; winrate: number; trades: number; volume: number;
-  last_active: number; sol_balance: number; score?: number; profitFactor?: number;
+  last_active?: number; sol_balance: number; score?: number; profitFactor?: number;
   tier?: 'whale' | 'genius' | 'quality' | 'filter_out';
 }
 
@@ -35,12 +36,19 @@ interface DragonParseResult {
 export class DragonResultsParser {
   private smDatabase: SmartMoneyDatabase;
   private telegramNotifier: TelegramNotifier;
+  private multiProvider: MultiProviderService;
   private logger: Logger;
   private config: DragonConfig;
 
-  constructor(smDatabase: SmartMoneyDatabase, telegramNotifier: TelegramNotifier, config?: Partial<DragonConfig>) {
+  constructor(
+    smDatabase: SmartMoneyDatabase, 
+    telegramNotifier: TelegramNotifier, 
+    multiProvider: MultiProviderService,
+    config?: Partial<DragonConfig>
+  ) {
     this.smDatabase = smDatabase;
     this.telegramNotifier = telegramNotifier;
+    this.multiProvider = multiProvider;
     this.logger = Logger.getInstance();
     
     this.config = {
@@ -51,8 +59,9 @@ export class DragonResultsParser {
       scoreWeights: { pnl: 0.5, winrate: 0.2, volume: 0.15, trades: 0.1, activity: 0.05, ...config?.scoreWeights }
     };
 
-    this.logger.info(`🐲 Dragon Parser initialized with STRICT CRITERIA + MEMORY OPTIMIZATION`);
+    this.logger.info(`🐲 Dragon Parser initialized with STRICT CRITERIA + MEMORY OPTIMIZATION + TIER SYSTEM + PRE-FILTERING`);
     this.logger.info(`💰 THRESHOLDS: PnL≥${this.config.minPnl/1000}K, WR≥${this.config.minWinrate}%, Trades≥${this.config.minTrades}`);
+    this.logger.info(`🔍 PRE-FILTERING: Elite wallets (whale/genius/500K+) checked for activity before DB insertion`);
   }
 
   private resolveDragonPath(customPath?: string): string {
@@ -152,7 +161,7 @@ export class DragonResultsParser {
 
   async parseLatestDragonResults(forceReplace: boolean = false): Promise<DragonParseResult> {
     try {
-      this.logger.info(`🐲 Starting Dragon parsing (Replace Mode: ${forceReplace}) with MEMORY OPTIMIZATION...`);
+      this.logger.info(`🐲 Starting Dragon parsing (Replace Mode: ${forceReplace}) with MEMORY OPTIMIZATION + TIER SYSTEM + PRE-FILTERING...`);
 
       await this.syncFromGit();
 
@@ -185,60 +194,56 @@ export class DragonResultsParser {
       this.logger.info(`💰 After STRICT filtering: ${filteredWallets.length} high-quality wallets (${((filteredWallets.length / uniqueWallets.length) * 100).toFixed(1)}% selected)`);
 
       const scoredWallets = this.calculateProfitFirstScores(filteredWallets);
-      scoredWallets.sort((a, b) => this.compareProfitPriority(a, b));
+      
+      // 🔥 НОВОЕ: PRE-FILTERING активности для элитных кошельков
+      const activityCheckedWallets = await this.preFilterByActivity(scoredWallets);
+      
+      activityCheckedWallets.sort((a, b) => this.compareProfitPriority(a, b));
 
-      const smartWallets = this.convertToSmartWallets(scoredWallets);
+      // 🔥 СОЗДАЕМ ОБА МАССИВА СИНХРОННО
+      const smartWallets = this.convertToSmartWallets(activityCheckedWallets);
+      const dragonTiers = activityCheckedWallets.map(wallet => this.determineTier(wallet));
+      
+      // ⚠️ КРИТИЧЕСКАЯ ПРОВЕРКА СИНХРОННОСТИ
+      if (smartWallets.length !== dragonTiers.length) {
+        this.logger.error(`❌ CRITICAL: Arrays length mismatch! smartWallets: ${smartWallets.length}, dragonTiers: ${dragonTiers.length}`);
+        throw new Error('Arrays must have same length!');
+      }
+
+      // 🔥 ПРОВЕРКА СООТВЕТСТВИЯ TIER И NICKNAME
+      smartWallets.forEach((wallet, i) => {
+        const expectedTier = dragonTiers[i].toUpperCase();
+        if (!wallet.nickname?.includes(expectedTier)) {
+          this.logger.warn(`⚠️ Nickname ${wallet.nickname} should contain ${expectedTier}`);
+        }
+      });
       
       let clearedCount = 0, addedCount = 0, updatedCount = 0, skippedCount = 0;
       let errors: string[] = [];
 
       if (forceReplace) {
         this.logger.info('🔥 REPLACE MODE: Clearing existing Dragon wallets and adding new ones');
-        const replacementResult = await this.smDatabase.replaceDragonWallets(smartWallets);
+        // 🔥 ПЕРЕДАЕМ ОБА МАССИВА
+        const replacementResult = await this.smDatabase.replaceDragonWallets(smartWallets, dragonTiers);
         clearedCount = replacementResult.cleared;
         addedCount = replacementResult.added;
         errors = replacementResult.errors;
         
         await this.sendReplacementNotification(clearedCount, addedCount, errors);
       } else {
-        this.logger.info('📈 NORMAL MODE: Adding/updating Dragon wallets');
-        for (const smWallet of smartWallets) {
-          try {
-            const existing = await this.smDatabase.getSmartWallet(smWallet.address);
-            if (existing) {
-              const settings = await this.smDatabase.getWalletSettings(existing.address);
-              const isDragonWallet = settings && await this.isDragonWallet(existing.address);
-              
-              if (isDragonWallet) {
-                if (smWallet.totalPnL > existing.totalPnL || smWallet.winRate > existing.winRate || smWallet.totalTrades > existing.totalTrades) {
-                  await this.updateExistingWallet(existing, smWallet);
-                  updatedCount++;
-                } else {
-                  skippedCount++;
-                }
-              } else {
-                skippedCount++;
-              }
-            } else {
-              await this.smDatabase.saveSmartWallet(smWallet, {
-                nickname: `Dragon-${smWallet.address.slice(0, 8)}`,
-                addedBy: 'dragon', verified: true, enabled: true,
-                priority: this.determinePriority(smWallet)
-              });
-              addedCount++;
-            }
-          } catch (error) {
-            const errorMsg = `Failed to process ${smWallet.address}: ${error}`;
-            errors.push(errorMsg);
-            this.logger.warn(`⚠️ ${errorMsg}`);
-          }
-        }
+        this.logger.info('📈 NORMAL MODE: Using replaceDragonWallets with tier information');
+        // 🔥 В НОРМАЛЬНОМ РЕЖИМЕ ТОЖЕ ИСПОЛЬЗУЕМ replaceDragonWallets
+        const result = await this.smDatabase.replaceDragonWallets(smartWallets, dragonTiers);
+        clearedCount = result.cleared;
+        addedCount = result.added;
+        skippedCount = result.skipped;
+        errors = result.errors;
         
         await this.sendNormalNotification(addedCount, updatedCount, skippedCount, errors);
       }
 
       const finalResult = this.createResult(allWallets.length, uniqueWallets.length - filteredWallets.length,
-        addedCount, updatedCount, skippedCount, clearedCount, scoredWallets, forceReplace);
+        addedCount, updatedCount, skippedCount, clearedCount, activityCheckedWallets, forceReplace);
 
       // 🔥 ФИНАЛЬНАЯ ОЧИСТКА ПАМЯТИ
       allWallets.length = 0;
@@ -368,7 +373,8 @@ export class DragonResultsParser {
               winrate: Math.min(winrate, 100),
               trades: totalTrades,
               volume: boughtUsd,
-              last_active: Date.now() / 1000,
+              // 🔥 НЕ УСТАНАВЛИВАЕМ last_active здесь - будет добавлено в preFilterByActivity для элитных
+              // last_active будет undefined для quality кошельков (DragonActivityChecker их проверит)
               sol_balance: parseFloat(data.solBalance || '0')
             });
           }
@@ -406,12 +412,40 @@ export class DragonResultsParser {
     }
   }
 
+  // 🔥 НОВЫЙ МЕТОД: определение tier (согласован с applyProfitFirstFiltering)
+  private determineTier(wallet: DragonWallet): 'whale' | 'genius' | 'quality' | 'filter_out' {
+    // 🔥 ИСПОЛЬЗУЕМ ТУ ЖЕ ЛОГИКУ что и в applyProfitFirstFiltering!
+    if (wallet.pnl >= 1_000_000) {
+      return 'whale'; // ≥1M$ → whale
+    }
+    if (wallet.pnl >= 500_000 && wallet.winrate >= 58) {
+      return 'whale'; // ≥500K$ + ≥58% → whale  
+    }
+    if (wallet.pnl >= 200_000 && wallet.winrate >= 60) {
+      return 'genius'; // ≥200K$ + ≥60% → genius
+    }
+    if (wallet.pnl >= 100_000 && wallet.winrate >= 63) {
+      return 'quality'; // ≥100K$ + ≥63% → quality
+    }
+    
+    // Проверка минимальных требований
+    if (wallet.pnl < this.config.minPnl || wallet.winrate < this.config.minWinrate || 
+        wallet.trades < this.config.minTrades || wallet.winrate > 99.9 || 
+        wallet.volume > wallet.pnl * 100) {
+      return 'filter_out';
+    }
+    
+    return 'quality'; // Fallback
+  }
+
   private convertToSmartWallets(dragonWallets: DragonWallet[]): SmartMoneyWallet[] {
     return dragonWallets.map(wallet => {
       const category = this.determineCategory(wallet);
-      const tierName = wallet.tier?.toUpperCase() || 'DRAGON';
-      const categoryName = category.toUpperCase();
-      const nickname = `${tierName}-${categoryName}-${wallet.wallet.slice(0, 6)}`;
+      const tier = this.determineTier(wallet);
+      
+      // 🔥 NICKNAME ТЕПЕРЬ СОДЕРЖИТ TIER ИНФОРМАЦИЮ
+      const tierName = tier.toUpperCase();
+      const nickname = `Dragon-${tierName}-${wallet.wallet.slice(0, 8)}`;
 
       return {
         address: wallet.wallet, category: category, winRate: wallet.winrate,
@@ -419,10 +453,13 @@ export class DragonResultsParser {
         avgTradeSize: wallet.trades > 0 ? wallet.volume / wallet.trades : 0,
         maxTradeSize: wallet.volume * 0.1, minTradeSize: wallet.volume * 0.01,
         performanceScore: wallet.score || 70, sharpeRatio: null, maxDrawdown: null,
-        lastActiveAt: new Date(wallet.last_active * 1000), isActive: true,
+        // 🔥 ИСПРАВЛЕНО: обработка undefined last_active для quality кошельков
+        lastActiveAt: wallet.last_active ? new Date(wallet.last_active * 1000) : new Date(0), // new Date(0) = 1970 для непроверенных
+        isActive: true,
         isFamilyMember: false, familyAddresses: null, coordinationScore: 0,
         stealthLevel: null, earlyEntryRate: null, avgHoldTime: null,
-        volumeScore: null, createdAt: new Date(), updatedAt: new Date()
+        volumeScore: null, createdAt: new Date(), updatedAt: new Date(),
+        nickname: nickname // 🔥 СОХРАНЯЕМ TIER В NICKNAME
       } as SmartMoneyWallet;
     });
   }
@@ -485,13 +522,14 @@ export class DragonResultsParser {
       if (wallet.pnl >= this.config.whaleThresholds.megaWhale) {
         wallet.tier = 'whale'; return true;
       }
-      if (wallet.pnl >= this.config.whaleThresholds.whale && wallet.winrate >= 30) {
+      // 🔥 ИСПРАВЛЕННЫЕ THRESHOLDS ПО ТРЕБОВАНИЮ
+      if (wallet.pnl >= 500_000 && wallet.winrate >= 58) {
         wallet.tier = 'whale'; return true;
       }
-      if (wallet.pnl >= this.config.whaleThresholds.bigPlayer && wallet.winrate >= 40) {
+      if (wallet.pnl >= 200_000 && wallet.winrate >= 60) {
         wallet.tier = 'genius'; return true;
       }
-      if (wallet.pnl >= this.config.whaleThresholds.quality && wallet.winrate >= 45) {
+      if (wallet.pnl >= 100_000 && wallet.winrate >= 63) {
         wallet.tier = 'quality'; return true;
       }
       if (wallet.pnl < this.config.minPnl || wallet.winrate < this.config.minWinrate || 
@@ -555,15 +593,131 @@ export class DragonResultsParser {
     });
   }
 
+  // ========== ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ==========
+
+  private createBatches<T>(array: T[], batchSize: number): T[][] {
+    const batches: T[][] = [];
+    for (let i = 0; i < array.length; i += batchSize) {
+      batches.push(array.slice(i, i + batchSize));
+    }
+    return batches;
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  // ========== 🔥 PRE-FILTERING АКТИВНОСТИ ==========
+
+  /**
+   * 🔍 PRE-FILTERING: Проверяем активность элитных кошельков ДО добавления в БД
+   * Это предотвращает добавление "мертвых гениев" и повышает качество данных
+   */
+  private async preFilterByActivity(wallets: DragonWallet[]): Promise<DragonWallet[]> {
+    const eliteWallets = wallets.filter(w => 
+      w.tier === 'whale' || w.tier === 'genius' || w.pnl >= 500_000
+    );
+    
+    if (eliteWallets.length === 0) {
+      this.logger.info('✅ No elite wallets to pre-filter for activity');
+      return wallets;
+    }
+    
+    this.logger.info(`🔍 PRE-FILTERING: Checking activity for ${eliteWallets.length} elite wallets (tier: whale/genius, PnL≥500K)...`);
+    
+    const activeEliteWallets: DragonWallet[] = [];
+    const batchSize = 3; // Очень консервативно для API
+    let totalChecked = 0;
+    let totalFiltered = 0;
+    
+    for (let i = 0; i < eliteWallets.length; i += batchSize) {
+      const batch = eliteWallets.slice(i, i + batchSize);
+      
+      this.logger.debug(`🔍 Checking batch ${Math.floor(i/batchSize) + 1}/${Math.ceil(eliteWallets.length/batchSize)}: ${batch.length} wallets`);
+      
+      const checks = await Promise.allSettled(
+        batch.map(wallet => this.checkWalletActivityQuick(wallet.wallet))
+      );
+      
+      checks.forEach((result, index) => {
+        const wallet = batch[index];
+        totalChecked++;
+        
+        if (result.status === 'fulfilled' && result.value.isActive) {
+          // 🔥 УСТАНАВЛИВАЕМ РЕАЛЬНУЮ ДАТУ АКТИВНОСТИ
+          if (result.value.lastTransactionTime) {
+            wallet.last_active = result.value.lastTransactionTime;
+          }
+          activeEliteWallets.push(wallet);
+          this.logger.debug(`✅ Active elite: ${wallet.wallet.slice(0,8)} (${wallet.tier}, ${this.formatNumber(wallet.pnl)})`);
+        } else {
+          totalFiltered++;
+          const reason = result.status === 'rejected' ? 'API Error' : 'Inactive >7d';
+          this.logger.info(`❌ FILTERED OUT inactive elite wallet: ${wallet.wallet.slice(0,8)} (${wallet.tier}, ${this.formatNumber(wallet.pnl)}) - ${reason}`);
+        }
+      });
+      
+      // Пауза между батчами (кроме последнего)
+      if (i + batchSize < eliteWallets.length) {
+        await this.sleep(8000); // 8 секунд между батчами
+      }
+    }
+    
+    // Возвращаем активные элитные + все остальные (quality)
+    const nonEliteWallets = wallets.filter(w => 
+      w.tier !== 'whale' && w.tier !== 'genius' && w.pnl < 500_000
+    );
+    
+    const finalWallets = [...activeEliteWallets, ...nonEliteWallets];
+    
+    this.logger.info(`✅ PRE-FILTERING completed: ${activeEliteWallets.length}/${eliteWallets.length} elite wallets are active (${totalFiltered} filtered out)`);
+    this.logger.info(`📊 Final count: ${finalWallets.length} wallets (${activeEliteWallets.length} active elite + ${nonEliteWallets.length} quality with old dates)`);
+    this.logger.info(`🔍 Quality wallets will be checked later by DragonActivityChecker (lastActiveAt = 1970)`);
+    
+    return finalWallets;
+  }
+
+  /**
+   * ⚡ БЫСТРАЯ ПРОВЕРКА АКТИВНОСТИ ОДНОГО КОШЕЛЬКА
+   * Проверяет последнюю транзакцию и определяет активность за последние 7 дней
+   */
+  private async checkWalletActivityQuick(address: string): Promise<{isActive: boolean, lastTransactionTime: number | null}> {
+    try {
+      const response = await this.multiProvider.getSignaturesForAddress(address, { limit: 1 });
+      
+      if (!response.success || !response.data?.[0]?.blockTime) {
+        this.logger.debug(`❌ No transactions found for ${address.slice(0,8)}`);
+        return { isActive: false, lastTransactionTime: null };
+      }
+      
+      const lastTxTime = response.data[0].blockTime;
+      const daysSince = (Date.now() / 1000 - lastTxTime) / (24 * 60 * 60);
+      const isActive = daysSince <= 7; // 7 дней максимум для elite
+      
+      this.logger.debug(`📊 ${address.slice(0,8)}: ${daysSince.toFixed(1)}d ago ${isActive ? '(ACTIVE)' : '(INACTIVE)'}`);
+      
+      return { 
+        isActive, 
+        lastTransactionTime: lastTxTime 
+      };
+      
+    } catch (error) {
+      this.logger.warn(`⚠️ Error checking activity for ${address.slice(0,8)}:`, error);
+      return { isActive: false, lastTransactionTime: null }; // При ошибке считаем неактивным
+    }
+  }
+
   private async sendReplacementNotification(clearedCount: number, addedCount: number, errors: string[]): Promise<void> {
     const emoji = errors.length > 0 ? '⚠️' : '✅';
     const message = `${emoji} <b>Dragon Database REPLACED</b>\n\n` +
       `🗑️ <b>Cleared Old:</b> <code>${clearedCount}</code> Dragon wallets\n` +
-      `➕ <b>Added New:</b> <code>${addedCount}</code> STRICT-filtered wallets\n\n` +
-      `💰 <b>STRICT Thresholds Applied:</b>\n` +
-      `• Min PnL: <code>$${this.formatNumber(this.config.minPnl)}</code>\n` +
-      `• Min WR: <code>${this.config.minWinrate}%</code>\n` +
-      `• Min Trades: <code>${this.config.minTrades}</code>\n\n` +
+      `➕ <b>Added New:</b> <code>${addedCount}</code> PRE-FILTERED wallets\n\n` +
+      `💰 <b>NEW TIER Thresholds:</b>\n` +
+      `🐋 <b>WHALE:</b> ≥500K$ + ≥58% WR\n` +
+      `🧠 <b>GENIUS:</b> ≥200K$ + ≥60% WR\n` +
+      `💎 <b>QUALITY:</b> ≥100K$ + ≥63% WR\n\n` +
+      `🔍 <b>PRE-FILTERING:</b> Elite wallets checked for activity\n` +
+      `📅 <b>Quality wallets:</b> Old dates → will be checked by ActivityChecker\n` +
       `🔄 <b>Database Status:</b> <code>Completely Refreshed</code>\n` +
       (errors.length > 0 ? `⚠️ <b>Errors:</b> <code>${errors.length}</code>\n` : '') +
       `⏰ <code>${new Date().toLocaleString()}</code>`;
@@ -576,7 +730,10 @@ export class DragonResultsParser {
       `➕ <b>Added:</b> <code>${addedCount}</code> new wallets\n` +
       `🔄 <b>Updated:</b> <code>${updatedCount}</code> existing\n` +
       `⏭️ <b>Skipped:</b> <code>${skippedCount}</code> unchanged\n\n` +
-      `💰 <b>STRICT Criteria:</b> PnL≥$${this.config.minPnl/1000}K, WR≥${this.config.minWinrate}%, Trades≥${this.config.minTrades}\n` +
+      `💰 <b>NEW TIER Criteria:</b>\n` +
+      `🐋 WHALE: 500K$+58% | 🧠 GENIUS: 200K$+60% | 💎 QUALITY: 100K$+63%\n` +
+      `🔍 <b>PRE-FILTERING:</b> Elite wallets activity-checked\n` +
+      `📅 <b>Quality wallets:</b> Old dates → ActivityChecker will verify\n` +
       (errors.length > 0 ? `⚠️ <b>Errors:</b> <code>${errors.length}</code>\n` : '') +
       `⏰ <code>${new Date().toLocaleString()}</code>`;
 

@@ -1,4 +1,4 @@
-// src/services/SmartMoneyDatabase.ts - DRAGON БД СИСТЕМА ПОЛНОЙ ЗАМЕНЫ + SQLITE BOOLEAN FIX
+// src/services/SmartMoneyDatabase.ts - 🔥 ИСПРАВЛЕНЫ ФИЛЬТРЫ PnL + SQL BUG + getAllActiveDragonWallets
 import BetterSqlite3 from 'better-sqlite3';
 import { Logger } from '../utils/Logger';
 import { SmartMoneyWallet, TokenSwap } from '../types';
@@ -151,7 +151,7 @@ export class SmartMoneyDatabase {
         this.db.exec(`CREATE INDEX IF NOT EXISTS idx_sm_wallets_priority ON smart_money_wallets(priority);`);
       }
 
-      this.logger.info('✅ Smart Money Database initialized with Dragon replacement system');
+      this.logger.info('✅ Smart Money Database initialized with PROFIT-FIRST filters');
     } catch (error) {
       this.logger.error('❌ Error initializing Smart Money database:', error);
       throw error;
@@ -190,6 +190,13 @@ export class SmartMoneyDatabase {
   }
 
   // ========== 🐲 DRAGON МЕТОДЫ ==========
+  // 
+  // Примечание: DragonResultsParser должен передавать dragonTiers массив
+  // где каждый элемент соответствует tier кошелька: 'whale', 'genius', 'quality'
+  // 
+  // ВАЖНО: DragonResultsParser уже формирует nickname с tier информацией 
+  // (например: "Dragon-WHALE-4bNp8eR2"), поэтому мы используем wallet.nickname
+  // чтобы сохранить эту информацию в БД
 
   async clearAllDragonWallets(): Promise<number> {
     try {
@@ -225,27 +232,51 @@ export class SmartMoneyDatabase {
     }
   }
 
-  async replaceDragonWallets(newWallets: SmartMoneyWallet[]): Promise<{
-    cleared: number; added: number; errors: string[];
+  async replaceDragonWallets(newWallets: SmartMoneyWallet[], dragonTiers?: string[]): Promise<{
+    cleared: number; added: number; skipped: number; errors: string[];
+    priorityStats: { high: number; medium: number; low: number };
   }> {
     try {
       this.logger.info(`🔄 Replacing Dragon wallets: ${newWallets.length} new wallets`);
       
+      // ⚠️ Проверяем согласованность массивов
+      if (dragonTiers && dragonTiers.length !== newWallets.length) {
+        this.logger.warn(`⚠️ Dragon tiers array length (${dragonTiers.length}) doesn't match wallets (${newWallets.length}), will use fallback priority logic`);
+      }
+      
       const clearedCount = await this.clearAllDragonWallets();
       
       let addedCount = 0;
+      let skippedLowPriority = 0;
       const errors: string[] = [];
+      const priorityStats = { high: 0, medium: 0, low: 0 };
       
-      for (const wallet of newWallets) {
+      for (let i = 0; i < newWallets.length; i++) {
+        const wallet = newWallets[i];
+        const dragonTier = dragonTiers && dragonTiers.length > i ? dragonTiers[i] : undefined;
+        
         try {
+          // 🔥 ИСПОЛЬЗУЕМ DRAGON TIER ДЛЯ PRIORITY
+          const priority = this.mapDragonTierToPriority(dragonTier, wallet);
+          priorityStats[priority]++;
+          
+          // 🚫 НЕ ДОБАВЛЯЕМ КОШЕЛЬКИ С LOW PRIORITY
+          if (priority === 'low') {
+            skippedLowPriority++;
+            this.logger.warn(`🚫 Skipping Dragon wallet with low priority: ${wallet.address.slice(0, 8)} (tier: ${dragonTier})`);
+            continue;
+          }
+          
           await this.saveSmartWallet(wallet, {
-            nickname: `Dragon-${wallet.address.slice(0, 8)}`,
+            nickname: wallet.nickname || `Dragon-${wallet.address.slice(0, 8)}`, // 🔥 ИСПОЛЬЗУЕМ ГОТОВЫЙ NICKNAME С TIER'ОМ
             addedBy: 'dragon',
             verified: true,
             enabled: true,
-            priority: this.determinePriority(wallet)
+            priority: priority
           });
           addedCount++;
+          
+          this.logger.debug(`✅ Added Dragon wallet: ${wallet.address.slice(0, 8)} (${dragonTier} → ${priority})`);
         } catch (error) {
           const errorMsg = `Failed to add ${wallet.address}: ${error}`;
           errors.push(errorMsg);
@@ -253,8 +284,15 @@ export class SmartMoneyDatabase {
         }
       }
       
-      this.logger.info(`✅ Dragon replacement completed: cleared ${clearedCount}, added ${addedCount}`);
-      return { cleared: clearedCount, added: addedCount, errors };
+      this.logger.info(`✅ Dragon replacement completed: cleared ${clearedCount}, added ${addedCount}, skipped ${skippedLowPriority} low priority`);
+      this.logger.info(`📊 Priority distribution: High=${priorityStats.high}, Medium=${priorityStats.medium}, Low=${priorityStats.low}`);
+      return { 
+        cleared: clearedCount, 
+        added: addedCount, 
+        skipped: skippedLowPriority,
+        errors,
+        priorityStats 
+      };
       
     } catch (error) {
       this.logger.error('❌ Error in Dragon wallet replacement:', error);
@@ -262,11 +300,44 @@ export class SmartMoneyDatabase {
     }
   }
 
+  // 🔥 МАППИНГ DRAGON TIER → PRIORITY
+  private mapDragonTierToPriority(dragonTier: string | undefined, wallet: SmartMoneyWallet): 'high' | 'medium' | 'low' {
+    // Если Dragon парсер присвоил tier, используем его
+    if (dragonTier) {
+      switch (dragonTier) {
+        case 'whale':    // Топовые по PnL
+        case 'genius':   // Топовые по WR + хороший PnL
+          return 'high';
+        case 'quality':  // Хорошие, но не топ
+          return 'medium';
+        case 'filter_out': // Не должны попадать сюда, но на всякий случай
+          return 'low';
+        default:
+          this.logger.warn(`⚠️ Unknown dragon tier: ${dragonTier}, fallback to determinePriority`);
+          return this.determinePriority(wallet);
+      }
+    }
+    
+    // Fallback на старую логику если tier не передан
+    return this.determinePriority(wallet);
+  }
+
+  // 🔥 УЛУЧШЕННЫЕ ФИЛЬТРЫ ПО PnL (для не-Dragon кошельков и fallback)
   private determinePriority(wallet: SmartMoneyWallet): 'high' | 'medium' | 'low' {
-    if (wallet.totalPnL >= 1000000) return 'high';
-    if (wallet.totalPnL >= 500000) return 'high';
-    if (wallet.winRate >= 60) return 'high';
-    return 'medium';
+    // Примечание: для Dragon кошельков приоритет определяется через mapDragonTierToPriority()
+    // Этот метод используется для manual/discovery кошельков и как fallback
+    // 🚀 ЭЛИТНЫЕ: 300K$ + хороший WR 
+    if (wallet.totalPnL >= 300000 && wallet.winRate >= 55) {
+      return 'high';
+    }
+    
+    // 💎 ХОРОШИЕ: 150K$ + отличный WR
+    if (wallet.totalPnL >= 150000 && wallet.winRate >= 60) {
+      return 'medium';
+    }
+    
+    // ❌ ОСТАЛЬНЫЕ НЕ БЕРЕМ (будут отфильтрованы)
+    return 'low';
   }
 
   async getWalletSource(address: string): Promise<string | null> {
@@ -354,6 +425,36 @@ export class SmartMoneyDatabase {
     }
   }
 
+  /**
+   * 🔍 ПОЛУЧЕНИЕ ВСЕХ АКТИВНЫХ DRAGON КОШЕЛЬКОВ ДЛЯ ACTIVITY CHECKER
+   * Используется в DragonActivityChecker для проверки активности
+   */
+  async getAllActiveDragonWallets(): Promise<string[]> {
+    try {
+      const tableInfo = this.db.prepare("PRAGMA table_info(smart_money_wallets)").all() as any[];
+      const hasAddedByColumn = tableInfo.some((col: any) => col.name === 'added_by');
+      
+      if (!hasAddedByColumn) {
+        this.logger.warn('⚠️ added_by column does not exist, cannot find Dragon wallets');
+        return [];
+      }
+
+      const query = `
+        SELECT address FROM smart_money_wallets 
+        WHERE added_by = 'dragon' AND is_active = 1 AND enabled = 1
+        ORDER BY created_at ASC`; // Старые первыми - лучше начать с них
+      
+      const rows = this.db.prepare(query).all() as Array<{ address: string }>;
+      
+      this.logger.debug(`📊 Found ${rows.length} active Dragon wallets for activity checking`);
+      return rows.map(row => row.address);
+      
+    } catch (error) {
+      this.logger.error('❌ Error getting active Dragon wallets:', error);
+      return [];
+    }
+  }
+
   // ========== ОСНОВНЫЕ МЕТОДЫ ==========
 
   async saveSmartWallet(wallet: SmartMoneyWallet, config?: {
@@ -366,6 +467,7 @@ export class SmartMoneyDatabase {
     const columnNames = tableInfo.map((col: any) => col.name);
 
     if (columnNames.includes('nickname') && columnNames.includes('description')) {
+      // 🔥 ИСПРАВЛЕНО: убран datetime('now') из VALUES
       const stmt = this.db.prepare(`
         INSERT OR REPLACE INTO smart_money_wallets (
           address, category, nickname, description,
@@ -374,10 +476,10 @@ export class SmartMoneyDatabase {
           min_trade_alert, priority, enabled,
           is_active, verified, last_active_at,
           is_family_member, family_addresses, coordination_score, stealth_level,
-          added_by, added_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+          added_by, added_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
-
+      
       stmt.run(
         wallet.address,
         wallet.category,
@@ -401,12 +503,12 @@ export class SmartMoneyDatabase {
         wallet.isActive ? 1 : 0,
         config?.verified !== undefined ? (config.verified ? 1 : 0) : 0,
         wallet.lastActiveAt.toISOString(),
-        0, // 🔥 ИСПРАВЛЕНО: было false, стало 0
+        0,
         null,
         0,
         wallet.stealthLevel || null,
         config?.addedBy || 'discovery',
-        new Date().toISOString()
+        new Date().toISOString() // 🔥 ИСПРАВЛЕНО: передается как параметр
       );
     } else {
       const stmt = this.db.prepare(`
@@ -422,7 +524,7 @@ export class SmartMoneyDatabase {
         wallet.address, wallet.category, wallet.winRate, wallet.totalPnL, wallet.totalTrades,
         wallet.avgTradeSize, wallet.maxTradeSize, wallet.minTradeSize, wallet.performanceScore,
         wallet.sharpeRatio || null, wallet.maxDrawdown || null, wallet.lastActiveAt.toISOString(),
-        wallet.isActive ? 1 : 0, 0, null, 0, wallet.stealthLevel || null, // 🔥 ИСПРАВЛЕНО: 0 вместо false
+        wallet.isActive ? 1 : 0, 0, null, 0, wallet.stealthLevel || null,
         wallet.earlyEntryRate || null, wallet.avgHoldTime || null, wallet.volumeScore || null
       );
     }
@@ -474,7 +576,7 @@ export class SmartMoneyDatabase {
     }
     if (settings.enabled !== undefined && columnNames.includes('enabled')) {
       updates.push('enabled = ?');
-      params.push(settings.enabled ? 1 : 0); // 🔥 ИСПРАВЛЕНО: явная конвертация в 1/0
+      params.push(settings.enabled ? 1 : 0);
     }
 
     if (updates.length > 0) {
@@ -595,6 +697,7 @@ export class SmartMoneyDatabase {
           const wallet = newWallets[i];
           const config = configs?.[i];
           
+          // 🔥 ИСПРАВЛЕНО: убран datetime('now') из VALUES
           const stmt = this.db.prepare(`
             INSERT INTO smart_money_wallets (
               address, category, nickname, description,
@@ -603,8 +706,8 @@ export class SmartMoneyDatabase {
               min_trade_alert, priority, enabled,
               is_active, verified, last_active_at,
               is_family_member, family_addresses, coordination_score, stealth_level,
-              added_by, added_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+              added_by, added_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `);
 
           const normalizedAddedBy = config?.addedBy === 'placeholder' ? 'discovery' : (config?.addedBy || 'manual');
@@ -621,8 +724,9 @@ export class SmartMoneyDatabase {
             config?.priority || (wallet.performanceScore > 85 ? 'high' : 'medium'),
             1, // enabled
             wallet.isActive ? 1 : 0, safeEnabled, wallet.lastActiveAt.toISOString(),
-            0, null, 0, wallet.stealthLevel || null, // 🔥 ИСПРАВЛЕНО: 0 вместо false
-            normalizedAddedBy, new Date().toISOString()
+            0, null, 0, wallet.stealthLevel || null,
+            normalizedAddedBy, 
+            new Date().toISOString() // 🔥 ИСПРАВЛЕНО: передается как параметр
           );
 
           const tier = this.calculateTierFromScore(wallet.performanceScore);
@@ -641,7 +745,7 @@ export class SmartMoneyDatabase {
     });
 
     transaction();
-    this.logger.info(`✅ Successfully replaced all wallets with performance tracking: ${newWallets.length} new wallets added`);
+    this.logger.info(`✅ Successfully replaced all wallets with PROFIT-FIRST filters: ${newWallets.length} new wallets added`);
   }
 
   async getWalletStats(): Promise<{

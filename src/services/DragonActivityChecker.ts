@@ -1,4 +1,4 @@
-// src/services/DragonActivityChecker.ts - ОТЛОЖЕННАЯ ПРОВЕРКА АКТИВНОСТИ DRAGON КОШЕЛЬКОВ
+// src/services/DragonActivityChecker.ts - ОТЛОЖЕННАЯ ПРОВЕРКА АКТИВНОСТИ DRAGON КОШЕЛЬКОВ + ИСПРАВЛЕНИЯ
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
 import { MultiProviderService } from './MultiProviderService';
 import { TelegramNotifier } from './TelegramNotifier';
@@ -61,7 +61,7 @@ export class DragonActivityChecker {
       ...config
     };
 
-    this.logger.info('🧹 DragonActivityChecker initialized');
+    this.logger.info('🧹 DragonActivityChecker initialized with POST-processing cleanup logic');
   }
 
   /**
@@ -80,20 +80,20 @@ export class DragonActivityChecker {
 
     try {
       this.isRunning = true;
-      this.logger.info('🧹 Starting Dragon wallets activity check...');
+      this.logger.info('🧹 Starting Dragon wallets activity check (POST-processing cleanup)...');
 
-      // 1. Найти подозрительные Dragon кошельки
-      const suspiciousWallets = await this.findSuspiciousWallets();
+      // 1. Найти Dragon кошельки для проверки
+      const walletsToCheck = await this.findDragonWalletsToCheck();
       
-      if (suspiciousWallets.length === 0) {
-        this.logger.info('✅ No suspicious Dragon wallets found');
+      if (walletsToCheck.length === 0) {
+        this.logger.info('✅ No Dragon wallets need activity checking at this time');
         return { checked: 0, deactivated: 0, errors: 0, details: [] };
       }
 
-      this.logger.info(`🔍 Found ${suspiciousWallets.length} Dragon wallets to check`);
+      this.logger.info(`🔍 Found ${walletsToCheck.length} Dragon wallets to check for activity`);
 
       // 2. Проверить активность батчами
-      const result = await this.batchCheckActivity(suspiciousWallets);
+      const result = await this.batchCheckActivity(walletsToCheck);
 
       // 3. Деактивировать неактивные кошельки
       const deactivated = await this.deactivateInactiveWallets(result.filter(w => w.shouldDeactivate));
@@ -108,6 +108,12 @@ export class DragonActivityChecker {
       };
 
       this.logger.info(`✅ Activity check completed: ${finalResult.checked} checked, ${finalResult.deactivated} deactivated`);
+      
+      // Отправляем уведомление если были деактивированы кошельки
+      if (finalResult.deactivated > 0) {
+        await this.sendActivityCheckNotification(finalResult);
+      }
+      
       return finalResult;
 
     } catch (error) {
@@ -119,31 +125,30 @@ export class DragonActivityChecker {
   }
 
   /**
-   * 🔍 ПОИСК ПОДОЗРИТЕЛЬНЫХ DRAGON КОШЕЛЬКОВ
-   * Находит кошельки где lastActiveAt ≈ createdAt (означает использование заглушки)
+   * 🔍 ПОИСК DRAGON КОШЕЛЬКОВ ДЛЯ ПРОВЕРКИ
+   * ИСПРАВЛЕНО: Просто берем все активные Dragon кошельки, фильтруем по времени последней проверки
    */
-  private async findSuspiciousWallets(): Promise<string[]> {
+  private async findDragonWalletsToCheck(): Promise<string[]> {
     try {
-      // Используем метод из SmartMoneyDatabase для безопасного поиска
-      const rows = await this.smDatabase.findSuspiciousDragonWallets();
+      // 🔥 ИСПРАВЛЕНО: Используем публичный метод вместо прямого доступа к db
+      const dragonWallets = await this.smDatabase.getAllActiveDragonWallets();
 
       // Фильтруем кошельки которые не проверялись недавно
       const now = Date.now();
-      const filteredWallets = rows
-        .filter(row => {
-          const lastChecked = this.lastCheckedCache.get(row.address);
-          if (!lastChecked) return true;
+      const filteredWallets = dragonWallets
+        .filter(address => {
+          const lastChecked = this.lastCheckedCache.get(address);
+          if (!lastChecked) return true; // Не проверялся, нужно проверить
           
           const hoursSinceLastCheck = (now - lastChecked) / (1000 * 60 * 60);
           return hoursSinceLastCheck >= this.config.recheckIntervalHours;
-        })
-        .map(row => row.address);
+        });
 
-      this.logger.info(`🔍 Found ${filteredWallets.length} suspicious Dragon wallets (${rows.length} total, filtered by recheck interval)`);
+      this.logger.info(`🔍 Found ${filteredWallets.length} Dragon wallets to check (${dragonWallets.length} total, filtered by ${this.config.recheckIntervalHours}h interval)`);
       return filteredWallets;
 
     } catch (error) {
-      this.logger.error('❌ Error finding suspicious wallets:', error);
+      this.logger.error('❌ Error finding Dragon wallets for activity check:', error);
       return [];
     }
   }
@@ -273,6 +278,27 @@ export class DragonActivityChecker {
   }
 
   /**
+   * 📢 ОТПРАВКА УВЕДОМЛЕНИЯ О ПРОВЕРКЕ АКТИВНОСТИ
+   */
+  private async sendActivityCheckNotification(result: ActivityCheckResult): Promise<void> {
+    const message = `🧹 <b>Dragon Activity Cleanup</b>\n\n` +
+      `✅ <b>Checked:</b> <code>${result.checked}</code> wallets\n` +
+      `🚫 <b>Deactivated:</b> <code>${result.deactivated}</code> inactive (>7d)\n` +
+      (result.errors > 0 ? `❌ <b>Errors:</b> <code>${result.errors}</code>\n` : '') +
+      `\n📊 <b>Recently Deactivated:</b>\n` +
+      `${result.details
+        .filter(d => d.includes('(DEACTIVATED)'))
+        .slice(0, 8)
+        .map(d => `<code>${d}</code>`)
+        .join('\n')}\n` +
+      (result.details.filter(d => d.includes('(DEACTIVATED)')).length > 8 ? 
+        `<i>... and ${result.details.filter(d => d.includes('(DEACTIVATED)')).length - 8} more</i>\n` : '') +
+      `\n⏰ <code>${new Date().toLocaleString()}</code>`;
+
+    await this.telegramNotifier.sendCycleLog(message);
+  }
+
+  /**
    * 🎯 ПОЛУЧЕНИЕ СТАТИСТИКИ ACTIVITY CHECKER
    */
   getStats(): {
@@ -317,5 +343,19 @@ export class DragonActivityChecker {
   updateConfig(newConfig: Partial<ActivityCheckConfig>): void {
     this.config = { ...this.config, ...newConfig };
     this.logger.info('🔧 Dragon activity checker config updated');
+  }
+
+  /**
+   * 🔄 ПРИНУДИТЕЛЬНАЯ ПРОВЕРКА ВСЕХ DRAGON КОШЕЛЬКОВ
+   * Игнорирует кеш и проверяет абсолютно все
+   */
+  async forceCheckAllDragonWallets(): Promise<ActivityCheckResult> {
+    this.logger.info('🔥 FORCE CHECK: Clearing cache and checking ALL Dragon wallets...');
+    
+    // Очищаем кеш чтобы проверить все
+    this.clearCache();
+    
+    // Запускаем обычную проверку - теперь она охватит всех
+    return await this.checkDragonWalletsActivity();
   }
 }

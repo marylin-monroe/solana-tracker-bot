@@ -1,4 +1,4 @@
-// src/services/TelegramNotifier.ts - 🔥 ДИЗАЙН 1 В 1 КАК НА СКРИНШОТАХ
+// src/services/TelegramNotifier.ts - 🔥 ДИЗАЙН 1В1 КАК НА СКРИНАХ ДЛЯ ЗАРАБОТКА
 import TelegramBot from 'node-telegram-bot-api';
 import { SmartMoneyFlow, HotNewToken, SmartMoneySwap } from '../types';
 import { Logger } from '../utils/Logger';
@@ -73,12 +73,12 @@ export class TelegramNotifier {
   private secondReset: number = 0;
   
   private recentTransactions = new Map<string, number>();
-  private readonly SIMPLE_DUPLICATE_WINDOW = 5 * 60 * 1000;
+  private readonly SIMPLE_DUPLICATE_WINDOW = 3 * 60 * 1000; // 3 минуты
   
   private readonly MAX_MESSAGES_PER_SECOND = 20;
-  private readonly MESSAGE_DELAY = 75;
+  private readonly MESSAGE_DELAY = 50; // Уменьшил для быстроты
   private readonly MAX_RETRIES = 3;
-  private readonly RETRY_DELAY = 2000;
+  private readonly RETRY_DELAY = 1500;
   
   private stats = {
     totalSent: 0,
@@ -95,7 +95,8 @@ export class TelegramNotifier {
     positionSplittingAlerts: 0,
     tokenNameAlerts: 0,
     inflowsSent: 0,
-    largeTransactionAlerts: 0
+    largeTransactionAlerts: 0,
+    profitableSignals: 0 // 🔥 НОВАЯ МЕТРИКА
   };
 
   constructor(token: string, userId: string) {
@@ -106,7 +107,7 @@ export class TelegramNotifier {
     this.setupBaseHandlers();
     this.startMessageQueueProcessor();
     this.startSimpleCleanup();
-    this.logger.info('📱 TelegramNotifier initialized with PERFECT DESIGN');
+    this.logger.info('📱 TelegramNotifier initialized with PROFIT-FIRST design');
   }
 
   private setupBaseHandlers(): void {
@@ -139,7 +140,7 @@ export class TelegramNotifier {
       if (!this.isProcessingQueue && this.messageQueue.length > 0) {
         await this.processMessageQueue();
       }
-    }, 100);
+    }, 50); // Быстрее обработка
   }
 
   private startSimpleCleanup(): void {
@@ -155,9 +156,9 @@ export class TelegramNotifier {
       }
       
       if (cleaned > 0) {
-        this.logger.debug(`🧹 Simple cleanup: ${cleaned} transactions removed`);
+        this.logger.debug(`🧹 Cleanup: ${cleaned} transactions removed`);
       }
-    }, 60 * 1000);
+    }, 30 * 1000); // Чаще чистка
   }
 
   private isSimpleDuplicate(transactionId: string): boolean {
@@ -166,7 +167,7 @@ export class TelegramNotifier {
     
     if (lastTime && (now - lastTime) < this.SIMPLE_DUPLICATE_WINDOW) {
       this.stats.duplicatesFiltered++;
-      this.logger.debug(`🚫 Simple duplicate filtered: ${transactionId.slice(0, 8)}...`);
+      this.logger.debug(`🚫 Duplicate filtered: ${transactionId.slice(0, 8)}...`);
       return true;
     }
     
@@ -221,7 +222,7 @@ export class TelegramNotifier {
       this.stats.lastMessageTime = new Date();
       
       if (chunks.length > 1) {
-        await this.sleep(200);
+        await this.sleep(100);
       }
     }
   }
@@ -307,7 +308,7 @@ export class TelegramNotifier {
       
       this.stats.queuedMessages++;
       
-      if (this.messageQueue.length <= 3 && !this.isProcessingQueue) {
+      if (this.messageQueue.length <= 2 && !this.isProcessingQueue) {
         await this.processMessageQueue();
       }
       
@@ -360,7 +361,7 @@ export class TelegramNotifier {
     return '✅';
   }
 
-  // 🔥 НОВЫЙ ФОРМАТ УВЕДОМЛЕНИЙ - 1 В 1 КАК НА СКРИНШОТАХ
+  // 🔥 НОВЫЙ ДИЗАЙН - ТОЧНО КАК НА СКРИНАХ ДЛЯ ЗАРАБОТКА
   async sendSmartMoneySwapAlert(swap: SmartMoneySwap, source: string = 'Unknown'): Promise<void> {
     try {
       if (this.isSimpleDuplicate(swap.transactionId)) {
@@ -368,13 +369,15 @@ export class TelegramNotifier {
       }
       
       const categoryEmoji = this.getCategoryEmoji(swap.category);
-      const actionEmoji = swap.swapType === 'buy' ? '🟢' : '🔴';
+      const swapEmoji = swap.swapType === 'buy' ? '🟢' : '🔴';
       
-      // 🔥 НОВЫЙ ФОРМАТ: Показываем ЧТО ПОКУПАЮТ, а не мажорные токены
-      let message = `${categoryEmoji} ${this.formatNumber(swap.amountUSD)} ${actionEmoji} `;
+      // 🔥 ФОРМАТ 1В1 КАК НА СКРИНАХ: 
+      // 💡 $2,11K 🟢 0,99 #WETH ($2128.4) -> 1.69M #Cocoro ($0.001) #0xc3615 WR: 44.71% PNL: $127.39K TT: 85 BS DS
+      
+      let message = `${categoryEmoji} ${this.formatUSD(swap.amountUSD)} ${swapEmoji} `;
       
       if (swap.swapType === 'buy') {
-        // ПОКУПКА: $5K 🟢 30 #SOL ($140.8) --> 2.36M #MOONPIG
+        // ПОКУПКА: SOL/USDC/USDT → новый токен
         const paymentAmount = this.calculatePaymentAmount(swap.amountUSD, swap.paymentToken || 'SOL');
         const paymentPrice = this.getPaymentTokenPrice(swap.paymentToken || 'SOL');
         
@@ -382,31 +385,31 @@ export class TelegramNotifier {
         if (paymentPrice) {
           message += ` ($${paymentPrice})`;
         }
-        message += ` --> `;
+        message += ` -> `;
         message += `${this.formatTokenAmount(swap.tokenAmount || 0)} `;
-        message += `<b>#${this.getDisplayTokenSymbol(swap.tokenSymbol, swap.tokenAddress)}</b>`;
+        message += `#${this.getDisplayTokenSymbol(swap.tokenSymbol, swap.tokenAddress)}`;
         
-        // Цена токена если есть
+        // Цена токена
         if (swap.tokenPrice && swap.tokenPrice > 0) {
           message += ` ($${this.formatPrice(swap.tokenPrice)})`;
         }
         
       } else {
-        // ПРОДАЖА: #MOONPIG --> $8K USDC  
+        // ПРОДАЖА: новый токен → SOL/USDC/USDT
         message += `${this.formatTokenAmount(swap.tokenAmount || 0)} `;
-        message += `<b>#${this.getDisplayTokenSymbol(swap.tokenSymbol, swap.tokenAddress)}</b>`;
+        message += `#${this.getDisplayTokenSymbol(swap.tokenSymbol, swap.tokenAddress)}`;
         
         if (swap.tokenPrice && swap.tokenPrice > 0) {
           message += ` ($${this.formatPrice(swap.tokenPrice)})`;
         }
         
-        message += ` --> `;
+        message += ` -> `;
         const paymentAmount = this.calculatePaymentAmount(swap.amountUSD, swap.paymentToken || 'USDC');
         message += `${paymentAmount} #${swap.paymentToken || 'USDC'}`;
       }
       
-      // Короткий адрес кошелька
-      message += ` #${swap.walletAddress.slice(0, 7)}`;
+      // Короткий адрес кошелька как на скрине
+      message += ` #${swap.walletAddress.slice(0, 6)}`;
       
       // Метрики кошелька
       if (swap.winRate !== undefined && swap.winRate > 0) {
@@ -414,34 +417,34 @@ export class TelegramNotifier {
       }
       
       if (swap.pnl !== undefined) {
-        message += ` PNL: ${this.formatNumber(Math.abs(swap.pnl))}`;
+        message += ` PNL: ${this.formatUSD(Math.abs(swap.pnl))}`;
       }
       
       if (swap.totalTrades !== undefined && swap.totalTrades > 0) {
         message += ` TT: ${swap.totalTrades}`;
       }
       
-      // 📈 CEX Listed если нужно
-      if (swap.isCexListed) {
-        message += ` 📈`;
-      }
+      // Как на скрине: BS DS (Base/DexScreener)
+      message += ` BS DS`;
       
-      message += ` SolS DS`;
-      message += `\nWallet TXN #SmartSwap${swap.swapType === 'buy' ? 'Sol' : 'Sol'}`;
+      // Вторая строка - информация о кошельке
+      message += `\nWallet TXN #SmartSwap${swap.swapType === 'buy' ? 'Base' : 'Base'}`;
       
-      // Ссылки
+      // Ссылки (компактно)
       message += `\n🔗 <a href="https://solscan.io/tx/${swap.transactionId}">TX</a> | `;
       message += `<a href="https://solscan.io/account/${swap.walletAddress}">Wallet</a> | `;
       message += `<a href="https://solscan.io/token/${swap.tokenAddress}">Token</a>`;
       
-      // Короткий ID транзакции
+      // Короткий ID транзакции как на скрине
       message += `\n📋 ${swap.transactionId.slice(0, 12)}...${swap.transactionId.slice(-6)}`;
 
-      await this.sendCycleLog(message);
+      await this.sendCycleLog(message, 10); // Высокий приоритет
+      
       this.stats.smartMoneySwaps++;
+      this.stats.profitableSignals++;
       
       const actionSymbol = swap.swapType === 'buy' ? '🚀' : '💸';
-      this.logger.info(`${actionSymbol} SM ${swap.swapType}: ${swap.tokenSymbol} $${swap.amountUSD.toLocaleString()}`);
+      this.logger.info(`${actionSymbol} PROFITABLE SIGNAL: ${swap.tokenSymbol} $${swap.amountUSD.toLocaleString()}`);
       
     } catch (error) {
       this.logger.error('Error sending smart money swap alert:', error);
@@ -454,7 +457,7 @@ export class TelegramNotifier {
     
     switch (paymentToken) {
       case 'SOL':
-        amount = amountUSD / 140; // Примерная цена SOL
+        amount = amountUSD / 140.8; // Актуальная цена SOL
         break;
       case 'USDC':
       case 'USDT':
@@ -477,47 +480,69 @@ export class TelegramNotifier {
     }
   }
 
-  // ✅ МИНИМИЗИРОВАННЫЕ СТАРТАП СООБЩЕНИЯ
+  private formatUSD(amount: number): string {
+    if (amount >= 1_000_000) {
+      return `$${(amount / 1_000_000).toFixed(2)}M`;
+    } else if (amount >= 1_000) {
+      return `$${(amount / 1_000).toFixed(1)}K`;
+    } else {
+      return `$${amount.toFixed(0)}`;
+    }
+  }
+
+  private formatTokenAmount(amount: number): string {
+    if (amount >= 1_000_000_000) {
+      return `${(amount / 1_000_000_000).toFixed(2)}B`;
+    } else if (amount >= 1_000_000) {
+      return `${(amount / 1_000_000).toFixed(2)}M`;
+    } else if (amount >= 1_000) {
+      return `${(amount / 1_000).toFixed(2)}K`;
+    } else if (amount >= 1) {
+      return `${amount.toFixed(2)}`;
+    } else {
+      return `${amount.toFixed(4)}`;
+    }
+  }
+
+  private formatPrice(price: number): string {
+    if (price >= 1000) {
+      return `${(price / 1000).toFixed(1)}K`;
+    } else if (price >= 1) {
+      return `${price.toFixed(3)}`;
+    } else if (price >= 0.01) {
+      return `${price.toFixed(4)}`;
+    } else if (price >= 0.0001) {
+      return `${price.toFixed(6)}`;
+    } else {
+      return `${price.toExponential(2)}`;
+    }
+  }
+
+  // ✅ КОМПАКТНЫЕ СТАРТАП СООБЩЕНИЯ
   async sendStatsResponse(data: StatsData): Promise<void> {
     try {
       const uptimeHours = Math.floor(data.uptime / 3600);
       const uptimeMinutes = Math.floor((data.uptime % 3600) / 60);
       
-      let message = `📊 <b>Smart Money Bot Statistics</b>\n\n`;
+      let message = `📊 <b>Smart Money Bot</b>\n\n`;
       
-      message += `🟢 <b>System Status:</b>\n`;
-      message += `⏱️ Uptime: <code>${uptimeHours}h ${uptimeMinutes}m</code>\n`;
-      message += `🔄 Mode: <code>${data.webhookMode === 'polling' ? 
-        'Polling (2min)' : 'Real-time Webhooks'}</code>\n`;
-      message += `📡 Monitoring: <code>${data.pollingStats?.walletsMonitored || 0}/100</code> wallets\n\n`;
+      message += `🟢 Uptime: <code>${uptimeHours}h ${uptimeMinutes}m</code>\n`;
+      message += `🔄 Mode: <code>${data.webhookMode === 'polling' ? 'Polling' : 'Webhooks'}</code>\n`;
+      message += `📡 Wallets: <code>${data.pollingStats?.walletsMonitored || 0}/100</code>\n\n`;
       
-      message += `👥 <b>Smart Money Wallets:</b>\n`;
-      message += `🟢 Active: <code>${data.walletStats?.active || 0}</code>\n`;
+      message += `👥 <b>Active SM Wallets:</b>\n`;
       message += `✅ Enabled: <code>${data.walletStats?.enabled || 0}</code>\n`;
       message += `🔫 Snipers: <code>${data.walletStats?.byCategory?.sniper || 0}</code>\n`;
       message += `💡 Hunters: <code>${data.walletStats?.byCategory?.hunter || 0}</code>\n`;
       message += `🐳 Traders: <code>${data.walletStats?.byCategory?.trader || 0}</code>\n\n`;
       
-      message += `📊 <b>Database:</b>\n`;
-      message += `💱 Total Swaps: <code>${data.dbStats?.totalSwaps || 0}</code>\n`;
-      message += `🎯 Positions: <code>${data.dbStats?.positionAggregations || 0}</code>\n\n`;
-      
       message += `🤖 <b>Notifications:</b>\n`;
+      message += `🚀 Profit Signals: <code>${this.stats.profitableSignals}</code>\n`;
       message += `📤 Total Sent: <code>${this.stats.totalSent}</code>\n`;
-      message += `🚀 Smart Swaps: <code>${this.stats.smartMoneySwaps}</code>\n`;
-      message += `🚨 Large TX: <code>${this.stats.largeTransactionAlerts}</code>\n`;
-      message += `📈 Flow Reports: <code>${this.stats.flowsSent}</code>\n`;
-      message += `🔥 Hot Tokens: <code>${this.stats.hotTokenAlerts}</code>\n`;
-      message += `🐲 Dragon Imports: <code>${this.stats.dragonImports}</code>\n`;
-      message += `⚙️ Commands: <code>${this.stats.commandsProcessed}</code>\n`;
       message += `🚫 Duplicates: <code>${this.stats.duplicatesFiltered}</code>\n`;
       message += `❌ Errors: <code>${this.stats.errorsSent}</code>\n\n`;
       
-      message += `🔒 <b>Simple Deduplication:</b>\n`;
-      message += `👁️ Tracked: <code>${this.recentTransactions.size}</code> transactions\n`;
-      message += `⏰ Window: <code>${this.SIMPLE_DUPLICATE_WINDOW / (60 * 1000)}</code> minutes\n\n`;
-      
-      message += `<code>#BotStats #SystemStatus</code>`;
+      message += `<code>#BotStats #ProfitFirst</code>`;
 
       await this.sendCycleLog(message);
       this.logger.info('📊 Stats response sent');
@@ -530,36 +555,22 @@ export class TelegramNotifier {
 
   async sendWalletsResponse(data: WalletsData): Promise<void> {
     try {
-      let message = `👥 <b>Active Smart Money Wallets</b>\n\n`;
+      let message = `👥 <b>Top Smart Money Wallets</b>\n\n`;
       
-      message += `📊 <b>Summary:</b>\n`;
-      message += `🟢 Active: <code>${data.stats?.active || 0}</code>\n`;
-      message += `✅ Enabled: <code>${data.stats?.enabled || 0}</code>\n`;
-      message += `👥 Total: <code>${data.totalCount}</code>\n\n`;
+      message += `📊 Active: <code>${data.stats?.active || 0}</code> | Enabled: <code>${data.stats?.enabled || 0}</code>\n\n`;
       
-      message += `🏆 <b>Top Performers (showing ${Math.min(data.wallets.length, 15)}):</b>\n\n`;
+      message += `🏆 <b>Top Performers:</b>\n\n`;
       
-      data.wallets.slice(0, 15).forEach((wallet, index) => {
+      data.wallets.slice(0, 10).forEach((wallet, index) => {
         const categoryEmoji = this.getCategoryEmoji(wallet.category || 'unknown');
-        const priorityEmoji = wallet.priority === 'high' ? 
-          '🔴' : wallet.priority === 'medium' ? '🟡' : '🟢';
+        const priorityEmoji = wallet.priority === 'high' ? '🔴' : wallet.priority === 'medium' ? '🟡' : '🟢';
         const statusEmoji = wallet.enabled ? '✅' : '⚪';
         
         message += `<code>${(index + 1).toString().padStart(2, '0')}.</code> ${categoryEmoji} <b>${wallet.nickname || 'Unknown'}</b> ${priorityEmoji}${statusEmoji}\n`;
-        message += `    <code>${wallet.address}</code>\n`;
-        message += `    WR: <code>${(wallet.winRate || 0).toFixed(1)}%</code> | PnL: <code>${this.formatNumber(wallet.totalPnL || 0)}</code> | Trades: <code>${wallet.totalTrades || 0}</code>\n`;
-        message += `    Avg: <code>${this.formatNumber(wallet.avgTradeSize || 0)}</code> | Score: <code>${wallet.performanceScore || 0}</code>\n\n`;
+        message += `    WR: <code>${(wallet.winRate || 0).toFixed(1)}%</code> | PnL: <code>${this.formatUSD(wallet.totalPnL || 0)}</code> | Trades: <code>${wallet.totalTrades || 0}</code>\n\n`;
       });
       
-      if (data.wallets.length > 15) {
-        message += `<i>... and ${data.wallets.length - 15} more wallets</i>\n\n`;
-      }
-      
-      message += `🔫 <b>Snipers:</b> <code>${data.stats?.byCategory?.sniper || 0}</code> | `;
-      message += `💡 <b>Hunters:</b> <code>${data.stats?.byCategory?.hunter || 0}</code> | `;
-      message += `🐳 <b>Traders:</b> <code>${data.stats?.byCategory?.trader || 0}</code>\n\n`;
-      
-      message += `<code>#SmartWallets #ActiveMonitoring</code>`;
+      message += `<code>#SmartWallets #ProfitTracking</code>`;
 
       await this.sendCycleLog(message);
       this.logger.info(`👥 Wallets response sent: ${data.wallets.length} wallets`);
@@ -609,7 +620,7 @@ export class TelegramNotifier {
 
 🏆 <b>Top 5 Performers:</b>
 ${result.topPerformers.slice(0, 5).map((w, i) => 
-  `<code>${i + 1}.</code> ${w.pnl.toFixed(0)} | ${w.winrate}% WR | ${w.trades} trades`
+  `<code>${i + 1}.</code> ${this.formatUSD(w.pnl)} | ${w.winrate}% WR | ${w.trades} trades`
 ).join('\n')}
 
 ⏰ <code>${new Date().toLocaleString()}</code>`;
@@ -626,10 +637,10 @@ ${result.topPerformers.slice(0, 5).map((w, i) =>
     try {
       let message = `📈 <b>Top Smart Money Inflows</b>\n\n`;
       
-      inflows.slice(0, 10).forEach((inflow, index) => {
+      inflows.slice(0, 8).forEach((inflow, index) => {
         const tokenSymbol = this.getDisplayTokenSymbol(inflow.tokenSymbol, inflow.tokenAddress);
         message += `<code>${index + 1}.</code> <b>#${tokenSymbol}</b> `;
-        message += `${this.formatNumber(inflow.inflowUSD)} `;
+        message += `${this.formatUSD(inflow.inflowUSD)} `;
         message += `(${inflow.walletCount} wallets)\n`;
       });
 
@@ -650,9 +661,9 @@ ${result.topPerformers.slice(0, 5).map((w, i) =>
       
       const tokenSymbol = this.getDisplayTokenSymbol(alert.tokenSymbol, alert.tokenAddress);
       message += `🎯 <b>Token:</b> <code>${tokenSymbol}</code>\n`;
-      message += `💰 <b>Total Position:</b> <code>${this.formatNumber(alert.totalUSD)}</code>\n`;
+      message += `💰 <b>Total Position:</b> <code>${this.formatUSD(alert.totalUSD)}</code>\n`;
       message += `📦 <b>Split into:</b> <code>${alert.purchaseCount}</code> purchases\n`;
-      message += `📊 <b>Avg Size:</b> <code>${this.formatNumber(alert.avgPurchaseSize)}</code>\n`;
+      message += `📊 <b>Avg Size:</b> <code>${this.formatUSD(alert.avgPurchaseSize)}</code>\n`;
       message += `⏱️ <b>Time Window:</b> <code>${alert.timeWindowMinutes}min</code>\n`;
       message += `🚩 <b>Suspicion Score:</b> <code>${alert.suspicionScore}/100</code>\n\n`;
       
@@ -664,7 +675,7 @@ ${result.topPerformers.slice(0, 5).map((w, i) =>
       
       message += `📋 <b>Purchases (last 5):</b>\n`;
       alert.purchases.slice(-5).forEach((purchase, index) => {
-        message += `<code>${index + 1}.</code> ${this.formatNumber(purchase.amountUSD)} `;
+        message += `<code>${index + 1}.</code> ${this.formatUSD(purchase.amountUSD)} `;
         message += `${this.formatTransactionAge(purchase.timestamp)}\n`;
       });
 
@@ -716,7 +727,7 @@ ${result.topPerformers.slice(0, 5).map((w, i) =>
       flows.slice(0, 8).forEach((flow, index) => {
         const tokenSymbol = this.getDisplayTokenSymbol(flow.tokenSymbol, flow.tokenAddress || '');
         message += `<code>${index + 1}.</code> <b>#${tokenSymbol}</b> `;
-        message += `${this.formatNumber(flow.amount || 0)} `;
+        message += `${this.formatUSD(flow.amount || 0)} `;
         message += `(${flow.walletCount || 0} wallets)\n`;
       });
 
@@ -736,10 +747,10 @@ ${result.topPerformers.slice(0, 5).map((w, i) =>
       const tokenSymbol = this.getDisplayTokenSymbol(token.symbol, token.address);
       
       let message = `🔥 <b>HNT: #${tokenSymbol}</b>\n`;
-      message += `💰 Buy: ${this.formatNumber(token.buyVolumeUSD || 0)} `;
-      message += `Sell: ${this.formatNumber(token.sellVolumeUSD || 0)}\n`;
+      message += `💰 Buy: ${this.formatUSD(token.buyVolumeUSD || 0)} `;
+      message += `Sell: ${this.formatUSD(token.sellVolumeUSD || 0)}\n`;
       message += `👥 ${token.uniqueSmWallets || 0} SM wallets | `;
-      message += `📊 FDV: ${this.formatNumber(token.fdv || 0)} | `;
+      message += `📊 FDV: ${this.formatUSD(token.fdv || 0)} | `;
       message += `🕒 ${token.ageHours || 0}h\n`;
       message += `🔗 #${token.address.slice(0, 8)}...${token.address.slice(-4)}\n`;
       message += `<code>#HotToken #NewListing</code>`;
@@ -767,52 +778,12 @@ ${result.topPerformers.slice(0, 5).map((w, i) =>
     return `${tokenAddress.slice(0, 6).toUpperCase()}`;
   }
 
-  private formatPrice(price: number): string {
-    if (price >= 1000) {
-      return `${(price / 1000).toFixed(1)}K`;
-    } else if (price >= 1) {
-      return `${price.toFixed(2)}`;
-    } else if (price >= 0.01) {
-      return `${price.toFixed(4)}`;
-    } else if (price >= 0.0001) {
-      return `${price.toFixed(6)}`;
-    } else if (price >= 0.000001) {
-      return `${price.toFixed(8)}`;
-    } else {
-      return `${price.toExponential(2)}`;
-    }
-  }
-
   private getCategoryEmoji(category: string): string {
     switch (category) {
       case 'sniper': return '🔫';
       case 'hunter': return '💡';
       case 'trader': return '🐳';
       default: return '💡';
-    }
-  }
-
-  private formatNumber(num: number): string {
-    if (num >= 1_000_000) {
-      return `$${(num / 1_000_000).toFixed(2)}M`;
-    } else if (num >= 1_000) {
-      return `$${(num / 1_000).toFixed(1)}K`;
-    } else {
-      return `$${num.toFixed(0)}`;
-    }
-  }
-
-  private formatTokenAmount(amount: number): string {
-    if (amount >= 1_000_000_000) {
-      return `${(amount / 1_000_000_000).toFixed(2)}B`;
-    } else if (amount >= 1_000_000) {
-      return `${(amount / 1_000_000).toFixed(2)}M`;
-    } else if (amount >= 1_000) {
-      return `${(amount / 1_000).toFixed(2)}K`;
-    } else if (amount >= 1) {
-      return `${amount.toFixed(0)}`;
-    } else {
-      return `${amount.toFixed(2)}`;
     }
   }
 
@@ -846,7 +817,8 @@ ${result.topPerformers.slice(0, 5).map((w, i) =>
       duplicatesTracked: this.recentTransactions.size,
       errorRate: this.stats.totalSent > 0 ? (this.stats.errorsSent / this.stats.totalSent * 100).toFixed(2) + '%' : '0%',
       successRate: this.stats.totalSent > 0 ? ((this.stats.totalSent - this.stats.errorsSent) / this.stats.totalSent * 100).toFixed(2) + '%' : '100%',
-      duplicateWindowMinutes: this.SIMPLE_DUPLICATE_WINDOW / (60 * 1000)
+      duplicateWindowMinutes: this.SIMPLE_DUPLICATE_WINDOW / (60 * 1000),
+      profitSignalsPerHour: this.stats.profitableSignals // 🔥 НОВАЯ МЕТРИКА
     };
   }
 
@@ -889,6 +861,6 @@ ${result.topPerformers.slice(0, 5).map((w, i) =>
 
   clearDuplicationCache(): void {
     this.recentTransactions.clear();
-    this.logger.info('🧹 Simple duplication cache cleared');
+    this.logger.info('🧹 Duplication cache cleared');
   }
 }

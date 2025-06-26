@@ -129,6 +129,7 @@ export interface SolanaTransaction {
 export interface SmartMoneyWallet {
   address: string;
   category: 'sniper' | 'hunter' | 'trader';
+  nickname?: string;
   winRate: number;
   totalPnL: number;
   totalTrades: number;

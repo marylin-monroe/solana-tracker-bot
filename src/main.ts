@@ -50,7 +50,11 @@ class SmartMoneyBotRunner {
     this.webhookServer = new WebhookServer(this.database, this.telegramNotifier, null, this.smDatabase);
     this.webhookManager = new QuickNodeWebhookManager();
 
-    this.dragonParser = new DragonResultsParser(this.smDatabase, this.telegramNotifier, {
+    this.dragonParser = new DragonResultsParser(
+      this.smDatabase, 
+      this.telegramNotifier, 
+      this.multiProviderService,
+      {
       minPnl: 50000,        // $50K
       minWinrate: 58,       // 58%
       minTrades: 100,       // 100
