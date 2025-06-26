@@ -1,4 +1,4 @@
-// src/services/LargeTransactionMonitor.ts - 🔥 ИСПРАВЛЕНО: Правильный расчет USD + фильтры создателей
+// src/services/LargeTransactionMonitor.ts - 🔥 УВЕЛИЧЕННЫЕ ИНТЕРВАЛЫ ДЛЯ API БЕЗОПАСНОСТИ
 import { TelegramNotifier } from './TelegramNotifier';
 import { MultiProviderService } from './MultiProviderService';
 import { TokenMetadataService } from './TokenMetadataService';
@@ -55,9 +55,10 @@ export class LargeTransactionMonitor {
   private processedSignatures = new Map<string, number>();
   private readonly DUPLICATE_WINDOW = 30 * 60 * 1000;
   
+  // 🔥 КРИТИЧЕСКИЕ API ОПТИМИЗАЦИИ - УВЕЛИЧЕННЫЕ ИНТЕРВАЛЫ
   private readonly TRANSACTION_THRESHOLD_USD = 2_000_000;
-  private readonly SCAN_INTERVAL_MS = 2 * 60 * 1000;
-  private readonly MAX_SLOTS_PER_SCAN = 15;
+  private readonly SCAN_INTERVAL_MS = 6 * 60 * 1000; // 🔥 6 минут (было 2 минуты)
+  private readonly MAX_SLOTS_PER_SCAN = 10;          // 🔥 10 слотов за раз (было 15)
   private readonly DEEP_ANALYSIS_THRESHOLD = 5_000_000;
   
   private stats: MonitoringStats = {
@@ -104,14 +105,15 @@ export class LargeTransactionMonitor {
     this.smDatabase = smDatabase;
     this.logger = Logger.getInstance();
     this.startCacheCleanup();
-    this.logger.info('🚨 LargeTransactionMonitor FINAL: NO false multipliers + Correct wallet/token age + LST trading allowed');
+    this.logger.info('🚨 LargeTransactionMonitor OPTIMIZED: 6min intervals, 10 slots per scan for API safety');
   }
 
   async startMonitoring(): Promise<void> {
+    return; //отключил
     if (this.isMonitoring) return;
 
     try {
-      this.logger.info(`🚨 Starting monitoring (${this.SCAN_INTERVAL_MS/1000}s intervals, ${this.MAX_SLOTS_PER_SCAN} slots)`);
+      this.logger.info(`🚨 Starting optimized monitoring (${this.SCAN_INTERVAL_MS/60000}min intervals, ${this.MAX_SLOTS_PER_SCAN} slots)`);
       
       const slotResponse = await this.multiProvider.getSlot();
       this.lastProcessedSlot = slotResponse.success && slotResponse.data ? slotResponse.data : 0;
@@ -120,11 +122,13 @@ export class LargeTransactionMonitor {
       this.monitoringInterval = setInterval(() => this.scanForLargeTransactions(), this.SCAN_INTERVAL_MS);
       
       await this.telegramNotifier.sendCycleLog(
-        `🚨 <b>FIXED Large TX Monitor Started</b>\n\n` +
+        `🚨 <b>OPTIMIZED Large TX Monitor Started</b>\n\n` +
         `💰 <b>Threshold:</b> <code>$${this.TRANSACTION_THRESHOLD_USD.toLocaleString()}</code>\n` +
-        `⏰ <b>Scan:</b> <code>${this.SCAN_INTERVAL_MS / 1000}s</code> intervals\n` +
-        `🔍 <b>Slots:</b> <code>${this.MAX_SLOTS_PER_SCAN}</code> per scan\n` +
-        `🛡️ <b>Status:</b> <code>Enhanced Filtering Active</code>\n\n` +
+        `⏰ <b>Scan Interval:</b> <code>${this.SCAN_INTERVAL_MS / 60000}min</code> (🔥 OPTIMIZED)\n` +
+        `📊 <b>Max Slots:</b> <code>${this.MAX_SLOTS_PER_SCAN}</code> per scan\n` +
+        `🚀 <b>Deep Analysis:</b> <code>$${this.DEEP_ANALYSIS_THRESHOLD.toLocaleString()}+</code>\n` +
+        `🛡️ <b>Smart Money Block:</b> <code>Active</code>\n` +
+        `✅ <b>Major Tokens:</b> <code>Fixed Logic</code>\n\n` +
         `⏰ <code>${new Date().toLocaleString()}</code>`
       );
 
@@ -142,9 +146,10 @@ export class LargeTransactionMonitor {
       clearInterval(this.monitoringInterval);
       this.monitoringInterval = null;
     }
-    this.logger.info('✅ Monitoring stopped');
+    this.logger.info('✅ Optimized monitoring stopped');
   }
 
+  // 🔥 ОПТИМИЗИРОВАННОЕ СКАНИРОВАНИЕ
   private async scanForLargeTransactions(): Promise<void> {
     if (!this.isMonitoring) return;
 
@@ -171,7 +176,7 @@ export class LargeTransactionMonitor {
       this.stats.lastScanTime = new Date();
 
     } catch (error) {
-      this.logger.error('Error in scanning:', error);
+      this.logger.error('Error in optimized scanning:', error);
       this.stats.errorCount++;
     }
   }
@@ -459,32 +464,6 @@ export class LargeTransactionMonitor {
     } catch (error) {
       return null;
     }
-  }
-
-  // 🔥 УСИЛЕННЫЙ ПОИСК ПАРНОГО PAYMENT ASSET
-  private findBestPairedPaymentAsset(targetChange: any, allChanges: any[]): any | null {
-    // Ищем все потенциальные парные активы
-    const candidates = allChanges.filter(other => 
-      other.walletAddress === targetChange.walletAddress && 
-      other.tokenMint !== targetChange.tokenMint &&
-      this.isPaymentAsset(other.tokenMint) &&
-      Math.sign(other.change) !== Math.sign(targetChange.change) // противоположные изменения
-    );
-
-    if (candidates.length === 0) return null;
-
-    // Приоритет: SOL > USDC > USDT > LST токены
-    const priority = (tokenMint: string): number => {
-      if (tokenMint === 'So11111111111111111111111111111111111111112') return 10; // SOL
-      if (tokenMint === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') return 9;  // USDC
-      if (tokenMint === 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB') return 8;  // USDT
-      if (tokenMint === 'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So') return 7;  // mSOL
-      if (tokenMint === 'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn') return 6;  // JitoSOL
-      return 5; // Остальные LST
-    };
-
-    // Возвращаем кандидата с наивысшим приоритетом
-    return candidates.sort((a, b) => priority(b.tokenMint) - priority(a.tokenMint))[0];
   }
 
   private isPaymentAsset(tokenMint: string): boolean {

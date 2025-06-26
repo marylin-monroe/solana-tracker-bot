@@ -1,4 +1,4 @@
-// src/services/TokenMetadataService.ts - 🔥 ИСПРАВЛЕНО: Добавлены LST токены + оптимизация
+// src/services/TokenMetadataService.ts - 🔥 УВЕЛИЧЕННЫЕ ТАЙМАУТЫ ДЛЯ API БЕЗОПАСНОСТИ
 import { Logger } from '../utils/Logger';
 
 interface TokenMetadata {
@@ -147,7 +147,7 @@ export class TokenMetadataService {
 
   constructor() {
     this.logger = Logger.getInstance();
-    this.logger.info('🏷️ TokenMetadataService FIXED: LST tokens added + optimized caching');
+    this.logger.info('🏷️ TokenMetadataService OPTIMIZED: LST tokens added + 30s timeouts for API safety');
   }
 
   // 🎯 ГЛАВНЫЙ МЕТОД: Получение метаданных с правильными decimals
@@ -193,14 +193,14 @@ export class TokenMetadataService {
     }
   }
 
-  // 🔥 RPC метаданные с правильными decimals
+  // 🔥 RPC метаданные с правильными decimals + УВЕЛИЧЕННЫЙ ТАЙМАУТ
   private async getTokenMetadataFromRPC(mintAddress: string): Promise<TokenMetadata | null> {
     try {
       const rpcUrl = process.env.QUICKNODE_HTTP_URL || process.env.ALCHEMY_HTTP_URL;
       if (!rpcUrl) return null;
 
       const controller = new AbortController();
-      setTimeout(() => controller.abort(), 8000);
+      setTimeout(() => controller.abort(), 30000); // 🔥 30 секунд (было 8)
 
       const response = await fetch(rpcUrl, {
         method: 'POST',
@@ -252,7 +252,7 @@ export class TokenMetadataService {
     }
   }
 
-  // 🔥 Jupiter API с кешированием
+  // 🔥 Jupiter API с кешированием + УВЕЛИЧЕННЫЙ ТАЙМАУТ
   private async getFromJupiter(mintAddress: string): Promise<TokenMetadata | null> {
     try {
       await this.updateJupiterTokenList();
@@ -268,7 +268,7 @@ export class TokenMetadataService {
     }
   }
 
-  // 🔥 Birdeye API с кешированием
+  // 🔥 Birdeye API с кешированием + УВЕЛИЧЕННЫЙ ТАЙМАУТ
   private async getFromBirdeye(mintAddress: string): Promise<TokenMetadata | null> {
     try {
       // Проверяем кеш сначала
@@ -278,7 +278,7 @@ export class TokenMetadataService {
       }
 
       const controller = new AbortController();
-      setTimeout(() => controller.abort(), 5000);
+      setTimeout(() => controller.abort(), 30000); // 🔥 30 секунд (было 5)
 
       const response = await fetch(`https://public-api.birdeye.so/public/tokenlist?sort_by=v24hUSD&sort_type=desc&offset=0&limit=50`, {
         method: 'GET',
@@ -311,14 +311,14 @@ export class TokenMetadataService {
     }
   }
 
-  // Обновление Jupiter списка
+  // Обновление Jupiter списка + УВЕЛИЧЕННЫЙ ТАЙМАУТ
   private async updateJupiterTokenList(): Promise<void> {
     try {
       const now = Date.now();
       if (now - this.lastJupiterUpdate < this.CACHE_TTL.JUPITER_UPDATE) return;
 
       const controller = new AbortController();
-      setTimeout(() => controller.abort(), 15000);
+      setTimeout(() => controller.abort(), 30000); // 🔥 30 секунд (было 15)
 
       const response = await fetch('https://token.jup.ag/all', {
         method: 'GET',
@@ -345,7 +345,7 @@ export class TokenMetadataService {
     }
   }
 
-  // 🔥 ИСПРАВЛЕНО: Цена токена БЕЗ рекурсии
+  // 🔥 ИСПРАВЛЕНО: Цена токена БЕЗ рекурсии + УВЕЛИЧЕННЫЙ ТАЙМАУТ
   async getTokenPrice(tokenAddress: string): Promise<number | null> {
     try {
       if (!tokenAddress || tokenAddress === 'UNKNOWN') return null;
@@ -364,7 +364,7 @@ export class TokenMetadataService {
 
       // 🔥 ИСПРАВЛЕНО: Для всех остальных токенов (включая SOL) идем в Birdeye
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 20000); // 20 секунд таймаут
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 🔥 30 секунд (было 20)
 
       const response = await fetch(`https://public-api.birdeye.so/public/price?address=${tokenAddress}`, {
         method: 'GET',
@@ -389,7 +389,7 @@ export class TokenMetadataService {
     }
   }
 
-  // 🔥 SUPPLY с кешированием
+  // 🔥 SUPPLY с кешированием + УВЕЛИЧЕННЫЙ ТАЙМАУТ
   async getTokenSupply(mintAddress: string): Promise<number | null> {
     try {
       if (!mintAddress || mintAddress === 'UNKNOWN') return null;
@@ -407,7 +407,7 @@ export class TokenMetadataService {
       if (!rpcUrl) return null;
 
       const controller = new AbortController();
-      setTimeout(() => controller.abort(), 8000);
+      setTimeout(() => controller.abort(), 30000); // 🔥 30 секунд (было 8)
 
       const response = await fetch(rpcUrl, {
         method: 'POST',
@@ -483,14 +483,14 @@ export class TokenMetadataService {
     }
   }
 
-  // 🔥 Кешированные Birdeye данные
+  // 🔥 Кешированные Birdeye данные + УВЕЛИЧЕННЫЙ ТАЙМАУТ
   private async getBirdeyeMarketDataCached(mintAddress: string): Promise<{ marketCap?: number } | null> {
     const cached = this.birdeyeCache.get(mintAddress);
     if (cached && Date.now() - cached.timestamp < this.CACHE_TTL.BIRDEYE_DATA) return cached.data;
 
     try {
       const controller = new AbortController();
-      setTimeout(() => controller.abort(), 5000);
+      setTimeout(() => controller.abort(), 30000); // 🔥 30 секунд (было 5)
 
       const response = await fetch(`https://public-api.birdeye.so/public/price?address=${mintAddress}`, {
         method: 'GET',
@@ -512,6 +512,7 @@ export class TokenMetadataService {
       return null;
     }
   }
+
   async getBatchTokenMetadata(mintAddresses: string[]): Promise<Map<string, TokenMetadata | null>> {
     const results = new Map<string, TokenMetadata | null>();
     const BATCH_SIZE = 10;

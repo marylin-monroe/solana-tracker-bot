@@ -56,10 +56,10 @@ class SmartMoneyBotRunner {
       this.telegramNotifier, 
       this.multiProviderService,
       {
-      minPnl: 50000,        // $50K
-      minWinrate: 58,       // 58%
-      minTrades: 100,       // 100
-      maxDaysInactive: 7
+      minPnl: 150000,        // $150K
+      minWinrate: 35,       // 58%
+      minTrades: 25,       // 100
+      maxDaysInactive: 14
     });
 
     
