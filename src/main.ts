@@ -50,6 +50,7 @@ class SmartMoneyBotRunner {
     this.webhookServer = new WebhookServer(this.database, this.telegramNotifier, null, this.smDatabase);
     this.webhookManager = new QuickNodeWebhookManager();
 
+    this.multiProviderService = new MultiProviderService();
     this.dragonParser = new DragonResultsParser(
       this.smDatabase, 
       this.telegramNotifier, 
@@ -61,7 +62,7 @@ class SmartMoneyBotRunner {
       maxDaysInactive: 7
     });
 
-    this.multiProviderService = new MultiProviderService();
+    
     this.largeTransactionMonitor = new LargeTransactionMonitor(
       this.telegramNotifier, this.multiProviderService, this.tokenMetadataService, this.smDatabase
     );
