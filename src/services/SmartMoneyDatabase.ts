@@ -1,4 +1,4 @@
-// src/services/SmartMoneyDatabase.ts - 🔥 ИСПРАВЛЕНЫ ФИЛЬТРЫ PnL + SQL BUG + getAllActiveDragonWallets
+// src/services/SmartMoneyDatabase.ts - 🔥 ИСПРАВЛЕНЫ ФИЛЬТРЫ PnL + SQL BUG + getAllActiveDragonWallets + getWalletsByAddedBy
 import BetterSqlite3 from 'better-sqlite3';
 import { Logger } from '../utils/Logger';
 import { SmartMoneyWallet, TokenSwap } from '../types';
@@ -150,6 +150,9 @@ export class SmartMoneyDatabase {
       if (columnNames.includes('priority')) {
         this.db.exec(`CREATE INDEX IF NOT EXISTS idx_sm_wallets_priority ON smart_money_wallets(priority);`);
       }
+      if (columnNames.includes('added_by')) {
+        this.db.exec(`CREATE INDEX IF NOT EXISTS idx_sm_wallets_added_by ON smart_money_wallets(added_by);`);
+      }
 
       this.logger.info('✅ Smart Money Database initialized with PROFIT-FIRST filters');
     } catch (error) {
@@ -186,6 +189,28 @@ export class SmartMoneyDatabase {
       }
     } catch (error) {
       this.logger.error('❌ Error during data migration:', error);
+    }
+  }
+
+  // 🔥 НОВЫЙ МЕТОД: Получение кошельков по источнику (для разделения БД)
+  async getWalletsByAddedBy(source: 'manual' | 'dragon' | 'discovery' | string): Promise<SmartMoneyWallet[]> {
+    try {
+      const tableInfo = this.db.prepare("PRAGMA table_info(smart_money_wallets)").all() as any[];
+      const hasAddedByColumn = tableInfo.some((col: any) => col.name === 'added_by');
+      
+      if (!hasAddedByColumn) {
+        this.logger.warn('⚠️ added_by column does not exist, returning empty array');
+        return [];
+      }
+
+      const query = `SELECT * FROM smart_money_wallets WHERE added_by = ? AND is_active = 1`;
+      const rows = this.db.prepare(query).all(source) as any[];
+      
+      this.logger.debug(`📊 Found ${rows.length} wallets with added_by = '${source}'`);
+      return rows.map(row => this.mapRowToWallet(row));
+    } catch (error) {
+      this.logger.error(`❌ Error getting wallets by source '${source}':`, error);
+      return [];
     }
   }
 

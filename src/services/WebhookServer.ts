@@ -1,4 +1,4 @@
-// src/services/WebhookServer.ts - 🔥 ЧИСТАЯ ЛОГИКА ДЛЯ ЗАРАБОТКА
+// src/services/WebhookServer.ts - 🔥 ИСПРАВЛЕНА ЛОГИКА СВАПОВ для идеального заработка
 import express from 'express';
 import { Database } from './Database';
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
@@ -100,6 +100,7 @@ interface ProcessingStats {
   };
   profitableSwaps: number;
   ignoredMajorSwaps: number;
+  ignoredSameTokenSwaps: number;
   oldTransactionsFiltered: number;
 }
 
@@ -197,6 +198,7 @@ export class WebhookServer {
     },
     profitableSwaps: 0,
     ignoredMajorSwaps: 0,
+    ignoredSameTokenSwaps: 0,
     oldTransactionsFiltered: 0
   };
 
@@ -394,7 +396,7 @@ export class WebhookServer {
         return;
       }
 
-      // 🔥 ПРАВИЛЬНАЯ ЛОГИКА СВАПОВ ДЛЯ ЗАРАБОТКА
+      // 🔥 ИСПРАВЛЕННАЯ ЛОГИКА СВАПОВ ДЛЯ ЗАРАБОТКА
       const swapInfo = await this.extractSwapInfo(txData, swapEvent, smartWallet);
       if (!swapInfo) return;
 
@@ -464,106 +466,171 @@ export class WebhookServer {
     }
   }
 
-  // 🔥 ПРАВИЛЬНАЯ ЛОГИКА СВАПОВ - ТОЛЬКО ДЛЯ ЗАРАБОТКА
+  // 🔢 ПОЛУЧЕНИЕ DECIMALS ТОКЕНА
+  private async getTokenDecimals(tokenMint: string, fallback: number = 9): Promise<number> {
+    try {
+      // Известные мажорные токены
+      if (tokenMint === 'So11111111111111111111111111111111111111112') return 9; // SOL
+      if (tokenMint === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') return 6; // USDC
+      if (tokenMint === 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB') return 6; // USDT
+      
+      // Пытаемся получить из метаданных
+      const metadata = await this.tokenMetadataService.getTokenMetadata(tokenMint);
+      return metadata?.decimals || fallback;
+    } catch (error) {
+      this.logger.debug(`⚠️ Could not get decimals for ${tokenMint}, using fallback ${fallback}`);
+      return fallback;
+    }
+  }
+
+  // 🔥 ИСПРАВЛЕННАЯ ЛОГИКА СВАПОВ - ТОЛЬКО ДЛЯ ЗАРАБОТКА
   private async extractSwapInfo(txData: SolanaWebhookPayload, swapEvent: any, smartWallet: SmartMoneyWallet): Promise<SmartMoneySwap | null> {
     try {
-      if (!swapEvent || !swapEvent.tokenInputs || !swapEvent.tokenOutputs) {
+      if (!swapEvent || !swapEvent.tokenInputs || !swapEvent.tokenOutputs || 
+          swapEvent.tokenInputs.length === 0 || swapEvent.tokenOutputs.length === 0) {
+        this.logger.debug(`[extractSwapInfo] Invalid swapEvent structure for TX ${txData.signature}`);
         return null;
       }
 
-      const tokenInput = swapEvent.tokenInputs[0];
-      const tokenOutput = swapEvent.tokenOutputs[0];
+      const tokenInputData = swapEvent.tokenInputs[0];
+      const tokenOutputData = swapEvent.tokenOutputs[0];
+
+      // Проверяем наличие необходимых полей
+      if (!tokenInputData.mint || !tokenOutputData.mint || 
+          !tokenInputData.rawTokenAmount || !tokenOutputData.rawTokenAmount) {
+        this.logger.debug(`[extractSwapInfo] Missing mint or rawTokenAmount in swapEvent for TX ${txData.signature}`);
+        return null;
+      }
       
+      const inputMint = tokenInputData.mint;
+      const outputMint = tokenOutputData.mint;
+
+      // 🔥 ГЛАВНОЕ ИСПРАВЛЕНИЕ: Игнорируем свап одного и того же токена
+      if (inputMint === outputMint) {
+        this.logger.debug(`[extractSwapInfo] Ignoring same-token swap: ${inputMint} -> ${outputMint} for TX ${txData.signature}`);
+        this.processingStats.ignoredSameTokenSwaps++;
+        return null;
+      }
+
       let targetToken = '';
       let paymentToken = '';
       let amountUSD = 0;
       let swapType: 'buy' | 'sell' = 'buy';
-      let tokenAmount = 0;
-      let tokenPrice = 0;
+      let tokenAmount = 0; // Количество купленного/проданного ЦЕЛЕВОГО токена
+      let tokenPrice = 0;  // Цена ЦЕЛЕВОГО токена
 
-      // 🚀 ПОКУПКА: МАЖОРНЫЙ → НОВЫЙ ТОКЕН (ЭТО НАМ НУЖНО!)
-      if (this.MAJOR_TOKENS.has(tokenInput.mint) && !this.MAJOR_TOKENS.has(tokenOutput.mint)) {
+      // 🚀 ПОКУПКА: МАЖОРНЫЙ → НЕ-МАЖОРНЫЙ (ЭТО НАМ НУЖНО!)
+      if (this.MAJOR_TOKENS.has(inputMint) && !this.MAJOR_TOKENS.has(outputMint)) {
         swapType = 'buy';
-        targetToken = tokenOutput.mint;
-        paymentToken = tokenInput.mint;
+        targetToken = outputMint; // Токен который покупают (не-мажорный)
+        paymentToken = inputMint;  // Чем платят (мажорный)
         
-        const inputAmount = parseFloat(tokenInput.rawTokenAmount.tokenAmount) / 
-                           Math.pow(10, tokenInput.rawTokenAmount.decimals || 9);
+        // Decimals для корректного расчета
+        const inputDecimals = tokenInputData.rawTokenAmount.decimals !== undefined ? 
+          tokenInputData.rawTokenAmount.decimals : await this.getTokenDecimals(paymentToken, 6); // Фоллбэк для USDC/USDT
+        const outputDecimals = tokenOutputData.rawTokenAmount.decimals !== undefined ? 
+          tokenOutputData.rawTokenAmount.decimals : await this.getTokenDecimals(targetToken, 9); // Фоллбэк для новых токенов
         
-        tokenAmount = parseFloat(tokenOutput.rawTokenAmount.tokenAmount) / 
-                     Math.pow(10, tokenOutput.rawTokenAmount.decimals || 9);
+        const inputRawAmount = parseFloat(tokenInputData.rawTokenAmount.tokenAmount || '0');
+        const outputRawAmount = parseFloat(tokenOutputData.rawTokenAmount.tokenAmount || '0');
+
+        const actualInputAmount = inputRawAmount / Math.pow(10, inputDecimals); // Количество потраченного мажорного токена
+        tokenAmount = outputRawAmount / Math.pow(10, outputDecimals);          // Количество полученного целевого токена
         
-        const priceInUSD = await this.getTokenPrice(paymentToken);
-        amountUSD = inputAmount * priceInUSD;
+        const paymentTokenPrice = await this.getTokenPrice(paymentToken); // Цена мажорного токена (для SOL)
+        amountUSD = actualInputAmount * paymentTokenPrice;                 // Общая USD стоимость сделки
         
         if (tokenAmount > 0 && amountUSD > 0) {
-          tokenPrice = amountUSD / tokenAmount;
+          tokenPrice = amountUSD / tokenAmount; // Цена за единицу целевого токена
         }
         
-        this.logger.info(`🚀 BUY: $${this.formatNumber(amountUSD)} ${this.getTokenSymbol(paymentToken)} → ${targetToken.slice(0, 8)}...`);
+        const paymentSymbol = await this.getTokenSymbolWithFallback(paymentToken);
+        const targetSymbol = await this.getTokenSymbolWithFallback(targetToken);
+        this.logger.info(`🚀 BUY: ${this.formatNumber(amountUSD)} ${paymentSymbol} → ${tokenAmount.toFixed(4)} #${targetSymbol} @ $${tokenPrice.toFixed(6)}`);
         
-      } else if (!this.MAJOR_TOKENS.has(tokenInput.mint) && this.MAJOR_TOKENS.has(tokenOutput.mint)) {
-        // 🔥 ПРОДАЖА: НОВЫЙ ТОКЕН → МАЖОРНЫЙ
+      } else if (!this.MAJOR_TOKENS.has(inputMint) && this.MAJOR_TOKENS.has(outputMint)) {
+        // 🔥 ПРОДАЖА: НЕ-МАЖОРНЫЙ → МАЖОРНЫЙ
         swapType = 'sell';
-        targetToken = tokenInput.mint;
-        paymentToken = tokenOutput.mint;
+        targetToken = inputMint;   // Токен который продают (не-мажорный)
+        paymentToken = outputMint; // Что получают (мажорный)
+
+        const inputDecimals = tokenInputData.rawTokenAmount.decimals !== undefined ? 
+          tokenInputData.rawTokenAmount.decimals : await this.getTokenDecimals(targetToken, 9);
+        const outputDecimals = tokenOutputData.rawTokenAmount.decimals !== undefined ? 
+          tokenOutputData.rawTokenAmount.decimals : await this.getTokenDecimals(paymentToken, 6);
         
-        tokenAmount = parseFloat(tokenInput.rawTokenAmount.tokenAmount) / 
-                     Math.pow(10, tokenInput.rawTokenAmount.decimals || 9);
+        const inputRawAmount = parseFloat(tokenInputData.rawTokenAmount.tokenAmount || '0');
+        const outputRawAmount = parseFloat(tokenOutputData.rawTokenAmount.tokenAmount || '0');
+
+        tokenAmount = inputRawAmount / Math.pow(10, inputDecimals);          // Количество проданного целевого токена
+        const actualOutputAmount = outputRawAmount / Math.pow(10, outputDecimals); // Количество полученного мажорного токена
         
-        const outputAmount = parseFloat(tokenOutput.rawTokenAmount.tokenAmount) / 
-                            Math.pow(10, tokenOutput.rawTokenAmount.decimals || 6);
-        
-        const priceInUSD = await this.getTokenPrice(paymentToken);
-        amountUSD = outputAmount * priceInUSD;
+        const paymentTokenPrice = await this.getTokenPrice(paymentToken); // Цена мажорного токена (для SOL)
+        amountUSD = actualOutputAmount * paymentTokenPrice;                 // Общая USD стоимость сделки (сколько получили)
         
         if (tokenAmount > 0 && amountUSD > 0) {
-          tokenPrice = amountUSD / tokenAmount;
+          tokenPrice = amountUSD / tokenAmount; // Цена за единицу целевого токена
         }
         
-        this.logger.info(`🔥 SELL: ${targetToken.slice(0, 8)}... → $${this.formatNumber(amountUSD)} ${this.getTokenSymbol(paymentToken)}`);
-        
+        const targetSymbol = await this.getTokenSymbolWithFallback(targetToken);
+        const paymentSymbol = await this.getTokenSymbolWithFallback(paymentToken);
+        this.logger.info(`🔥 SELL: ${tokenAmount.toFixed(4)} #${targetSymbol} @ $${tokenPrice.toFixed(6)} → ${this.formatNumber(amountUSD)} ${paymentSymbol}`);
+          
       } else {
-        // 🚫 ИГНОРИРУЕМ МАЖОРНЫЙ → МАЖОРНЫЙ
+        // 🚫 ИГНОРИРУЕМ МАЖОРНЫЙ → МАЖОРНЫЙ и НЕ-МАЖОРНЫЙ -> НЕ-МАЖОРНЫЙ
         this.processingStats.ignoredMajorSwaps++;
+        const inputSymbol = await this.getTokenSymbolWithFallback(inputMint);
+        const outputSymbol = await this.getTokenSymbolWithFallback(outputMint);
+        this.logger.debug(`[extractSwapInfo] ⏭️ Ignoring swap: ${inputSymbol} (${inputMint.slice(0,6)}) → ${outputSymbol} (${outputMint.slice(0,6)}) for TX ${txData.signature} (Not a major-to-alt or alt-to-major)`);
         return null;
       }
 
-      // 🎯 ПОРОГИ ПО КАТЕГОРИЯМ
-      const minAmount = smartWallet.category === 'sniper' ? 5000 : 
-                       smartWallet.category === 'hunter' ? 20000 : 50000;
-                       
-      if (amountUSD < minAmount) {
+      // Пороги по категориям (согласованы с shouldProcessSmartMoneySwap)
+      // Этот фильтр можно оставить здесь ИЛИ полностью полагаться на shouldProcessSmartMoneySwap
+      const minAmountCategory = smartWallet.category === 'sniper' ? 5000 : 
+                               smartWallet.category === 'hunter' ? 20000 : 50000;                       
+      if (amountUSD < minAmountCategory) {
+        this.logger.debug(`[extractSwapInfo] 💸 Amount $${amountUSD.toFixed(2)} below category threshold $${minAmountCategory} for ${smartWallet.category}`);
         return null;
       }
 
-      const tokenInfo = await this.getTokenInfo(targetToken);
+      const tokenInfo = await this.getTokenInfo(targetToken); // Информация о ЦЕЛЕВОМ токене
       
       return {
         transactionId: txData.signature,
         walletAddress: smartWallet.address,
         tokenAddress: targetToken,
-        tokenSymbol: tokenInfo.symbol,
-        tokenName: tokenInfo.name,
-        tokenAmount,
-        tokenPrice,
-        amountUSD,
+        tokenSymbol: tokenInfo.symbol, // Символ целевого токена
+        tokenName: tokenInfo.name,     // Имя целевого токена
+        tokenAmount,                   // Количество целевого токена
+        tokenPrice,                    // Цена целевого токена
+        amountUSD,                     // Общая USD стоимость операции
         swapType,
         timestamp: new Date(txData.timestamp * 1000),
         category: smartWallet.category,
         winRate: smartWallet.winRate,
         pnl: smartWallet.totalPnL,
         totalTrades: smartWallet.totalTrades,
-        paymentToken: this.getTokenSymbol(paymentToken),
+        paymentToken: await this.getTokenSymbolWithFallback(paymentToken), // Символ платежного токена
         isCexListed: this.CEX_TOKENS.has(targetToken),
-        isFamilyMember: false,
-        familySize: 0
+        isFamilyMember: false, // Отключено
+        familySize: 0        // Отключено
       };
 
     } catch (error) {
-      this.logger.error('Error extracting swap info:', error);
+      this.logger.error(`[extractSwapInfo] Error for TX ${txData.signature}:`, error);
+      this.processingStats.usdCalculationStats.errorCalculations++;
       return null;
     }
+  }
+
+  // 🔤 Вспомогательный метод для получения символа с фоллбэком (чтобы не дублировать логику)
+  private async getTokenSymbolWithFallback(mint: string): Promise<string> {
+    if (this.MAJOR_TOKENS.has(mint)) {
+      return this.getTokenSymbol(mint); // ваш существующий синхронный метод
+    }
+    const info = await this.getTokenInfo(mint); // асинхронный для остальных
+    return info.symbol;
   }
 
   // ✅ ФИЛЬТРЫ ПО КАТЕГОРИЯМ
@@ -856,7 +923,7 @@ export class WebhookServer {
     this.performanceInterval = setInterval(() => {
       this.processingStats.lastProcessedTime = new Date();
       
-      this.logger.info(`📊 PROFIT Stats: Total=${this.processingStats.totalTransactionsProcessed}, PROFITABLE=${this.processingStats.profitableSwaps}, IGNORED=${this.processingStats.ignoredMajorSwaps}, Errors=${this.processingStats.errorCount}`);
+      this.logger.info(`📊 PROFIT Stats: Total=${this.processingStats.totalTransactionsProcessed}, PROFITABLE=${this.processingStats.profitableSwaps}, IGNORED=${this.processingStats.ignoredMajorSwaps}, SAME_TOKEN=${this.processingStats.ignoredSameTokenSwaps}, Errors=${this.processingStats.errorCount}`);
       
     }, 5 * 60 * 1000);
   }

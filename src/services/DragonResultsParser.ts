@@ -1,4 +1,4 @@
-// src/services/DragonResultsParser.ts - ИСПРАВЛЕНА КРИТИЧЕСКАЯ УТЕЧКА ПАМЯТИ + TIER СИСТЕМА + PRE-FILTERING
+// src/services/DragonResultsParser.ts - ✅ ПРОВЕРЕН: added_by: 'dragon' ставится правильно + TIER СИСТЕМА + PRE-FILTERING
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
 import { TelegramNotifier } from './TelegramNotifier';
 import { MultiProviderService } from './MultiProviderService';

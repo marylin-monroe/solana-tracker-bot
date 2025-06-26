@@ -1,4 +1,4 @@
-// src/services/SmartWalletLoader.ts - ПОЛНЫЙ ИСПРАВЛЕННЫЙ ФАЙЛ с добавленными методами
+// src/services/SmartWalletLoader.ts - ИСПРАВЛЕН: syncDatabaseWithConfig() работает только с MANUAL кошельками
 import fs from 'fs';
 import path from 'path';
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
@@ -342,10 +342,11 @@ export class SmartWalletLoader {
     }
   }
 
+  // 🔥 ИСПРАВЛЕНО: Синхронизация ТОЛЬКО MANUAL кошельков между JSON конфигом и БД
   async syncDatabaseWithConfig(): Promise<{ added: number; updated: number; disabled: number }> {
     try {
       if (!this.config) {
-        this.logger.warn('⚠️ No config loaded, skipping sync');
+        this.logger.warn('⚠️ SmartWalletLoader: No config loaded, skipping sync');
         return { added: 0, updated: 0, disabled: 0 };
       }
 
@@ -353,51 +354,66 @@ export class SmartWalletLoader {
       let updated = 0;
       let disabled = 0;
 
-      const dbWallets = await this.smDatabase.getAllActiveSmartWallets();
-      const configAddresses = new Set(this.config.wallets.map(w => w.address));
+      // 🔥 1. Работаем ТОЛЬКО с кошельками, помеченными как "manual" в JSON конфиге
+      const configManualWallets = this.config.wallets.filter(w => w.addedBy === 'manual');
+      const configManualAddresses = new Set(configManualWallets.map(w => w.address));
 
-      // Добавляем/обновляем кошельки из конфига
-      for (const walletConfig of this.config.wallets) {
+      this.logger.info(`📊 Found ${configManualWallets.length} manual wallets in config (out of ${this.config.wallets.length} total)`);
+
+      // 🔥 2. Получаем из БД ТОЛЬКО кошельки, помеченные как "manual"
+      const dbManualWallets = await this.smDatabase.getWalletsByAddedBy('manual');
+      
+      this.logger.info(`📊 Found ${dbManualWallets.length} manual wallets in database`);
+
+      // 🔥 3. Добавляем/обновляем ручные кошельки из конфига в БД
+      for (const walletConfig of configManualWallets) {
         try {
-          if (!walletConfig.enabled) continue;
+          if (!walletConfig.enabled) {
+            this.logger.debug(`⏭️ Skipping disabled manual wallet: ${walletConfig.address.slice(0, 8)}`);
+            continue;
+          }
 
-          const existingWallet = dbWallets.find(w => w.address === walletConfig.address);
+          const existingDbWallet = dbManualWallets.find(w => w.address === walletConfig.address);
           
-          if (!existingWallet) {
-            // Добавляем новый кошелек
+          if (!existingDbWallet) {
+            // Добавляем новый ручной кошелек
             const smartWallet = this.createSmartWalletFromConfig(walletConfig);
             const dbConfig = this.createDbConfigFromWalletConfig(walletConfig);
             
             await this.smDatabase.saveSmartWallet(smartWallet, dbConfig);
             added++;
+            this.logger.info(`➕ Added new manual wallet: ${walletConfig.address.slice(0, 8)} (${walletConfig.nickname})`);
           } else {
-            // Обновляем настройки существующего кошелька
+            // Обновляем настройки существующего ручного кошелька
             await this.smDatabase.updateWalletSettings(walletConfig.address, {
               minTradeAlert: walletConfig.minTradeAlert,
               priority: walletConfig.priority,
               enabled: walletConfig.enabled
             });
             updated++;
+            this.logger.debug(`🔄 Updated manual wallet settings: ${walletConfig.address.slice(0, 8)}`);
           }
         } catch (error) {
-          this.logger.error(`❌ Error syncing wallet ${walletConfig?.address}:`, error);
+          this.logger.error(`❌ Error syncing manual wallet ${walletConfig?.address}:`, error);
         }
       }
 
-      // Отключаем кошельки которых нет в конфиге
-      for (const dbWallet of dbWallets) {
-        if (!configAddresses.has(dbWallet.address)) {
+      // 🔥 4. Отключаем ручные кошельки из БД, которых больше нет в JSON конфиге
+      for (const dbWallet of dbManualWallets) {
+        if (!configManualAddresses.has(dbWallet.address)) {
           await this.smDatabase.updateWalletSettings(dbWallet.address, { enabled: false });
+          this.logger.info(`♿️ Disabled manual wallet not in config: ${dbWallet.address.slice(0, 8)}`);
           disabled++;
         }
       }
 
-      this.logger.info(`✅ Sync completed: ${added} added, ${updated} updated, ${disabled} disabled`);
+      this.logger.info(`✅ Manual wallets sync completed: ${added} added, ${updated} updated, ${disabled} disabled`);
+      this.logger.info(`🔄 Dragon wallets are NOT affected by this sync (they are managed separately by DragonResultsParser)`);
 
       return { added, updated, disabled };
 
     } catch (error) {
-      this.logger.error('❌ Error syncing database with config:', error);
+      this.logger.error('❌ Error syncing manual wallets with config:', error);
       return { added: 0, updated: 0, disabled: 0 };
     }
   }
