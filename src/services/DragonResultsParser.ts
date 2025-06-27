@@ -522,96 +522,97 @@ export class DragonResultsParser {
 
   // 🔥 ОТЛАДОЧНАЯ ФИЛЬТРАЦИЯ С ДЕТАЛЬНОЙ СТАТИСТИКОЙ
   private applyProfitFirstFiltering(wallets: DragonWallet[]): DragonWallet[] {
-    this.logger.info(`🔍 DEBUGGING: Starting filtering of ${wallets.length} wallets with criteria:`);
-    this.logger.info(`   PnL≥${this.config.minPnl}, WR≥${this.config.minWinrate}%, Trades≥${this.config.minTrades}, Unrealized≥${this.config.minUnrealizedProfit}, Multiplier≥${this.config.minMultiplier}x`);
+  this.logger.info(`🔍 DEBUGGING: Starting filtering of ${wallets.length} wallets with criteria:`);
+  this.logger.info(`   PnL≥${this.config.minPnl}, WR≥${this.config.minWinrate}%, Trades≥${this.config.minTrades}, Unrealized≥${this.config.minUnrealizedProfit}, Multiplier≥${this.config.minMultiplier}x`);
+  
+  let filteredByPnl = 0, filteredByUnrealized = 0, filteredByWinrate = 0, filteredByMultiplier = 0, filteredByTrades = 0, filteredByWinrateTooHigh = 0;
+  let unrealizedUndefined = 0, multiplierUndefined = 0;
+  
+  // 🔥 АНАЛИЗИРУЕМ ПЕРВЫЕ 10 КОШЕЛЬКОВ ДЛЯ ОТЛАДКИ
+  this.logger.info(`🔍 SAMPLE DATA from first 10 wallets:`);
+  for (let i = 0; i < Math.min(10, wallets.length); i++) {
+    const w = wallets[i];
+    this.logger.info(`   ${i+1}. PnL:${w.pnl}, WR:${w.winrate}%, Trades:${w.trades}, Unrealized:${w.unrealizedProfit || 'undefined'}, Multi:${w.multiplier || 'undefined'}`);
+  }
+
+  // 🔍 ОТЛАДКА MULTIPLIER РАСПРЕДЕЛЕНИЯ
+  let mult_0_to_1 = 0, mult_1_to_2 = 0, mult_2_plus = 0, mult_nan = 0;
+  wallets.forEach(w => {
+    if (isNaN(w.multiplier || NaN)) mult_nan++;
+    else if ((w.multiplier || 0) < 1) mult_0_to_1++;
+    else if ((w.multiplier || 0) < 2) mult_1_to_2++;
+    else mult_2_plus++;
+  });
+  
+  console.log(`🔍 Multiplier distribution: 0-1x: ${mult_0_to_1}, 1-2x: ${mult_1_to_2}, 2x+: ${mult_2_plus}, NaN: ${mult_nan}`);
+
+  const filtered = wallets.filter(wallet => {
+    // ===== СНАЧАЛА ВСЕ СТРОГИЕ ФИЛЬТРЫ (ПРИМЕНЯЮТСЯ КО ВСЕМ БЕЗ ИСКЛЮЧЕНИЯ) =====
+    if (wallet.pnl < this.config.minPnl) { 
+      filteredByPnl++; 
+      return false; 
+    }
     
-    let filteredByPnl = 0, filteredByUnrealized = 0, filteredByWinrate = 0, filteredByMultiplier = 0, filteredByTrades = 0, filteredByWinrateTooHigh = 0;
-    let unrealizedUndefined = 0, multiplierUndefined = 0;
+    if (wallet.unrealizedProfit === undefined) { 
+      unrealizedUndefined++; 
+      return false; 
+    }
+    if (wallet.unrealizedProfit < this.config.minUnrealizedProfit) { 
+      filteredByUnrealized++; 
+      return false; 
+    }
     
-    // 🔥 АНАЛИЗИРУЕМ ПЕРВЫЕ 10 КОШЕЛЬКОВ ДЛЯ ОТЛАДКИ
-    this.logger.info(`🔍 SAMPLE DATA from first 10 wallets:`);
-    for (let i = 0; i < Math.min(10, wallets.length); i++) {
-      const w = wallets[i];
-      this.logger.info(`   ${i+1}. PnL:${w.pnl}, WR:${w.winrate}%, Trades:${w.trades}, Unrealized:${w.unrealizedProfit || 'undefined'}, Multi:${w.multiplier || 'undefined'}`);
+    if (wallet.winrate < this.config.minWinrate) { 
+      filteredByWinrate++; 
+      return false; 
+    }
+    
+    if (wallet.multiplier === undefined) { 
+      multiplierUndefined++; 
+      return false; 
+    }
+    if (wallet.multiplier < this.config.minMultiplier) { 
+      filteredByMultiplier++; 
+      return false; 
+    }
+    
+    if (wallet.trades < this.config.minTrades) { 
+      filteredByTrades++; 
+      return false; 
+    }
+    
+    if (wallet.winrate > 99.9) { 
+      filteredByWinrateTooHigh++; 
+      return false; 
     }
 
-    // 🔍 ОТЛАДКА MULTIPLIER РАСПРЕДЕЛЕНИЯ
-    let mult_0_to_1 = 0, mult_1_to_2 = 0, mult_2_plus = 0, mult_nan = 0;
-    wallets.forEach(w => {
-      if (isNaN(w.multiplier || NaN)) mult_nan++;
-      else if ((w.multiplier || 0) < 1) mult_0_to_1++;
-      else if ((w.multiplier || 0) < 2) mult_1_to_2++;
-      else mult_2_plus++;
-    });
+    // ===== ТОЛЬКО ДЛЯ ТЕХ, КТО ПРОШЕЛ ВСЕ СТРОГИЕ ПРОВЕРКИ, ПРИСВАИВАЕМ TIER =====
+    // (Это происходит ПОСЛЕ всех фильтров, только для кошельков, которые точно попадут в итоговый список)
+    if (wallet.pnl >= this.config.whaleThresholds.megaWhale) {
+      wallet.tier = 'whale'; 
+    } else if (wallet.pnl >= 200000 && wallet.winrate >= 50) {
+      wallet.tier = 'genius';
+    } else {
+      wallet.tier = 'quality';
+    }
     
-    console.log(`🔍 Multiplier distribution: 0-1x: ${mult_0_to_1}, 1-2x: ${mult_1_to_2}, 2x+: ${mult_2_plus}, NaN: ${mult_nan}`);
+    return true; // Пропускаем только тех, кто прошел ВСЕ строгие проверки
+  });
 
-    const filtered = wallets.filter(wallet => {
-      // Проверяем мега-китов
-      if (wallet.pnl >= this.config.whaleThresholds.megaWhale) {
-        wallet.tier = 'whale'; 
-      } else if (wallet.pnl >= 200000 && wallet.winrate >= 50) {
-        wallet.tier = 'genius';
-      } else {
-        wallet.tier = 'quality';
-      }
+  // 🔥 ДЕТАЛЬНАЯ СТАТИСТИКА ФИЛЬТРАЦИИ
+  this.logger.info(`🔍 FILTERING RESULTS:`);
+  this.logger.info(`   ✅ Passed: ${filtered.length}/${wallets.length} (${(filtered.length/wallets.length*100).toFixed(1)}%)`);
+  this.logger.info(`   ❌ Filtered by PnL<${this.config.minPnl}: ${filteredByPnl}`);
+  this.logger.info(`   ❌ Filtered by Unrealized undefined: ${unrealizedUndefined}`);
+  this.logger.info(`   ❌ Filtered by Unrealized<${this.config.minUnrealizedProfit}: ${filteredByUnrealized}`);
+  this.logger.info(`   ❌ Filtered by Winrate<${this.config.minWinrate}%: ${filteredByWinrate}`);
+  this.logger.info(`   ❌ Filtered by Multiplier undefined: ${multiplierUndefined}`);
+  this.logger.info(`   ❌ Filtered by Multiplier<${this.config.minMultiplier}x: ${filteredByMultiplier}`);
+  this.logger.info(`   ❌ Filtered by Trades<${this.config.minTrades}: ${filteredByTrades}`);
+  this.logger.info(`   ❌ Filtered by Winrate>99.9%: ${filteredByWinrateTooHigh}`);
 
-      // 🔥 ОТЛАДОЧНАЯ ФИЛЬТРАЦИЯ С ПОДСЧЕТОМ
-      if (wallet.pnl < this.config.minPnl) { 
-        filteredByPnl++; 
-        return false; 
-      }
-      
-      if (wallet.unrealizedProfit === undefined) { 
-        unrealizedUndefined++; 
-        return false; 
-      }
-      if (wallet.unrealizedProfit < this.config.minUnrealizedProfit) { 
-        filteredByUnrealized++; 
-        return false; 
-      }
-      
-      if (wallet.winrate < this.config.minWinrate) { 
-        filteredByWinrate++; 
-        return false; 
-      }
-      
-      if (wallet.multiplier === undefined) { 
-        multiplierUndefined++; 
-        return false; 
-      }
-      if (wallet.multiplier < this.config.minMultiplier) { 
-        filteredByMultiplier++; 
-        return false; 
-      }
-      
-      if (wallet.trades < this.config.minTrades) { 
-        filteredByTrades++; 
-        return false; 
-      }
-      
-      if (wallet.winrate > 99.9) { 
-        filteredByWinrateTooHigh++; 
-        return false; 
-      }
-      
-      return true;
-    });
-
-    // 🔥 ДЕТАЛЬНАЯ СТАТИСТИКА ФИЛЬТРАЦИИ
-    this.logger.info(`🔍 FILTERING RESULTS:`);
-    this.logger.info(`   ✅ Passed: ${filtered.length}/${wallets.length} (${(filtered.length/wallets.length*100).toFixed(1)}%)`);
-    this.logger.info(`   ❌ Filtered by PnL<${this.config.minPnl}: ${filteredByPnl}`);
-    this.logger.info(`   ❌ Filtered by Unrealized undefined: ${unrealizedUndefined}`);
-    this.logger.info(`   ❌ Filtered by Unrealized<${this.config.minUnrealizedProfit}: ${filteredByUnrealized}`);
-    this.logger.info(`   ❌ Filtered by Winrate<${this.config.minWinrate}%: ${filteredByWinrate}`);
-    this.logger.info(`   ❌ Filtered by Multiplier undefined: ${multiplierUndefined}`);
-    this.logger.info(`   ❌ Filtered by Multiplier<${this.config.minMultiplier}x: ${filteredByMultiplier}`);
-    this.logger.info(`   ❌ Filtered by Trades<${this.config.minTrades}: ${filteredByTrades}`);
-    this.logger.info(`   ❌ Filtered by Winrate>99.9%: ${filteredByWinrateTooHigh}`);
-
-    return filtered;
-  }
+  return filtered;
+}
 
   // 🔥 БЕЗ ДУБЛИРУЮЩИХ ПРОВЕРОК - только tier определение
   private determineTier(wallet: DragonWallet): 'whale' | 'genius' | 'quality' | 'filter_out' {
