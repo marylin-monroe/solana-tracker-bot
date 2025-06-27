@@ -1,4 +1,4 @@
-// src/services/TokenMetadataService.ts - 🔥 УВЕЛИЧЕННЫЕ ТАЙМАУТЫ ДЛЯ API БЕЗОПАСНОСТИ
+// src/services/TokenMetadataService.ts - 🔥 ДОБАВЛЕН МЕТОД getDecimals + УВЕЛИЧЕННЫЕ ТАЙМАУТЫ
 import { Logger } from '../utils/Logger';
 
 interface TokenMetadata {
@@ -147,7 +147,74 @@ export class TokenMetadataService {
 
   constructor() {
     this.logger = Logger.getInstance();
-    this.logger.info('🏷️ TokenMetadataService OPTIMIZED: LST tokens added + 30s timeouts for API safety');
+    this.logger.info('🏷️ TokenMetadataService ENHANCED: LST tokens + getDecimals method + 30s timeouts for API safety');
+  }
+
+  // 🔥 НОВЫЙ ГЛАВНЫЙ МЕТОД: Консолидированное получение decimals
+  async getDecimals(mintAddress: string): Promise<number | null> {
+    try {
+      if (!mintAddress || mintAddress === 'UNKNOWN') return null;
+
+      // 1. Проверяем кеш
+      const cached = this.getCachedMetadata(mintAddress);
+      if (cached?.decimals !== undefined && cached.decimals >= 0) {
+        this.logger.debug(`[getDecimals] Cache hit for ${mintAddress}: ${cached.decimals}`);
+        return cached.decimals;
+      }
+
+      // 2. Проверяем WELL_KNOWN_TOKENS
+      const wellKnown = this.WELL_KNOWN_TOKENS.get(mintAddress);
+      if (wellKnown?.decimals !== undefined) {
+        this.logger.debug(`[getDecimals] Well-known token ${mintAddress}: ${wellKnown.decimals}`);
+        return wellKnown.decimals;
+      }
+
+      // 3. Пробуем RPC для получения точных decimals
+      const rpcMetadata = await this.getTokenMetadataFromRPC(mintAddress);
+      if (rpcMetadata?.decimals !== undefined && rpcMetadata.decimals >= 0) {
+        this.logger.debug(`[getDecimals] RPC metadata for ${mintAddress}: ${rpcMetadata.decimals}`);
+        this.setCachedMetadata(mintAddress, rpcMetadata);
+        return rpcMetadata.decimals;
+      }
+
+      // 4. Пробуем внешние источники (Jupiter, Birdeye)
+      const sources = [
+        this.getFromJupiter(mintAddress), 
+        this.getFromBirdeye(mintAddress)
+      ];
+      const results = await Promise.allSettled(sources);
+      
+      for (const result of results) {
+        if (result.status === 'fulfilled' && result.value && 
+            typeof result.value.decimals === 'number' && result.value.decimals >= 0) {
+          this.logger.debug(`[getDecimals] External source for ${mintAddress}: ${result.value.decimals}`);
+          this.setCachedMetadata(mintAddress, result.value);
+          return result.value.decimals;
+        }
+      }
+
+      // 5. Фоллбэк на основе типа токена
+      const fallbackDecimals = this.getFallbackDecimals(mintAddress);
+      this.logger.debug(`[getDecimals] Fallback for ${mintAddress}: ${fallbackDecimals}`);
+      return fallbackDecimals;
+
+    } catch (error) {
+      this.logger.error(`[getDecimals] Error for ${mintAddress}:`, error);
+      return this.getFallbackDecimals(mintAddress);
+    }
+  }
+
+  // 🔥 ФОЛЛБЭК DECIMALS НА ОСНОВЕ ИЗВЕСТНЫХ ПАТТЕРНОВ
+  private getFallbackDecimals(mintAddress: string): number {
+    // Стейблкоины обычно имеют 6 decimals
+    if (mintAddress.includes('USD') || 
+        mintAddress === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' || // USDC
+        mintAddress === 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB') {  // USDT
+      return 6;
+    }
+    
+    // SOL и большинство токенов Solana имеют 9 decimals
+    return 9;
   }
 
   // 🎯 ГЛАВНЫЙ МЕТОД: Получение метаданных с правильными decimals
@@ -547,6 +614,24 @@ export class TokenMetadataService {
     return results;
   }
 
+  // 🔥 НОВЫЙ МЕТОД: Пакетное получение decimals
+  async getBatchTokenDecimals(mintAddresses: string[]): Promise<Map<string, number | null>> {
+    const results = new Map<string, number | null>();
+    const BATCH_SIZE = 10;
+    
+    for (let i = 0; i < mintAddresses.length; i += BATCH_SIZE) {
+      const batch = mintAddresses.slice(i, i + BATCH_SIZE);
+      const batchPromises = batch.map(async address => {
+        const decimals = await this.getDecimals(address);
+        results.set(address, decimals);
+      });
+      
+      await Promise.all(batchPromises);
+      if (i + BATCH_SIZE < mintAddresses.length) await this.sleep(100);
+    }
+    return results;
+  }
+
   // Утилиты
   private getCachedMetadata(mintAddress: string): TokenMetadata | null {
     const cached = this.cache.get(mintAddress);
@@ -563,7 +648,8 @@ export class TokenMetadataService {
     return {
       symbol: this.generateSymbolFromAddress(mintAddress),
       name: `Token ${mintAddress.slice(0, 8)}...`,
-      decimals: 9, address: mintAddress
+      decimals: this.getFallbackDecimals(mintAddress), // 🔥 ИСПОЛЬЗУЕМ УМНЫЙ ФОЛЛБЭК
+      address: mintAddress
     };
   }
 

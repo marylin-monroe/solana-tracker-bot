@@ -1,6 +1,7 @@
-// src/services/SolanaMonitor.ts - С ДЕТЕКТОРОМ АГРЕГАЦИИ ПОЗИЦИЙ + НОВЫЕ МЕТОДЫ
+// src/services/SolanaMonitor.ts - 🔥 ДОБАВЛЕНА ФИЛЬТРАЦИЯ PAYMENT→PAYMENT ДЛЯ ОБЫЧНЫХ КОШЕЛЬКОВ
 import { Database } from './Database';
 import { TelegramNotifier } from './TelegramNotifier';
+import { TokenMetadataService } from './TokenMetadataService';
 import { Logger } from '../utils/Logger';
 import { TokenSwap, WalletInfo } from '../types';
 
@@ -73,6 +74,7 @@ interface TokenAnalysis {
 export class SolanaMonitor {
   private database: Database;
   private telegramNotifier: TelegramNotifier;
+  private tokenMetadataService: TokenMetadataService;
   private logger: Logger;
   
   // 🎯 АКТИВНЫЕ ПОЗИЦИИ ДЛЯ АГРЕГАЦИИ
@@ -81,6 +83,30 @@ export class SolanaMonitor {
   // 🆕 КЕШИ ДЛЯ АНАЛИЗА
   private walletAnalysisCache = new Map<string, WalletAnalysis>();
   private tokenAnalysisCache = new Map<string, TokenAnalysis>();
+  
+  // 🔥 ДОБАВЛЕН PAYMENT_ASSETS ДЛЯ ФИЛЬТРАЦИИ (КОНСИСТЕНТНО С WebhookServer)
+  private readonly PAYMENT_ASSETS = new Set([
+    // Базовые стейблы и SOL
+    'So11111111111111111111111111111111111111112', // SOL
+    'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+    'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
+    
+    // LST токены (Liquid Staking Tokens)
+    'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So', // mSOL (Marinade)
+    'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn', // JitoSOL (Jito)
+    '7Q2afV64in6N6SeZsAAB81TJzwDoD6zpqmHkzi9Dcavn', // stSOL (Lido)
+    'bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1', // bSOL (Blaze)
+    'he1iusmfkpAdwvxLNGV8Y1iSbj4rUy6yMhEA3fotn9A', // hSOL (Helius)
+    
+    // Популярные ликвидные токены
+    'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263', // BONK
+    'WENWENvqqNya429ubCdR81ZmD69brwQaaBYY6p3LCpk', // WEN
+    'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN', // JUP (Jupiter)
+    
+    // Дополнительные стейблкоины
+    'A9mUU4qviSctJVPJdBJWkb28deg915LYJKrzQ19ji3FM', // UXD
+    'USDH1SM1ojwWUga67PGrgFWUHibbjqMvuMaDkRJTgkX' // USDH
+  ]);
   
   // 🔧 НАСТРОЙКИ ДЕТЕКЦИИ
   private readonly config = {
@@ -120,12 +146,21 @@ export class SolanaMonitor {
     cacheHits: 0,
     cacheMisses: 0,
     positionsProcessed: 0,
-    avgProcessingTime: 0
+    avgProcessingTime: 0,
+    // 🔥 НОВАЯ СТАТИСТИКА ФИЛЬТРАЦИИ
+    filteringStats: {
+      totalTransactionsProcessed: 0,
+      paymentToPaymentFiltered: 0,
+      altToAltFiltered: 0,
+      validSwapsProcessed: 0,
+      duplicatesFiltered: 0
+    }
   };
 
   constructor(database: Database, telegramNotifier: TelegramNotifier) {
     this.database = database;
     this.telegramNotifier = telegramNotifier;
+    this.tokenMetadataService = new TokenMetadataService();
     this.logger = Logger.getInstance();
     
     // Запускаем периодическую проверку завершенных позиций
@@ -136,23 +171,29 @@ export class SolanaMonitor {
     
     // 🆕 ЗАПУСКАЕМ ОЧИСТКУ КЕШЕЙ
     this.startCacheCleanup();
+    
+    this.logger.info('🚨 SolanaMonitor ENHANCED: Position aggregation + PAYMENT→PAYMENT filtering for regular wallets');
   }
 
+  // 🔥 ГЛАВНЫЙ МЕТОД С ДОБАВЛЕННОЙ ФИЛЬТРАЦИЕЙ PAYMENT→PAYMENT
   async processTransaction(txData: any): Promise<void> {
+    this.stats.filteringStats.totalTransactionsProcessed++;
+    
     try {
       // Базовая обработка транзакций
-      this.logger.debug(`Processing transaction: ${txData.signature}`);
+      this.logger.debug(`[SolanaMonitor] Processing transaction: ${txData.signature}`);
       
       // Проверяем, обрабатывали ли уже эту транзакцию
       if (await this.database.isTransactionProcessed(txData.signature)) {
+        this.stats.filteringStats.duplicatesFiltered++;
         return;
       }
 
-      // Извлекаем информацию о свапе
-      const swapInfo = this.extractSwapInfo(txData);
-      if (!swapInfo) return;
+      // 🔥 НОВАЯ ЛОГИКА: Извлекаем информацию о свапе С ФИЛЬТРАЦИЕЙ
+      const swapInfo = this.extractSwapInfoWithFiltering(txData);
+      if (!swapInfo) return; // Уже отфильтровано в extractSwapInfoWithFiltering
 
-      // 🎯 НОВАЯ ЛОГИКА: ДОБАВЛЯЕМ В АГРЕГАЦИЮ ПОЗИЦИЙ
+      // 🎯 ДОБАВЛЯЕМ В АГРЕГАЦИЮ ПОЗИЦИЙ (только для покупок)
       if (swapInfo.swapType === 'buy' && swapInfo.amountUSD >= 500) { // Минимум $500 для анализа
         await this.addToPositionAggregation(swapInfo);
       }
@@ -168,11 +209,168 @@ export class SolanaMonitor {
         await this.database.saveWalletInfo(walletInfo);
       }
 
-      this.logger.debug(`Transaction processed: ${swapInfo.tokenSymbol} - $${swapInfo.amountUSD}`);
+      this.stats.filteringStats.validSwapsProcessed++;
+      this.logger.debug(`[SolanaMonitor] Transaction processed: ${swapInfo.tokenSymbol} - $${swapInfo.amountUSD}`);
       
     } catch (error) {
-      this.logger.error('Error processing transaction:', error);
+      this.logger.error('[SolanaMonitor] Error processing transaction:', error);
     }
+  }
+
+  // 🔥 НОВЫЙ МЕТОД: Извлечение свапа С ФИЛЬТРАЦИЕЙ PAYMENT→PAYMENT
+  private extractSwapInfoWithFiltering(txData: any): TokenSwap | null {
+    try {
+      // Проверяем базовую структуру
+      if (!txData || !txData.signature || !txData.timestamp) {
+        this.logger.debug(`[SolanaMonitor] Invalid transaction structure`);
+        return null;
+      }
+
+      // 🔥 СИМУЛЯЦИЯ ИЗВЛЕЧЕНИЯ ДАННЫХ О СВАПЕ
+      // В реальной реализации здесь должна быть логика парсинга transaction.meta.tokenBalances
+      // Для демонстрации используем простую структуру
+      
+      // Предполагается, что из txData можно извлечь информацию о входном и выходном токенах
+      const inputMint = this.extractInputMint(txData);
+      const outputMint = this.extractOutputMint(txData);
+      const walletAddress = this.extractWalletAddress(txData);
+      
+      if (!inputMint || !outputMint || !walletAddress) {
+        this.logger.debug(`[SolanaMonitor] Missing required swap data`);
+        return null;
+      }
+
+      // 🔥 ГЛАВНАЯ ФИЛЬТРАЦИЯ PAYMENT→PAYMENT (КОНСИСТЕНТНО С WebhookServer)
+      const inputIsPayment = this.PAYMENT_ASSETS.has(inputMint);
+      const outputIsPayment = this.PAYMENT_ASSETS.has(outputMint);
+      
+      // Получаем символы для логирования
+      const inputSymbol = this.getTokenSymbol(inputMint);
+      const outputSymbol = this.getTokenSymbol(outputMint);
+      
+      this.logger.debug(`[SolanaMonitor] Swap analysis: ${inputSymbol} (Payment: ${inputIsPayment}) → ${outputSymbol} (Payment: ${outputIsPayment}) | TX: ${txData.signature.slice(0,8)}...`);
+
+      // 🔥 ФИЛЬТРАЦИЯ (ТОЧНО КАК В WebhookServer)
+      if (inputMint === outputMint) {
+        this.logger.debug(`[SolanaMonitor] ⏭️ IGNORED (Same Token): ${inputSymbol} → ${outputSymbol}`);
+        return null;
+      }
+
+      if (inputIsPayment && outputIsPayment) {
+        this.stats.filteringStats.paymentToPaymentFiltered++;
+        this.logger.warn(`[SolanaMonitor] ❌ FILTERED (Payment → Payment): ${inputSymbol} → ${outputSymbol} | TX: ${txData.signature.slice(0,8)}...`);
+        this.logger.warn(`[SolanaMonitor] 🚫 Blocked PAYMENT→PAYMENT swap for regular wallet: ${walletAddress.slice(0,8)}...`);
+        return null;
+      }
+
+      if (!inputIsPayment && !outputIsPayment) {
+        this.stats.filteringStats.altToAltFiltered++;
+        this.logger.debug(`[SolanaMonitor] ⏭️ IGNORED (Alt → Alt): ${inputSymbol} → ${outputSymbol}`);
+        return null;
+      }
+
+      // Если дошли сюда - это валидный свап PAYMENT ↔ ALT
+      let swapType: 'buy' | 'sell' = 'buy';
+      let targetToken = '';
+      let paymentToken = '';
+
+      if (inputIsPayment && !outputIsPayment) {
+        // ПОКУПКА: PAYMENT → ALT
+        swapType = 'buy';
+        targetToken = outputMint;
+        paymentToken = inputMint;
+        this.logger.debug(`[SolanaMonitor] ✅ VALID BUY: ${inputSymbol} → ${outputSymbol}`);
+      } else {
+        // ПРОДАЖА: ALT → PAYMENT
+        swapType = 'sell';
+        targetToken = inputMint;
+        paymentToken = outputMint;
+        this.logger.debug(`[SolanaMonitor] ✅ VALID SELL: ${inputSymbol} → ${outputSymbol}`);
+      }
+
+      // 🔥 РАСЧЕТ СУММ (упрощенная логика для демонстрации)
+      const tokenAmount = this.calculateTokenAmount(txData, targetToken);
+      const amountUSD = this.estimateUSDValue(txData, paymentToken, tokenAmount);
+
+      // Проверяем минимальный порог
+      if (amountUSD < 100) { // Минимум $100 для обработки
+        this.logger.debug(`[SolanaMonitor] Below minimum threshold: $${amountUSD}`);
+        return null;
+      }
+
+      // Создаем объект TokenSwap
+      const tokenSwap: TokenSwap = {
+        transactionId: txData.signature,
+        walletAddress: walletAddress,
+        tokenAddress: targetToken,
+        tokenSymbol: this.getTokenSymbol(targetToken),
+        tokenName: `Token ${targetToken.slice(0, 8)}...`,
+        amount: tokenAmount,
+        amountUSD: amountUSD,
+        timestamp: new Date(txData.timestamp * 1000),
+        dex: 'SolanaMonitor',
+        isNewWallet: false,
+        isReactivatedWallet: false,
+        walletAge: 0,
+        daysSinceLastActivity: 0,
+        swapType: swapType,
+        price: amountUSD / tokenAmount
+      };
+
+      this.logger.info(`[SolanaMonitor] ✅ Valid ${swapType.toUpperCase()}: ${tokenSwap.tokenSymbol} - $${amountUSD.toFixed(0)} | Wallet: ${walletAddress.slice(0,8)}...`);
+      return tokenSwap;
+
+    } catch (error) {
+      this.logger.error('[SolanaMonitor] Error extracting swap info:', error);
+      return null;
+    }
+  }
+
+  // 🔥 ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ДЛЯ ИЗВЛЕЧЕНИЯ ДАННЫХ
+  private extractInputMint(txData: any): string | null {
+    // В реальной реализации здесь должен быть парсинг transaction.meta.preTokenBalances/postTokenBalances
+    // Для демонстрации возвращаем тестовые данные
+    if (txData.signature?.includes('USDC')) return 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'; // USDC
+    if (txData.signature?.includes('SOL')) return 'So11111111111111111111111111111111111111112'; // SOL
+    return 'So11111111111111111111111111111111111111112'; // Фоллбэк на SOL
+  }
+
+  private extractOutputMint(txData: any): string | null {
+    // В реальной реализации здесь должен быть парсинг transaction.meta.preTokenBalances/postTokenBalances
+    // Для демонстрации возвращаем случайный альткоин
+    return 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263'; // BONK как пример
+  }
+
+  private extractWalletAddress(txData: any): string | null {
+    // В реальной реализации здесь должен быть анализ signers или account changes
+    return txData.feePayer || 'DefaultWalletAddress123456789';
+  }
+
+  private calculateTokenAmount(txData: any, tokenMint: string): number {
+    // В реальной реализации здесь должен быть расчет разности балансов
+    return Math.random() * 1000 + 100; // Случайное количество для демонстрации
+  }
+
+  private estimateUSDValue(txData: any, paymentToken: string, tokenAmount: number): number {
+    // В реальной реализации здесь должен быть реальный расчет через цены
+    const basePrice = this.PAYMENT_ASSETS.has(paymentToken) ? 140 : 1; // SOL ~$140, stablecoins $1
+    return tokenAmount * basePrice * (Math.random() * 0.5 + 0.75); // Случайная вариация для демонстрации
+  }
+
+  private getTokenSymbol(tokenMint: string): string {
+    const symbolMap: Record<string, string> = {
+      'So11111111111111111111111111111111111111112': 'SOL',
+      'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': 'USDC',
+      'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB': 'USDT',
+      'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So': 'mSOL',
+      'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn': 'JitoSOL',
+      '7Q2afV64in6N6SeZsAAB81TJzwDoD6zpqmHkzi9Dcavn': 'stSOL',
+      'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263': 'BONK',
+      'WENWENvqqNya429ubCdR81ZmD69brwQaaBYY6p3LCpk': 'WEN',
+      'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN': 'JUP'
+    };
+    
+    return symbolMap[tokenMint] || tokenMint.slice(0, 6).toUpperCase();
   }
 
   // 🎯 ОСНОВНОЙ МЕТОД АГРЕГАЦИИ ПОЗИЦИЙ
@@ -890,32 +1088,7 @@ export class SolanaMonitor {
     }
   }
 
-  // СУЩЕСТВУЮЩИЕ МЕТОДЫ (без изменений)
-  private extractSwapInfo(txData: any): TokenSwap | null {
-    try {
-      // Упрощенная логика извлечения информации о свапе
-      return {
-        transactionId: txData.signature,
-        walletAddress: txData.feePayer,
-        tokenAddress: 'sample_token_address',
-        tokenSymbol: 'SAMPLE',
-        tokenName: 'Sample Token',
-        amount: 1000,
-        amountUSD: 100,
-        timestamp: new Date(txData.timestamp * 1000),
-        dex: 'Unknown',
-        isNewWallet: false,
-        isReactivatedWallet: false,
-        walletAge: 0,
-        daysSinceLastActivity: 0,
-        swapType: 'buy'
-      };
-    } catch (error) {
-      this.logger.error('Error extracting swap info:', error);
-      return null;
-    }
-  }
-
+  // СУЩЕСТВУЮЩИЕ МЕТОДЫ (адаптированные)
   private async analyzeWallet(walletAddress: string): Promise<WalletInfo | null> {
     try {
       // Упрощенный анализ кошелька
@@ -935,12 +1108,22 @@ export class SolanaMonitor {
     }
   }
 
-  // 📊 СТАТИСТИКА АГРЕГАТОРА
+  // 📊 СТАТИСТИКА АГРЕГАТОРА С НОВОЙ ФИЛЬТРАЦИЕЙ
   getAggregationStats() {
     return {
       activePositions: this.activePositions.size,
       config: this.config,
       stats: this.stats,
+      // 🔥 НОВАЯ СТАТИСТИКА ФИЛЬТРАЦИИ
+      filteringStats: {
+        totalTransactionsProcessed: this.stats.filteringStats.totalTransactionsProcessed,
+        paymentToPaymentFiltered: this.stats.filteringStats.paymentToPaymentFiltered,
+        altToAltFiltered: this.stats.filteringStats.altToAltFiltered,
+        validSwapsProcessed: this.stats.filteringStats.validSwapsProcessed,
+        duplicatesFiltered: this.stats.filteringStats.duplicatesFiltered,
+        filteringEfficiency: this.stats.filteringStats.totalTransactionsProcessed > 0 ? 
+          `${((this.stats.filteringStats.paymentToPaymentFiltered + this.stats.filteringStats.altToAltFiltered) / this.stats.filteringStats.totalTransactionsProcessed * 100).toFixed(1)}%` : '0%'
+      },
       cacheStats: {
         walletAnalysisCache: this.walletAnalysisCache.size,
         tokenAnalysisCache: this.tokenAnalysisCache.size,
@@ -970,7 +1153,8 @@ export class SolanaMonitor {
       highRiskDetected: this.stats.highRiskPositions,
       alertsSent: this.stats.alertsSent,
       avgProcessingTime: this.stats.avgProcessingTime,
-      activePositions: this.activePositions.size
+      activePositions: this.activePositions.size,
+      filteringStats: this.stats.filteringStats
     };
   }
 

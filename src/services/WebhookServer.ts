@@ -1,4 +1,4 @@
-// src/services/WebhookServer.ts - 🔥 ИСПРАВЛЕНО: PAYMENT_ASSETS логика для LST токенов
+// src/services/WebhookServer.ts - 🔥 ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ФИЛЬТРАЦИИ PAYMENT→PAYMENT
 import express from 'express';
 import { Database } from './Database';
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
@@ -82,6 +82,15 @@ interface ProcessingStats {
   ignoredMajorSwaps: number;
   ignoredSameTokenSwaps: number;
   oldTransactionsFiltered: number;
+  // 🔥 НОВАЯ ДЕТАЛЬНАЯ СТАТИСТИКА ФИЛЬТРАЦИИ
+  filteringStats: {
+    paymentToPayment: number;
+    altToAlt: number;
+    validBuys: number;
+    validSells: number;
+    belowThreshold: number;
+    unknownTokens: number;
+  };
 }
 
 export class WebhookServer {
@@ -171,7 +180,16 @@ export class WebhookServer {
     profitableSwaps: 0,
     ignoredMajorSwaps: 0,
     ignoredSameTokenSwaps: 0,
-    oldTransactionsFiltered: 0
+    oldTransactionsFiltered: 0,
+    // 🔥 НОВАЯ ДЕТАЛЬНАЯ СТАТИСТИКА
+    filteringStats: {
+      paymentToPayment: 0,
+      altToAlt: 0,
+      validBuys: 0,
+      validSells: 0,
+      belowThreshold: 0,
+      unknownTokens: 0
+    }
   };
 
   private requestCounters = {
@@ -198,7 +216,7 @@ export class WebhookServer {
     this.setupMiddleware();
     this.setupRoutes();
     this.startCacheCleanup();
-    this.logger.info('🚀 WebhookServer FIXED: PAYMENT_ASSETS with LST support');
+    this.logger.info('🚀 WebhookServer ENHANCED: PAYMENT_ASSETS with detailed filtering logs');
   }
 
   private setupMiddleware(): void {
@@ -359,7 +377,7 @@ export class WebhookServer {
         return;
       }
 
-      // 🔥 ИСПРАВЛЕНО: Используем PAYMENT_ASSETS в extractSwapInfo
+      // 🔥 ИСПРАВЛЕНО: Используем PAYMENT_ASSETS в extractSwapInfo с детальным логированием
       const swapInfo = await this.extractSwapInfo(txData, swapEvent, smartWallet);
       if (!swapInfo) return;
 
@@ -395,7 +413,7 @@ export class WebhookServer {
     }
   }
 
-  // 🔥 ИСПРАВЛЕНО: Используем PAYMENT_ASSETS вместо MAJOR_TOKENS
+  // 🔥 МАКСИМАЛЬНО ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ В extractSwapInfo
   private async extractSwapInfo(txData: SolanaWebhookPayload, swapEvent: any, smartWallet: SmartMoneyWallet): Promise<SmartMoneySwap | null> {
     try {
       if (!swapEvent || !swapEvent.tokenInputs || !swapEvent.tokenOutputs || 
@@ -415,13 +433,39 @@ export class WebhookServer {
       
       const inputMint = tokenInputData.mint;
       const outputMint = tokenOutputData.mint;
+      const signature = txData.signature;
 
+      // 🔥 ДЕТАЛЬНАЯ ПРОВЕРКА И ЛОГИРОВАНИЕ КАЖДОГО ТОКЕНА
+      const inputIsPayment = this.PAYMENT_ASSETS.has(inputMint);
+      const outputIsPayment = this.PAYMENT_ASSETS.has(outputMint);
+      
+      // Получаем символы для более понятного логирования
+      const inputSymbol = await this.getTokenSymbolWithFallback(inputMint);
+      const outputSymbol = await this.getTokenSymbolWithFallback(outputMint);
+      
+      this.logger.info(`[SwapAnalysis] TX: ${signature.slice(0,8)}... | ${inputSymbol} (Payment: ${inputIsPayment}) → ${outputSymbol} (Payment: ${outputIsPayment}) | Wallet: ${smartWallet.address.slice(0,8)}...`);
+
+      // 🔥 ГЛАВНАЯ ФИЛЬТРАЦИЯ С ДЕТАЛЬНЫМ ЛОГИРОВАНИЕМ КАЖДОГО СЛУЧАЯ
       if (inputMint === outputMint) {
-        this.logger.debug(`[extractSwapInfo] Ignoring same-token swap: ${inputMint} -> ${outputMint} for TX ${txData.signature}`);
         this.processingStats.ignoredSameTokenSwaps++;
+        this.logger.debug(`[SwapFilter] ⏭️ IGNORED (Same Token): ${inputSymbol} → ${outputSymbol} | TX: ${signature.slice(0,8)}...`);
         return null;
       }
 
+      if (inputIsPayment && outputIsPayment) {
+        this.processingStats.filteringStats.paymentToPayment++;
+        this.logger.warn(`[SwapFilter] ❌ IGNORED (Payment → Payment): ${inputSymbol} → ${outputSymbol} | TX: ${signature.slice(0,8)}... | Wallet: ${smartWallet.address.slice(0,8)}...`);
+        this.logger.warn(`[SwapFilter] 🚨 THIS SHOULD NOT HAPPEN! Payment assets trading between each other: ${inputMint.slice(0,8)}... → ${outputMint.slice(0,8)}...`);
+        return null;
+      }
+
+      if (!inputIsPayment && !outputIsPayment) {
+        this.processingStats.filteringStats.altToAlt++;
+        this.logger.debug(`[SwapFilter] ⏭️ IGNORED (Alt → Alt): ${inputSymbol} → ${outputSymbol} | TX: ${signature.slice(0,8)}...`);
+        return null;
+      }
+
+      // Если дошли сюда - это валидный свап PAYMENT ↔ ALT
       let targetToken = '';
       let paymentToken = '';
       let amountUSD = 0;
@@ -429,28 +473,32 @@ export class WebhookServer {
       let tokenAmount = 0;
       let tokenPrice = 0;
 
-      // 🔥 ИСПРАВЛЕНО: ПОКУПКА PAYMENT_ASSET → НЕ-PAYMENT_ASSET
-      if (this.PAYMENT_ASSETS.has(inputMint) && !this.PAYMENT_ASSETS.has(outputMint)) {
+      if (inputIsPayment && !outputIsPayment) {
+        // 🔥 ПОКУПКА: PAYMENT_ASSET → АЛЬТКОИН
         swapType = 'buy';
         targetToken = outputMint;
         paymentToken = inputMint;
+        this.processingStats.filteringStats.validBuys++;
+        
+        this.logger.info(`[SwapFilter] ✅ VALID BUY: ${inputSymbol} → ${outputSymbol} | TX: ${signature.slice(0,8)}...`);
         
         // 🔥 ИСПРАВЛЕНО: Правильные decimals через TokenMetadataService
-        const [paymentMetadata, targetMetadata] = await Promise.all([
-          this.tokenMetadataService.getTokenMetadata(paymentToken),
-          this.tokenMetadataService.getTokenMetadata(targetToken)
+        const [paymentDecimals, targetDecimals] = await Promise.all([
+          this.tokenMetadataService.getDecimals(paymentToken),
+          this.tokenMetadataService.getDecimals(targetToken)
         ]);
         
-        const inputDecimals = tokenInputData.rawTokenAmount.decimals !== undefined ? 
-          tokenInputData.rawTokenAmount.decimals : (paymentMetadata?.decimals || this.getDefaultDecimals(paymentToken));
-        const outputDecimals = tokenOutputData.rawTokenAmount.decimals !== undefined ? 
-          tokenOutputData.rawTokenAmount.decimals : (targetMetadata?.decimals || this.getDefaultDecimals(targetToken));
+        if (paymentDecimals === null || targetDecimals === null) {
+          this.processingStats.filteringStats.unknownTokens++;
+          this.logger.warn(`[SwapFilter] ❌ Could not determine decimals. Payment: ${paymentToken} (${paymentDecimals}), Target: ${targetToken} (${targetDecimals})`);
+          return null;
+        }
         
         const inputRawAmount = parseFloat(tokenInputData.rawTokenAmount.tokenAmount || '0');
         const outputRawAmount = parseFloat(tokenOutputData.rawTokenAmount.tokenAmount || '0');
 
-        const actualInputAmount = inputRawAmount / Math.pow(10, inputDecimals);
-        tokenAmount = outputRawAmount / Math.pow(10, outputDecimals);
+        const actualInputAmount = inputRawAmount / Math.pow(10, paymentDecimals);
+        tokenAmount = outputRawAmount / Math.pow(10, targetDecimals);
         
         // 🔥 ИСПРАВЛЕНО: Правильная цена через TokenMetadataService
         const paymentTokenPrice = await this.tokenMetadataService.getTokenPrice(paymentToken);
@@ -460,29 +508,34 @@ export class WebhookServer {
           tokenPrice = amountUSD / tokenAmount;
         }
         
+        this.logger.debug(`[SwapCalc] BUY: Spent ${actualInputAmount.toFixed(2)} ${inputSymbol} ($${amountUSD.toFixed(2)}) → Got ${tokenAmount.toFixed(2)} ${outputSymbol}`);
         this.processingStats.usdCalculationStats.correctCalculations++;
         
-      } else if (!this.PAYMENT_ASSETS.has(inputMint) && this.PAYMENT_ASSETS.has(outputMint)) {
-        // 🔥 ИСПРАВЛЕНО: ПРОДАЖА НЕ-PAYMENT_ASSET → PAYMENT_ASSET
+      } else if (!inputIsPayment && outputIsPayment) {
+        // 🔥 ПРОДАЖА: АЛЬТКОИН → PAYMENT_ASSET
         swapType = 'sell';
         targetToken = inputMint;
         paymentToken = outputMint;
+        this.processingStats.filteringStats.validSells++;
+        
+        this.logger.info(`[SwapFilter] ✅ VALID SELL: ${inputSymbol} → ${outputSymbol} | TX: ${signature.slice(0,8)}...`);
 
-        const [targetMetadata, paymentMetadata] = await Promise.all([
-          this.tokenMetadataService.getTokenMetadata(targetToken),
-          this.tokenMetadataService.getTokenMetadata(paymentToken)
+        const [targetDecimals, paymentDecimals] = await Promise.all([
+          this.tokenMetadataService.getDecimals(targetToken),
+          this.tokenMetadataService.getDecimals(paymentToken)
         ]);
         
-        const inputDecimals = tokenInputData.rawTokenAmount.decimals !== undefined ? 
-          tokenInputData.rawTokenAmount.decimals : (targetMetadata?.decimals || this.getDefaultDecimals(targetToken));
-        const outputDecimals = tokenOutputData.rawTokenAmount.decimals !== undefined ? 
-          tokenOutputData.rawTokenAmount.decimals : (paymentMetadata?.decimals || this.getDefaultDecimals(paymentToken));
+        if (paymentDecimals === null || targetDecimals === null) {
+          this.processingStats.filteringStats.unknownTokens++;
+          this.logger.warn(`[SwapFilter] ❌ Could not determine decimals. Target: ${targetToken} (${targetDecimals}), Payment: ${paymentToken} (${paymentDecimals})`);
+          return null;
+        }
         
         const inputRawAmount = parseFloat(tokenInputData.rawTokenAmount.tokenAmount || '0');
         const outputRawAmount = parseFloat(tokenOutputData.rawTokenAmount.tokenAmount || '0');
 
-        tokenAmount = inputRawAmount / Math.pow(10, inputDecimals);
-        const actualOutputAmount = outputRawAmount / Math.pow(10, outputDecimals);
+        tokenAmount = inputRawAmount / Math.pow(10, targetDecimals);
+        const actualOutputAmount = outputRawAmount / Math.pow(10, paymentDecimals);
         
         const paymentTokenPrice = await this.tokenMetadataService.getTokenPrice(paymentToken);
         amountUSD = actualOutputAmount * (paymentTokenPrice || this.getFallbackPrice(paymentToken));
@@ -491,25 +544,22 @@ export class WebhookServer {
           tokenPrice = amountUSD / tokenAmount;
         }
         
+        this.logger.debug(`[SwapCalc] SELL: Sold ${tokenAmount.toFixed(2)} ${inputSymbol} → Got ${actualOutputAmount.toFixed(2)} ${outputSymbol} ($${amountUSD.toFixed(2)})`);
         this.processingStats.usdCalculationStats.correctCalculations++;
-          
-      } else {
-        // 🚫 ИГНОРИРУЕМ PAYMENT_ASSET → PAYMENT_ASSET и НЕ-PAYMENT_ASSET → НЕ-PAYMENT_ASSET
-        this.processingStats.ignoredMajorSwaps++;
-        this.logger.debug(`[extractSwapInfo] ⏭️ Ignoring swap: ${inputMint.slice(0,6)} → ${outputMint.slice(0,6)} for TX ${txData.signature} (Not payment-to-alt or alt-to-payment)`);
-        return null;
       }
 
+      // Проверяем минимальный порог для категории
       const minAmountCategory = smartWallet.category === 'sniper' ? 5000 : 
                                smartWallet.category === 'hunter' ? 20000 : 50000;                       
       if (amountUSD < minAmountCategory) {
-        this.logger.debug(`[extractSwapInfo] 💸 Amount $${amountUSD.toFixed(2)} below category threshold $${minAmountCategory} for ${smartWallet.category}`);
+        this.processingStats.filteringStats.belowThreshold++;
+        this.logger.debug(`[SwapFilter] 💸 Amount $${amountUSD.toFixed(2)} below category threshold $${minAmountCategory} for ${smartWallet.category} | TX: ${signature.slice(0,8)}...`);
         return null;
       }
 
       const tokenInfo = await this.getTokenInfo(targetToken);
       
-      return {
+      const result: SmartMoneySwap = {
         transactionId: txData.signature,
         walletAddress: smartWallet.address,
         tokenAddress: targetToken,
@@ -526,9 +576,13 @@ export class WebhookServer {
         totalTrades: smartWallet.totalTrades,
         paymentToken: await this.getTokenSymbolWithFallback(paymentToken),
         isCexListed: this.CEX_TOKENS.has(targetToken),
-        isFamilyMember: false,
-        familySize: 0
+        isFamilyMember: false as const,
+        familySize: 0,
+        familyId: undefined
       };
+
+      this.logger.info(`[SwapFinal] ✅ VALID ${swapType.toUpperCase()}: ${result.tokenSymbol} - $${result.amountUSD.toFixed(0)} | Wallet: ${smartWallet.address.slice(0,8)}... | TX: ${signature.slice(0,8)}...`);
+      return result;
 
     } catch (error) {
       this.logger.error(`[extractSwapInfo] Error for TX ${txData.signature}:`, error);
@@ -807,6 +861,42 @@ export class WebhookServer {
     }, 5 * 60 * 1000);
   }
 
+  // 🔥 НОВЫЙ МЕТОД: Получение детальной статистики фильтрации
+  getDetailedFilteringStats(): {
+    totalSwapsAnalyzed: number;
+    paymentToPaymentIgnored: number;
+    altToAltIgnored: number;
+    validBuys: number;
+    validSells: number;
+    belowThresholdIgnored: number;
+    unknownTokensIgnored: number;
+    sameTokenIgnored: number;
+    successRate: string;
+  } {
+    const total = this.processingStats.filteringStats.paymentToPayment + 
+                  this.processingStats.filteringStats.altToAlt +
+                  this.processingStats.filteringStats.validBuys + 
+                  this.processingStats.filteringStats.validSells +
+                  this.processingStats.filteringStats.belowThreshold +
+                  this.processingStats.filteringStats.unknownTokens +
+                  this.processingStats.ignoredSameTokenSwaps;
+
+    const successful = this.processingStats.filteringStats.validBuys + this.processingStats.filteringStats.validSells;
+    const successRate = total > 0 ? ((successful / total) * 100).toFixed(2) + '%' : '0%';
+
+    return {
+      totalSwapsAnalyzed: total,
+      paymentToPaymentIgnored: this.processingStats.filteringStats.paymentToPayment,
+      altToAltIgnored: this.processingStats.filteringStats.altToAlt,
+      validBuys: this.processingStats.filteringStats.validBuys,
+      validSells: this.processingStats.filteringStats.validSells,
+      belowThresholdIgnored: this.processingStats.filteringStats.belowThreshold,
+      unknownTokensIgnored: this.processingStats.filteringStats.unknownTokens,
+      sameTokenIgnored: this.processingStats.ignoredSameTokenSwaps,
+      successRate
+    };
+  }
+
   getProcessingStats(): ProcessingStats {
     return { ...this.processingStats };
   }
@@ -815,7 +905,7 @@ export class WebhookServer {
     return new Promise((resolve, reject) => {
       try {
         this.server = this.app.listen(this.port, () => {
-          this.logger.info(`🚀 Webhook server started on port ${this.port} with PAYMENT_ASSETS logic`);
+          this.logger.info(`🚀 Webhook server started on port ${this.port} with ENHANCED PAYMENT_ASSETS filtering and detailed logging`);
           resolve();
         });
 

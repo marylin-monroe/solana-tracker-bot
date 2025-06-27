@@ -1,4 +1,4 @@
-// src/services/QuickNodeWebhookManager.ts - 🔥 МАКСИМАЛЬНОЕ СНИЖЕНИЕ API НАГРУЗКИ
+// src/services/QuickNodeWebhookManager.ts - 🔥 МАКСИМАЛЬНО СТАБИЛЬНАЯ ВЕРСИЯ С TRY/CATCH
 import { Logger } from '../utils/Logger';
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
 import { TelegramNotifier } from './TelegramNotifier';
@@ -81,6 +81,15 @@ export class QuickNodeWebhookManager {
   private lastCleanupTime = Date.now();
   private botStartTime = Date.now();
   
+  // 🔥 НОВАЯ СТАТИСТИКА ОШИБОК
+  private errorStats = {
+    walletProcessingErrors: 0,
+    transactionProcessingErrors: 0,
+    apiErrors: 0,
+    lastErrorTime: new Date(),
+    recoveredFromErrors: 0
+  };
+  
   // Кеши
   private tokenInfoCache = new Map<string, { symbol: string; name: string; decimals: number; timestamp: number; price?: number; }>();
   private priceCache = new Map<string, { priceUSD: number; timestamp: number; }>();
@@ -98,7 +107,7 @@ export class QuickNodeWebhookManager {
     this.initializeProviders();
     this.startLimitResetTimer();
     this.startCacheCleanup();
-    this.logger.info(`🔥 QuickNodeWebhookManager: МАКСИМАЛЬНОЕ СНИЖЕНИЕ API НАГРУЗКИ - ${this.POLLING_INTERVAL/60000}min intervals, ${this.SIGNATURES_LIMIT} sigs, ${this.DELAY_BETWEEN_WALLETS}ms delays`);
+    this.logger.info(`🔥 QuickNodeWebhookManager STABILIZED: ${this.POLLING_INTERVAL/60000}min intervals, max error recovery, safe processing`);
   }
 
   private initializeProviders(): void {
@@ -126,7 +135,7 @@ export class QuickNodeWebhookManager {
     }
 
     this.providers = providers.sort((a, b) => b.priority - a.priority);
-    this.logger.info(`🚀 Initialized ${this.providers.length} RPC providers`);
+    this.logger.info(`🚀 Initialized ${this.providers.length} RPC providers with error recovery`);
   }
 
   setDependencies(smDatabase: SmartMoneyDatabase, telegramNotifier: TelegramNotifier): void {
@@ -191,7 +200,7 @@ export class QuickNodeWebhookManager {
     provider.lastError = error;
     provider.lastErrorTime = Date.now();
     
-    this.logger.warn(`💔 Provider ${provider.name} marked as unhealthy`);
+    this.logger.warn(`💔 Provider ${provider.name} marked as unhealthy: ${error}`);
     setTimeout(() => {
       provider.isHealthy = true;
       this.logger.info(`✅ Provider ${provider.name} restored to healthy status`);
@@ -222,6 +231,8 @@ export class QuickNodeWebhookManager {
       return data;
 
     } catch (error) {
+      this.errorStats.apiErrors++;
+      this.errorStats.lastErrorTime = new Date();
       this.markProviderUnhealthy(provider, error instanceof Error ? error.message : 'Unknown error');
       throw error;
     }
@@ -273,7 +284,7 @@ export class QuickNodeWebhookManager {
     const currentProvider = this.getCurrentProvider();
     const healthyProviders = this.providers.filter(p => p.isHealthy).length;
     
-    this.logger.info(`📊 API Usage: ${minuteUsage}% minute, ${dayUsage}% daily | Provider: ${currentProvider?.name || 'None'} | Healthy: ${healthyProviders}/${this.providers.length}`);
+    this.logger.info(`📊 API: ${minuteUsage}%/min, ${dayUsage}%/day | Provider: ${currentProvider?.name || 'None'} | Healthy: ${healthyProviders}/${this.providers.length} | Errors: ${this.errorStats.walletProcessingErrors} wallet, ${this.errorStats.apiErrors} API`);
   }
 
   async createSmartMoneyWebhook(webhookUrl: string): Promise<string> {
@@ -373,7 +384,7 @@ export class QuickNodeWebhookManager {
 
   async startPollingMode(smartWallets: SmartMoneyWallet[]): Promise<string> {
     try {
-      this.logger.info('🚀 Starting ULTRA-SLOW POLLING mode for Smart Money monitoring...');
+      this.logger.info('🚀 Starting ULTRA-SAFE POLLING mode for Smart Money monitoring...');
       
       this.monitoredWallets = smartWallets;
       this.isPollingActive = true;
@@ -382,7 +393,7 @@ export class QuickNodeWebhookManager {
       
       await this.pollWalletsForTransactions();
       
-      this.logger.info(`✅ Ultra-slow polling started for ${smartWallets.length} wallets (${this.POLLING_INTERVAL/60000}min interval, max ${this.CONCURRENT_WALLET_PROCESSING} concurrent, ${this.SIGNATURES_LIMIT} sigs each)`);
+      this.logger.info(`✅ Ultra-safe polling started for ${smartWallets.length} wallets (${this.POLLING_INTERVAL/60000}min interval, max ${this.CONCURRENT_WALLET_PROCESSING} concurrent, ${this.SIGNATURES_LIMIT} sigs each)`);
       return 'polling-mode';
       
     } catch (error) {
@@ -400,25 +411,39 @@ export class QuickNodeWebhookManager {
     this.logger.info('⏹️ Polling mode stopped');
   }
 
-  // 🔥 ПОСЛЕДОВАТЕЛЬНАЯ ОБРАБОТКА БЕЗ ПАРАЛЛЕЛИЗМА - МАКСИМАЛЬНАЯ БЕЗОПАСНОСТЬ API
+  // 🔥 МАКСИМАЛЬНО БЕЗОПАСНАЯ ОБРАБОТКА С TRY/CATCH НА КАЖДОМ УРОВНЕ
   private async pollWalletsForTransactions(): Promise<void> {
     if (!this.isPollingActive) return;
 
-    this.logger.info(`🔍 Starting ultra-slow polling of ${this.monitoredWallets.length} SM wallets. Concurrency: ${this.CONCURRENT_WALLET_PROCESSING}, Delays: ${this.DELAY_BETWEEN_WALLETS}ms`);
+    this.logger.info(`🔍 Starting ultra-safe polling of ${this.monitoredWallets.length} SM wallets. Concurrency: ${this.CONCURRENT_WALLET_PROCESSING}, Delays: ${this.DELAY_BETWEEN_WALLETS}ms`);
     
     const activeWallets = this.monitoredWallets;
+    let totalProcessed = 0;
+    let totalErrors = 0;
 
-    // 🔥 ОБРАБОТКА ПО ПОД-БАТЧАМ С ОГРАНИЧЕННОЙ ПАРАЛЛЕЛИЗАЦИЕЙ
+    // 🔥 ОБРАБОТКА ПО ПОД-БАТЧАМ С МАКСИМАЛЬНОЙ ЗАЩИТОЙ ОТ ОШИБОК
     for (let i = 0; i < activeWallets.length; i += this.CONCURRENT_WALLET_PROCESSING) {
       if (!this.isPollingActive) break;
 
       const walletSubBatch = activeWallets.slice(i, i + this.CONCURRENT_WALLET_PROCESSING);
       this.logger.debug(`[Polling] Processing wallet sub-batch ${Math.floor(i/this.CONCURRENT_WALLET_PROCESSING) + 1}: [${walletSubBatch.map(w => w.address.slice(0,6)).join(', ')}]`);
 
-      // 🔥 ТОЛЬКО 3 КОШЕЛЬКА ОДНОВРЕМЕННО (вместо 20)
-      const batchPromises = walletSubBatch.map(wallet => this.processWalletBatch(wallet));
+      // 🔥 КАЖДЫЙ КОШЕЛЕК В ОТДЕЛЬНОМ TRY/CATCH
+      const batchPromises = walletSubBatch.map(wallet => this.processWalletBatchSafely(wallet));
       
-      await Promise.allSettled(batchPromises); // Дожидаемся завершения под-батча
+      const results = await Promise.allSettled(batchPromises);
+      
+      // Подсчитываем результаты
+      for (const result of results) {
+        if (result.status === 'fulfilled') {
+          totalProcessed++;
+          if (result.value === 'error') totalErrors++;
+        } else {
+          totalErrors++;
+          this.errorStats.walletProcessingErrors++;
+          this.logger.error(`[Polling] CRITICAL: Wallet batch promise rejected: ${result.reason}`);
+        }
+      }
 
       // 🔥 УВЕЛИЧЕННАЯ ПАУЗА МЕЖДУ ПОД-БАТЧАМИ
       if (i + this.CONCURRENT_WALLET_PROCESSING < activeWallets.length) {
@@ -427,38 +452,119 @@ export class QuickNodeWebhookManager {
       }
     }
     
-    this.logger.info(`[Polling] Ultra-slow cycle finished for ${activeWallets.length} wallets.`);
+    this.logger.info(`[Polling] Ultra-safe cycle finished: ${totalProcessed} processed, ${totalErrors} errors, ${activeWallets.length} total wallets.`);
     this.logApiUsageWithProviderStats();
   }
 
-  private async processWalletBatch(wallet: SmartMoneyWallet): Promise<void> {
+  // 🔥 НОВЫЙ БЕЗОПАСНЫЙ МЕТОД ОБРАБОТКИ КОШЕЛЬКА
+  private async processWalletBatchSafely(wallet: SmartMoneyWallet): Promise<'success' | 'error'> {
     try {
       if (!this.canMakeRequest()) {
-        this.logger.warn('⚠️ API limit reached, pausing wallet processing...');
+        this.logger.warn(`⚠️ API limit reached, skipping wallet ${wallet.address.slice(0, 8)}...`);
         await this.sleep(30000);
-        return;
+        return 'error';
       }
       
       const lastSignature = this.lastProcessedSignatures.get(wallet.address);
-      const signatures = await this.getWalletSignatures(wallet.address, lastSignature);
+      
+      // 🔥 БЕЗОПАСНОЕ ПОЛУЧЕНИЕ ПОДПИСЕЙ
+      let signatures: Array<{signature: string; blockTime: number}> = [];
+      try {
+        signatures = await this.getWalletSignatures(wallet.address, lastSignature);
+      } catch (error) {
+        this.logger.error(`[Wallet] Error getting signatures for ${wallet.address.slice(0, 8)}: ${error}`);
+        return 'error';
+      }
       
       if (signatures.length > 0) {
-        this.logger.info(`🔍 Processing ${signatures.length}/${this.SIGNATURES_LIMIT} recent transactions for ${wallet.address.slice(0, 8)}...`);
+        this.logger.debug(`🔍 Processing ${signatures.length}/${this.SIGNATURES_LIMIT} recent transactions for ${wallet.address.slice(0, 8)}...`);
         
         this.lastProcessedSignatures.set(wallet.address, signatures[0].signature);
         
+        // 🔥 БЕЗОПАСНАЯ ОБРАБОТКА КАЖДОЙ ТРАНЗАКЦИИ
+        let transactionErrors = 0;
         for (const sig of signatures) {
-          await this.processWalletTransaction(sig.signature, wallet);
-          // 🔥 УВЕЛИЧЕННАЯ ПАУЗА МЕЖДУ ТРАНЗАКЦИЯМИ
-          await this.sleep(this.DELAY_BETWEEN_TRANSACTIONS);
+          try {
+            await this.processWalletTransactionSafely(sig.signature, wallet);
+            await this.sleep(this.DELAY_BETWEEN_TRANSACTIONS);
+          } catch (error) {
+            transactionErrors++;
+            this.errorStats.transactionProcessingErrors++;
+            this.logger.error(`[Transaction] Error processing ${sig.signature.slice(0, 12)} for ${wallet.address.slice(0, 8)}: ${error}`);
+            // Продолжаем обработку следующей транзакции
+          }
+        }
+        
+        if (transactionErrors > 0) {
+          this.logger.warn(`[Wallet] ${wallet.address.slice(0, 8)}: ${transactionErrors}/${signatures.length} transactions failed`);
         }
       }
       
       await this.sleep(500);
+      return 'success';
       
     } catch (error) {
-      this.logger.error(`Error processing wallet batch ${wallet.address}:`, error);
+      this.errorStats.walletProcessingErrors++;
+      this.errorStats.lastErrorTime = new Date();
+      this.logger.error(`[Wallet] CRITICAL ERROR processing wallet ${wallet.address.slice(0, 8)}: ${error}`);
       await this.sleep(1000);
+      return 'error';
+    }
+  }
+
+  // 🔥 НОВЫЙ БЕЗОПАСНЫЙ МЕТОД ОБРАБОТКИ ТРАНЗАКЦИИ
+  private async processWalletTransactionSafely(signature: string, wallet: SmartMoneyWallet): Promise<void> {
+    try {
+      if (this.recentSignatures.has(signature)) return;
+      this.recentSignatures.add(signature);
+
+      if (!this.canMakeRequest()) return;
+
+      this.trackApiRequest();
+      
+      // 🔥 БЕЗОПАСНОЕ ПОЛУЧЕНИЕ ДЕТАЛЕЙ ТРАНЗАКЦИИ
+      let transaction: any = null;
+      try {
+        transaction = await this.getTransactionDetails(signature);
+      } catch (error) {
+        this.logger.error(`[Transaction] Error getting details for ${signature.slice(0, 12)}: ${error}`);
+        return;
+      }
+      
+      if (!transaction) return;
+
+      if (!this.isTransactionRecentAndValid(transaction)) {
+        const transactionAge = this.getTransactionAge(transaction);
+        this.logger.debug(`⏰ Skipping old/invalid transaction: ${signature.slice(0, 12)}... (age: ${transactionAge})`);
+        return;
+      }
+
+      // 🔥 БЕЗОПАСНОЕ ИЗВЛЕЧЕНИЕ СВАПОВ
+      let swaps: SmartMoneySwap[] = [];
+      try {
+        swaps = await this.extractSwapsFromTransaction(transaction, wallet);
+      } catch (error) {
+        this.logger.error(`[Swap] Error extracting swaps from ${signature.slice(0, 12)}: ${error}`);
+        return;
+      }
+      
+      // 🔥 БЕЗОПАСНАЯ ОБРАБОТКА КАЖДОГО СВАПА
+      for (const swap of swaps) {
+        try {
+          if (this.shouldProcessSmartMoneySwapOptimized(swap, wallet)) {
+            await this.saveAndNotifySwap(swap);
+            this.logger.info(`🔥 SM swap: ${swap.tokenSymbol} - $${swap.amountUSD.toFixed(0)} (${this.getTransactionAge(transaction)}) ${swap.actualTokenAmount ? `| ACTUAL: ${swap.actualTokenAmount.toLocaleString()}` : ''}`);
+          }
+        } catch (error) {
+          this.logger.error(`[Swap] Error processing swap ${swap.tokenSymbol}: ${error}`);
+          // Продолжаем обработку следующего свапа
+        }
+      }
+
+    } catch (error) {
+      this.errorStats.transactionProcessingErrors++;
+      this.logger.error(`[Transaction] CRITICAL ERROR processing transaction ${signature.slice(0, 12)}: ${error}`);
+      throw error; // Пробрасываем ошибку наверх для учета статистики
     }
   }
 
@@ -490,37 +596,6 @@ export class QuickNodeWebhookManager {
     } catch (error) {
       this.logger.error(`Error getting transaction details for ${signature}:`, error);
       return null;
-    }
-  }
-
-  private async processWalletTransaction(signature: string, wallet: SmartMoneyWallet): Promise<void> {
-    try {
-      if (this.recentSignatures.has(signature)) return;
-      this.recentSignatures.add(signature);
-
-      if (!this.canMakeRequest()) return;
-
-      this.trackApiRequest();
-      const transaction = await this.getTransactionDetails(signature);
-      if (!transaction) return;
-
-      if (!this.isTransactionRecentAndValid(transaction)) {
-        const transactionAge = this.getTransactionAge(transaction);
-        this.logger.debug(`⏰ Skipping old/invalid transaction: ${signature.slice(0, 12)}... (age: ${transactionAge})`);
-        return;
-      }
-
-      const swaps = await this.extractSwapsFromTransaction(transaction, wallet);
-      
-      for (const swap of swaps) {
-        if (this.shouldProcessSmartMoneySwapOptimized(swap, wallet)) {
-          await this.saveAndNotifySwap(swap);
-          this.logger.info(`🔥 SM swap: ${swap.tokenSymbol} - $${swap.amountUSD.toFixed(0)} (${this.getTransactionAge(transaction)}) ${swap.actualTokenAmount ? `| ACTUAL: ${swap.actualTokenAmount.toLocaleString()}` : ''}`);
-        }
-      }
-
-    } catch (error) {
-      this.logger.error(`Error processing transaction ${signature}:`, error);
     }
   }
 
@@ -606,7 +681,7 @@ export class QuickNodeWebhookManager {
         
         const estimatedUSD = await this.estimateTokenValueUSDCached(tokenMint, tokenAmount, decimals);
 
-        this.logger.info(`🔍 ${swapType.toUpperCase()} | ${tokenInfo.symbol} | RAW: ${Math.abs(rawDifference).toLocaleString()} | ACTUAL: ${tokenAmount.toLocaleString()} | USD: ${estimatedUSD.toLocaleString()}`);
+        this.logger.debug(`🔍 ${swapType.toUpperCase()} | ${tokenInfo.symbol} | RAW: ${Math.abs(rawDifference).toLocaleString()} | ACTUAL: ${tokenAmount.toLocaleString()} | USD: ${estimatedUSD.toLocaleString()}`);
 
         if (estimatedUSD > 5000) {
           swaps.push({
@@ -748,6 +823,7 @@ export class QuickNodeWebhookManager {
       });
 
       await this.telegramNotifier.sendSmartMoneySwapAlert(swap, 'QuickNodeWebhookManager');
+      this.errorStats.recoveredFromErrors++; // Успешная обработка считается восстановлением
 
     } catch (error) {
       this.logger.error('Error saving and notifying swap:', error);
@@ -801,6 +877,29 @@ export class QuickNodeWebhookManager {
     };
   }
 
+  // 🔥 НОВАЯ СТАТИСТИКА ОШИБОК
+  getErrorStats(): {
+    walletProcessingErrors: number;
+    transactionProcessingErrors: number;
+    apiErrors: number;
+    lastErrorTime: string;
+    recoveredFromErrors: number;
+    errorRate: string;
+  } {
+    const totalAttempts = this.errorStats.walletProcessingErrors + this.errorStats.transactionProcessingErrors + this.errorStats.recoveredFromErrors;
+    const errorRate = totalAttempts > 0 ? 
+      (((this.errorStats.walletProcessingErrors + this.errorStats.transactionProcessingErrors) / totalAttempts) * 100).toFixed(2) + '%' : '0%';
+    
+    return {
+      walletProcessingErrors: this.errorStats.walletProcessingErrors,
+      transactionProcessingErrors: this.errorStats.transactionProcessingErrors,
+      apiErrors: this.errorStats.apiErrors,
+      lastErrorTime: this.errorStats.lastErrorTime.toISOString(),
+      recoveredFromErrors: this.errorStats.recoveredFromErrors,
+      errorRate
+    };
+  }
+
   getPollingStats(): {
     isActive: boolean;
     walletsMonitored: number;
@@ -811,8 +910,9 @@ export class QuickNodeWebhookManager {
     maxWalletsPerBatch: number;
     signaturesLimit: number;
     concurrentWalletProcessing: number;
-    delayBetweenWallets: number; // 🆕
-    delayBetweenTransactions: number; // 🆕
+    delayBetweenWallets: number;
+    delayBetweenTransactions: number;
+    errorStats: any; // 🔥 НОВАЯ СТАТИСТИКА
   } {
     return {
       isActive: this.isPollingActive,
@@ -820,12 +920,13 @@ export class QuickNodeWebhookManager {
       lastProcessedSignatures: this.lastProcessedSignatures.size,
       recentSignatures: this.recentSignatures.size,
       botStartTime: new Date(this.botStartTime).toISOString(),
-      pollingInterval: `${this.POLLING_INTERVAL/60000}min`, // показываем в минутах
+      pollingInterval: `${this.POLLING_INTERVAL/60000}min`,
       maxWalletsPerBatch: this.MAX_WALLETS_PER_BATCH,
       signaturesLimit: this.SIGNATURES_LIMIT,
       concurrentWalletProcessing: this.CONCURRENT_WALLET_PROCESSING,
-      delayBetweenWallets: this.DELAY_BETWEEN_WALLETS, // 🆕 НОВАЯ МЕТРИКА
-      delayBetweenTransactions: this.DELAY_BETWEEN_TRANSACTIONS // 🆕 НОВАЯ МЕТРИКА
+      delayBetweenWallets: this.DELAY_BETWEEN_WALLETS,
+      delayBetweenTransactions: this.DELAY_BETWEEN_TRANSACTIONS,
+      errorStats: this.getErrorStats() // 🔥 ВКЛЮЧАЕМ СТАТИСТИКУ ОШИБОК
     };
   }
 }
