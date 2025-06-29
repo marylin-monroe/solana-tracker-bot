@@ -1,9 +1,10 @@
-// src/services/DragonResultsParser.ts - ✅ ОТЛАДОЧНАЯ ВЕРСИЯ ДЛЯ ПОИСКА ПРОБЛЕМЫ
+// src/services/DragonResultsParser.ts - 🔥 CLEAN SLATE: ТОЛЬКО CSV поля, убираем legacy
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
 import { TelegramNotifier } from './TelegramNotifier';
 import { MultiProviderService } from './MultiProviderService';
 import { Logger } from '../utils/Logger';
 import { SmartMoneyWallet } from '../types';
+import * as Papa from 'papaparse';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -12,33 +13,35 @@ import { promisify } from 'util';
 
 const execAsync = promisify(exec);
 
+// 🔥 ЧИСТЫЙ ИНТЕРФЕЙС ДЛЯ CSV BULK WALLET CHECKER
 interface DragonWallet {
-  wallet: string; 
-  pnl: number; 
-  winrate: number; 
-  trades: number; 
-  volume: number;
-  last_active?: number; 
-  sol_balance: number; 
-  score?: number; 
-  profitFactor?: number;
-  tier?: 'whale' | 'genius' | 'quality' | 'filter_out';
-  // 🔥 НОВЫЕ ПОЛЯ ДЛЯ СТРОГОЙ ФИЛЬТРАЦИИ
-  unrealizedProfit?: number; // Нереализованная прибыль
-  multiplier?: number;       // Множитель капитала
+  // ТОЛЬКО поля из CSV
+  identifier: string;            // -> address
+  totalProfitPercent: number;
+  averageHoldingMins: number;
+  usdProfit7d: number;           // 🔥 КЛЮЧЕВОЕ ПОЛЕ
+  usdProfit30d: number;
+  winrate7d: number;             // 🔥 КЛЮЧЕВОЕ ПОЛЕ
+  solBalance: number;
+  buy7d: number;                 // 🔥 КЛЮЧЕВОЕ ПОЛЕ - недавняя активность
+  tags: string[];
+  
+  // Поля, которые мы вычисляем сами
+  category?: 'sniper' | 'hunter' | 'trader';
+  score?: number;
 }
 
 interface DragonConfig {
   dragonOutputPath: string; 
-  minPnl: number; 
-  minWinrate: number; 
-  minTrades: number;
+  // 🔥 НОВЫЕ КРИТЕРИИ "ВХОДНОГО БИЛЕТА"
+  minProfit7d: number;           // Минимальная прибыль за 7 дней
+  minWinrate7d: number;          // Минимальный винрейт за 7 дней
+  minSolBalance: number;         // Минимальный баланс SOL
+  minTotalProfitPercent: number; // Минимальный общий процент прибыли
+  minActivity7d: number;         // Минимальная активность за 7 дней (покупки)
   maxDaysInactive: number;
-  // 🔥 ДОБАВЛЯЕМ НОВЫЕ НАСТРАИВАЕМЫЕ ПОЛЯ
-  minUnrealizedProfit: number;  // Минимальная нереализованная прибыль
-  minMultiplier: number;        // Минимальный множитель
   whaleThresholds: { megaWhale: number; whale: number; bigPlayer: number; quality: number; };
-  scoreWeights: { pnl: number; winrate: number; volume: number; trades: number; activity: number; };
+  scoreWeights: { profit7d: number; winrate: number; activity: number; balance: number; };
 }
 
 interface DragonParseResult {
@@ -76,36 +79,33 @@ export class DragonResultsParser {
     this.multiProvider = multiProvider;
     this.logger = Logger.getInstance();
     
-    // 🔥 НАСТРАИВАЕМЫЕ КРИТЕРИИ С ДЕФОЛТАМИ
+    // 🔥 НОВЫЕ КРИТЕРИИ "MONEY-FIRST" - ФОКУС НА ПРИБЫЛЬ И РОСТ КАПИТАЛА
     this.config = {
       dragonOutputPath: this.resolveDragonPath(config?.dragonOutputPath),
-      minPnl: config?.minPnl || 150000,                    // ✅ 150K (было 50K)
-      minWinrate: config?.minWinrate || 35,                // ✅ 35% (было 58%)
-      minTrades: config?.minTrades || 25,                 // ✅ 100 (настраиваемо)
-      maxDaysInactive: config?.maxDaysInactive || 14,      // ✅ 14 дней (было 7)
-      // 🔥 НОВЫЕ НАСТРАИВАЕМЫЕ ПОЛЯ
-      minUnrealizedProfit: config?.minUnrealizedProfit || 30000,  // ✅ 30K (настраиваемо)
-      minMultiplier: config?.minMultiplier || 3,                  // ✅ 3x (настраиваемо)
+      minProfit7d: config?.minProfit7d || 8000,                     // $8K базовый порог (снижен)
+      minWinrate7d: config?.minWinrate7d || 25,                     // 25% мягкий порог (игнорируется в основной логике)
+      minSolBalance: config?.minSolBalance || 20,                   // 20 SOL базовый порог  
+      minTotalProfitPercent: config?.minTotalProfitPercent || 8,    // 8% базовый рост капитала
+      minActivity7d: config?.minActivity7d || 1,                    // минимум 1 покупка за 7 дней
+      maxDaysInactive: config?.maxDaysInactive || 14,
       whaleThresholds: { 
-        megaWhale: 1_000_000, 
-        whale: 500_000, 
-        bigPlayer: 200_000, 
-        quality: 100_000, 
+        megaWhale: 100_000, 
+        whale: 50_000, 
+        bigPlayer: 30_000,    // Снижен с 20K до 30K
+        quality: 10_000, 
         ...config?.whaleThresholds 
       },
       scoreWeights: { 
-        pnl: 0.5, 
-        winrate: 0.2, 
-        volume: 0.15, 
-        trades: 0.1, 
-        activity: 0.05, 
+        profit7d: 0.3,        // Снижен приоритет прибыли
+        winrate: 0.1,         // Минимальный вес винрейта  
+        activity: 0.2, 
+        balance: 0.4,         // Увеличен приоритет баланса
         ...config?.scoreWeights 
       }
     };
 
-    this.logger.info(`🐲 Dragon Parser initialized with DEBUG MODE + CONFIGURABLE CRITERIA`);
-    this.logger.info(`💰 THRESHOLDS: PnL≥${this.config.minPnl/1000}K, WR≥${this.config.minWinrate}%, Trades≥${this.config.minTrades}, Multiplier≥${this.config.minMultiplier}x, Unrealized≥${this.config.minUnrealizedProfit/1000}K, Active≤${this.config.maxDaysInactive}d`);
-    this.logger.info(`🔍 PRE-FILTERING: Elite wallets (whale/genius/500K+) checked for activity before DB insertion`);
+    this.logger.info(`🐲 Dragon Parser MONEY-FIRST MODE initialized`);
+    this.logger.info(`💰 NEW LOGIC: Focus on totalProfitPercent + profit stability + balance. Winrate mostly ignored!`);
   }
 
   private resolveDragonPath(customPath?: string): string {
@@ -116,15 +116,19 @@ export class DragonResultsParser {
     }
 
     const possiblePaths = [
-      '/opt/render/project/src/data/dragon-output', '/app/data/dragon/output',
-      './data/dragon-output', './dragon-git/dragon-files',
+      '/opt/render/project/src/data/dragon-output', 
+      '/app/data/dragon/output',
+      './data/dragon-output', 
+      './dragon-git/dragon-files',
+      // 🔥 ОБНОВЛЕН ПУТЬ НА BULK WALLET CHECKER
       'C:\\Users\\ibm\\OneDrive\\Документы\\dragon-git\\dragon-files',
-      'C:\\Users\\ibm\\OneDrive\\Документы\\Dragon-main\\Dragon\\data\\Solana\\TopTraders\\',
-      './Dragon/data/Solana/TopTraders', 'C:\\Dragon\\data\\Solana\\TopTraders\\',
-      'D:\\Dragon\\data\\Solana\\TopTraders\\',
+      'C:\\Users\\ibm\\OneDrive\\Документы\\Dragon-main\\Dragon\\data\\Solana\\BulkWallet\\',
+      './Dragon/data/Solana/BulkWallet', 
+      'C:\\Dragon\\data\\Solana\\BulkWallet\\',
+      'D:\\Dragon\\data\\Solana\\BulkWallet\\',
       path.join(os.homedir(), 'dragon-git/dragon-files'),
-      path.join(os.homedir(), 'Dragon/data/Solana/TopTraders'),
-      '/opt/dragon/data/Solana/TopTraders'
+      path.join(os.homedir(), 'Dragon/data/Solana/BulkWallet'),
+      '/opt/dragon/data/Solana/BulkWallet'
     ];
 
     for (const testPath of possiblePaths) {
@@ -203,23 +207,83 @@ export class DragonResultsParser {
     }
   }
 
+  // 🔥 УЛУЧШЕННЫЙ parseUsdString для обработки "$75,545.71"
+  private parseUsdString(usdString: string): number {
+    if (!usdString || typeof usdString !== 'string') return 0;
+    
+    // Убираем $, кавычки, пробелы, но СОХРАНЯЕМ запятые как разделители тысяч
+    const cleaned = usdString
+      .replace(/[$"'\s]/g, '') // Убираем $, кавычки, пробелы
+      .replace(/,/g, ''); // Убираем запятые (разделители тысяч)
+    
+    const parsed = parseFloat(cleaned);
+    return isNaN(parsed) ? 0 : parsed;
+  }
+
+  private parsePercentageString(percentString: string): number {
+    if (!percentString || typeof percentString !== 'string') return 0;
+    // Удаляет % и превращает в число
+    const cleaned = percentString.replace(/[%]/g, '');
+    const number = parseFloat(cleaned);
+    return isNaN(number) ? 0 : number;
+  }
+
+  private parseHoldingTimeString(holdingString: string): number {
+    if (!holdingString || typeof holdingString !== 'string') return 0;
+    // Удаляет 'h' и умножает на 60, чтобы получить минуты
+    const cleaned = holdingString.replace(/[h]/g, '');
+    const hours = parseFloat(cleaned);
+    return isNaN(hours) ? 0 : hours * 60;
+  }
+
+  // 🔥 УЛУЧШЕННЫЙ parseWinrateString для обработки "?" 
+  private parseWinrateString(winrateString: string): number {
+    if (!winrateString || typeof winrateString !== 'string') return 0;
+    
+    // Обрабатываем случай с "?" (мало данных для расчета винрейта)
+    if (winrateString.trim() === '?' || winrateString.trim() === '') return 0;
+    
+    // Удаляет % и превращает в число
+    const cleaned = winrateString.replace(/[%]/g, '');
+    const number = parseFloat(cleaned);
+    return isNaN(number) ? 0 : number;
+  }
+
+  // 🔥 УЛУЧШЕННЫЙ parseTagsString для всех форматов
+  private parseTagsString(tagsString: string): string[] {
+    if (!tagsString || tagsString.trim() === '' || tagsString === '[]') {
+      return [];
+    }
+    
+    try {
+      // Обрабатываем разные форматы: ['photon'], "fresh_wallet", [axiom]
+      let cleaned = tagsString.replace(/[\[\]'"]/g, '').trim();
+      if (!cleaned) return [];
+      
+      return cleaned.split(',').map(tag => tag.trim()).filter(tag => tag.length > 0);
+    } catch (error) {
+      this.logger.warn(`⚠️ Error parsing tags: ${tagsString}`, error);
+      return [];
+    }
+  }
+
   async parseLatestDragonResults(forceReplace: boolean = false): Promise<DragonParseResult> {
     try {
-      this.logger.info(`🐲 Starting Dragon parsing (Replace Mode: ${forceReplace}) with DEBUG MODE...`);
+      this.logger.info(`🐲 Starting Dragon CSV parsing (Replace Mode: ${forceReplace})...`);
 
       await this.syncFromGit();
 
       const files = await this.findLatestDragonFiles();
       if (files.length === 0) {
-        this.logger.warn('⚠️ No Dragon files found after Git sync');
+        this.logger.warn('⚠️ No Dragon CSV files found after Git sync');
         return this.createEmptyResult(forceReplace);
       }
 
-      this.logger.info(`📄 Found ${files.length} Dragon files to process`);
+      this.logger.info(`📄 Found ${files.length} Dragon CSV files to process`);
 
       const allWallets: DragonWallet[] = [];
       for (const filePath of files) {
-        const wallets = await this.parseDragonJsonFileOptimized(filePath);
+        const wallets = await this.parseDragonCsvFile(filePath);
         if (wallets.length > 0) {
           allWallets.push(...wallets);
           
@@ -234,74 +298,88 @@ export class DragonResultsParser {
       this.logger.info(`🔄 After deduplication: ${uniqueWallets.length} unique wallets`);
 
       const filteredWallets = this.applyProfitFirstFiltering(uniqueWallets);
-      this.logger.info(`💰 After STRICT filtering: ${filteredWallets.length} high-quality wallets (${((filteredWallets.length / uniqueWallets.length) * 100).toFixed(1)}% selected)`);
+      this.logger.info(`💰 After GATEKEEPING filtering: ${filteredWallets.length} qualified wallets (${((filteredWallets.length / uniqueWallets.length) * 100).toFixed(1)}% selected)`);
+
+      // 🔥 ПРИСВАИВАЕМ КАТЕГОРИИ
+      for (const wallet of filteredWallets) {
+        wallet.category = this.determineCategory(wallet);
+      }
 
       const scoredWallets = this.calculateProfitFirstScores(filteredWallets);
       
-      // 🔥 PRE-FILTERING активности для элитных кошельков
-      const activityCheckedWallets = await this.preFilterByActivity(scoredWallets);
-      
-      activityCheckedWallets.sort((a, b) => this.compareProfitPriority(a, b));
+      scoredWallets.sort((a, b) => this.compareProfitPriority(a, b));
 
-      // 🔥 СОЗДАЕМ ОБА МАССИВА СИНХРОННО
-      const smartWallets = this.convertToSmartWallets(activityCheckedWallets);
-      const dragonTiers = activityCheckedWallets.map(wallet => this.determineTier(wallet));
-      
-      // ⚠️ КРИТИЧЕСКАЯ ПРОВЕРКА СИНХРОННОСТИ
-      if (smartWallets.length !== dragonTiers.length) {
-        this.logger.error(`❌ CRITICAL: Arrays length mismatch! smartWallets: ${smartWallets.length}, dragonTiers: ${dragonTiers.length}`);
-        throw new Error('Arrays must have same length!');
-      }
-
-      // 🔥 ПРОВЕРКА СООТВЕТСТВИЯ TIER И NICKNAME
-      smartWallets.forEach((wallet, i) => {
-        const expectedTier = dragonTiers[i].toUpperCase();
-        if (!wallet.nickname?.includes(expectedTier)) {
-          this.logger.warn(`⚠️ Nickname ${wallet.nickname} should contain ${expectedTier}`);
-        }
-      });
+      const smartWallets = this.convertToSmartWallets(scoredWallets);
       
       let clearedCount = 0, addedCount = 0, updatedCount = 0, skippedCount = 0;
       let errors: string[] = [];
 
-      if (forceReplace) {
-        this.logger.info('🔥 REPLACE MODE: Clearing existing Dragon wallets and adding new ones');
-        const replacementResult = await this.smDatabase.replaceDragonWallets(smartWallets, dragonTiers);
-        clearedCount = replacementResult.cleared;
-        addedCount = replacementResult.added;
-        errors = replacementResult.errors;
-        
-        await this.sendReplacementNotification(clearedCount, addedCount, errors);
-      } else {
-        this.logger.info('📈 NORMAL MODE: Using replaceDragonWallets with tier information');
-        const result = await this.smDatabase.replaceDragonWallets(smartWallets, dragonTiers);
-        clearedCount = result.cleared;
-        addedCount = result.added;
-        skippedCount = result.skipped;
-        errors = result.errors;
-        
-        await this.sendNormalNotification(addedCount, updatedCount, skippedCount, errors);
-      }
+      // 🔥 НОВЫЙ, ПРАВИЛЬНЫЙ БЛОК
+if (forceReplace) {
+  // --- СЦЕНАРИЙ 1: /dragon_replace ---
+  this.logger.info('🔥 REPLACE MODE: Clearing ALL existing Dragon wallets and adding new ones.');
+  
+  // Вызываем твой метод, который УЖЕ умеет чистить и добавлять. Он идеален для этой задачи.
+  const replacementResult = await this.smDatabase.replaceDragonWallets(smartWallets, []);
+  
+  // Сохраняем статистику
+  clearedCount = replacementResult.cleared;
+  addedCount = replacementResult.added;
+  skippedCount = replacementResult.skipped;
+  errors = replacementResult.errors;
+  
+  // Отправляем уведомление о ПОЛНОЙ ЗАМЕНЕ
+  await this.sendReplacementNotification(clearedCount, addedCount, errors);
 
+} else {
+  // --- СЦЕНАРИЙ 2: /dragon (Добавление без очистки) ---
+  this.logger.info('📈 ADD MODE: Checking for new wallets to add to the database...');
+  
+  let addedCount = 0;
+  let skippedCount = 0; // Считаем кошельки, которые уже есть в базе
+  const errors: string[] = [];
+
+  // Проходим по каждому кошельку из CSV-файлов
+  for (const wallet of smartWallets) {
+    try {
+      const existingWallet = await this.smDatabase.getSmartWallet(wallet.address);
+      
+      if (!existingWallet) {
+        // Если кошелька нет в базе - добавляем его
+        await this.smDatabase.saveSmartWallet(wallet, { addedBy: 'dragon' });
+        addedCount++;
+        this.logger.info(`➕ Added new wallet: ${wallet.nickname}`);
+      } else {
+        // Если кошелек уже есть - пропускаем
+        skippedCount++;
+      }
+    } catch (error) {
+      this.logger.error(`❌ Error processing wallet ${wallet.address} in ADD MODE:`, error);
+      errors.push(wallet.address);
+    }
+  }
+
+  // Отправляем уведомление о ДОБАВЛЕНИИ
+  await this.sendNormalNotification(addedCount, 0, skippedCount, errors); // `updatedCount` здесь всегда 0
+}
       const finalResult = this.createResult(allWallets.length, uniqueWallets.length - filteredWallets.length,
-        addedCount, updatedCount, skippedCount, clearedCount, activityCheckedWallets, forceReplace);
+        addedCount, updatedCount, skippedCount, clearedCount, scoredWallets, forceReplace);
 
       // 🔥 ФИНАЛЬНАЯ ОЧИСТКА ПАМЯТИ
       allWallets.length = 0;
       uniqueWallets.length = 0;
       filteredWallets.length = 0;
-      scoredWallets.length = 0;
       
       if (global.gc) {
         global.gc();
         this.logger.info('🧹 Final memory cleanup completed');
       }
 
-      this.logger.info(`✅ Dragon parsing completed. Mode: ${forceReplace ? 'REPLACE' : 'NORMAL'}. Added: ${addedCount}, Updated: ${updatedCount}, Cleared: ${clearedCount}`);
+      this.logger.info(`✅ Dragon CSV parsing completed. Mode: ${forceReplace ? 'REPLACE' : 'NORMAL'}. Added: ${addedCount}, Updated: ${updatedCount}, Cleared: ${clearedCount}`);
       return finalResult;
 
     } catch (error) {
-      this.logger.error('❌ Critical error during Dragon results parsing:', error);
+      this.logger.error('❌ Critical error during Dragon CSV parsing:', error);
       
       if (global.gc) {
         global.gc();
@@ -311,6 +389,7 @@ export class DragonResultsParser {
     }
   }
 
+  // 🔥 ПОИСК CSV ФАЙЛОВ
   private async findLatestDragonFiles(): Promise<string[]> {
     try {
       if (!fs.existsSync(this.config.dragonOutputPath)) {
@@ -320,15 +399,15 @@ export class DragonResultsParser {
 
       const files = fs.readdirSync(this.config.dragonOutputPath);
       
-      const jsonFiles = files
+      // 🔥 ИЩЕМ CSV ФАЙЛЫ ВМЕСТО JSON
+      const csvFiles = files
         .filter(file => {
           if (file.startsWith('.git') || file === 'README.md' || file === '.gitignore' || 
               file === 'package.json' || file === 'package-lock.json') return false;
           
-          return file.endsWith('.json') && (
-            file.includes('topTraders') || file.includes('TopTraders') ||
-            file.includes('dragon') || file.includes('traders') ||
-            file.includes('wallet') || file.includes('result')
+          return file.endsWith('.csv') && (
+            file.includes('wallets') || file.includes('output') ||
+            file.includes('bulk') || file.includes('result')
           );
         })
         .map(file => {
@@ -346,466 +425,236 @@ export class DragonResultsParser {
         .slice(0, 5)
         .map(file => file.path);
 
-      this.logger.info(`🔍 Dragon files found: ${jsonFiles.map(f => path.basename(f)).join(', ')}`);
-      return jsonFiles;
+      this.logger.info(`🔍 Dragon CSV files found: ${csvFiles.map(f => path.basename(f)).join(', ')}`);
+      return csvFiles;
     } catch (error) {
-      this.logger.error('❌ Error finding Dragon files:', error);
+      this.logger.error('❌ Error finding Dragon CSV files:', error);
       return [];
     }
   }
 
-  /**
-   * 🔥 ОПТИМИЗИРОВАННЫЙ ПАРСИНГ JSON С ОТЛАДКОЙ
-   */
-  private async parseDragonJsonFileOptimized(filePath: string): Promise<DragonWallet[]> {
-    try {
-      const stats = fs.statSync(filePath);
-      const fileSizeMB = stats.size / (1024 * 1024);
-      
-      this.logger.info(`📄 Parsing Dragon file: ${path.basename(filePath)} (${fileSizeMB.toFixed(1)}MB)`);
-      
-      if (fileSizeMB > 100) {
-        this.logger.warn(`⚠️ LARGE FILE WARNING: ${fileSizeMB.toFixed(1)}MB - processing with extra caution`);
-      }
+  // 🔥 ПАРСИНГ CSV ФАЙЛА С PAPAPARSE
+  private async parseDragonCsvFile(filePath: string): Promise<DragonWallet[]> {
+    this.logger.info(`📄 Parsing Dragon CSV file with PapaParse: ${path.basename(filePath)}`);
+    
+    const fileContent = fs.readFileSync(filePath, 'utf8');
+    const wallets: DragonWallet[] = [];
 
-      const fileContent = fs.readFileSync(filePath, 'utf8');
-      let jsonData: any;
-      
-      try {
-        jsonData = JSON.parse(fileContent);
-      } catch (parseError) {
-        this.logger.error(`❌ Invalid JSON in file ${filePath}:`, parseError);
-        return [];
-      }
+    // 🔥 PapaParse решает проблему с кавычками!
+    const parseResult = Papa.parse(fileContent, {
+      header: true, // Используем первую строку как заголовки
+      skipEmptyLines: true,
+      dynamicTyping: false, // Оставляем все как строки для наших хелперов
+    });
 
-      // 🔍 ОТЛАДКА СТРУКТУРЫ JSON
-      console.log('🔍 JSON STRUCTURE DEBUG:');
-      console.log('Type of jsonData:', typeof jsonData);
-      console.log('Is Array:', Array.isArray(jsonData));
-      console.log('Keys count:', Object.keys(jsonData).length);
-      console.log('First 3 keys:', Object.keys(jsonData).slice(0, 3));
-
-      // Проверяем первые 3 записи
-      const firstEntries = Object.entries(jsonData).slice(0, 3);
-      firstEntries.forEach(([key, value], i) => {
-        console.log(`\n🔍 Entry ${i + 1}:`);
-        console.log('  Key:', key);
-        console.log('  Value type:', typeof value);
-        console.log('  Value:', JSON.stringify(value, null, 2));
-      });
-
-      const dragonWallets: DragonWallet[] = [];
-      let processedCount = 0;
-      
-      const entries = Object.entries(jsonData);
-      const BATCH_SIZE = 1000;
-      
-      this.logger.info(`🔄 Processing ${entries.length} entries in batches of ${BATCH_SIZE}`);
-      
-      for (let i = 0; i < entries.length; i += BATCH_SIZE) {
-        const batch = entries.slice(i, i + BATCH_SIZE);
-        
-        for (const [walletAddress, metrics] of batch) {
-          if (!metrics || typeof metrics !== 'object') continue;
-          
-          const data = metrics as any;
-          const boughtUsd = this.parseUsdString(data.boughtUsd || '0');
-          const totalProfit = this.parseUsdString(data.totalProfit || '0');
-          
-          // 🔥 ЧИТАЕМ НОВЫЕ ПОЛЯ ИЗ JSON С ОТЛАДКОЙ
-          const unrealizedProfit = this.parseUsdString(data.unrealizedProfit || '0');
-          const multiplierStr = (data.multiplier || '0').toString().replace(/x/i, '');
-          const multiplier = parseFloat(multiplierStr);
-          
-          // 🔍 ПОДРОБНАЯ ОТЛАДКА ПАРСИНГА ПЕРВЫХ 20 ЗАПИСЕЙ
-          if (processedCount < 20) {
-            console.log(`\n🔍 PARSING ${processedCount + 1}:`);
-            console.log('  Address:', walletAddress);
-            console.log('  Metrics type:', typeof metrics);
-            console.log('  Raw data.multiplier:', JSON.stringify(data.multiplier));
-            console.log('  Raw data.totalProfit:', JSON.stringify(data.totalProfit));
-            console.log('  Raw data.unrealizedProfit:', JSON.stringify(data.unrealizedProfit));
-            console.log('  multiplierStr after replace:', JSON.stringify(multiplierStr));
-            console.log('  Parsed multiplier:', multiplier);
-            console.log('  Is multiplier NaN:', isNaN(multiplier));
-          }
-          
-          // 🔥 ОТЛАДКА: Логируем первые 5 записей для проверки
-          if (processedCount < 5) {
-            this.logger.info(`🔍 DEBUG wallet ${processedCount + 1}:`);
-            this.logger.info(`   Address: ${walletAddress.slice(0,8)}...`);
-            this.logger.info(`   Raw data.totalProfit: "${data.totalProfit}"`);
-            this.logger.info(`   Raw data.unrealizedProfit: "${data.unrealizedProfit}"`);
-            this.logger.info(`   Raw data.multiplier: "${data.multiplier}"`);
-            this.logger.info(`   Raw data.buys: "${data.buys}", data.sells: "${data.sells}"`);
-            this.logger.info(`   Parsed totalProfit: ${totalProfit}`);
-            this.logger.info(`   Parsed unrealizedProfit: ${unrealizedProfit}`);
-            this.logger.info(`   Parsed multiplier: ${multiplier} (from "${multiplierStr}")`);
-          }
-          
-          const buys = parseInt(data.buys || '0');
-          const sells = parseInt(data.sells || '0');
-          const totalTrades = buys + sells;
-
-          const winrate = totalTrades > 0 ? 
-            (data.winRate !== undefined ? parseFloat(data.winRate) : 
-             (sells > 0 ? Math.min((totalProfit > 0 ? 70 : 30), 100) : 0)) : 0;
-
-          if (this.isValidSolanaAddress(walletAddress) && totalTrades > 0 && boughtUsd > 0) {
-            dragonWallets.push({
-              wallet: walletAddress,
-              pnl: totalProfit,
-              winrate: Math.min(winrate, 100),
-              trades: totalTrades,
-              volume: boughtUsd,
-              sol_balance: parseFloat(data.solBalance || '0'),
-              // 🔥 ДОБАВЛЕНЫ НОВЫЕ ПОЛЯ
-              unrealizedProfit: isNaN(unrealizedProfit) ? 0 : unrealizedProfit,
-              multiplier: isNaN(multiplier) ? 0 : multiplier
-            });
-          }
-          processedCount++;
-        }
-        
-        if (i % (BATCH_SIZE * 5) === 0 && global.gc) {
-          global.gc();
-          this.logger.debug(`🧹 GC triggered after ${processedCount} entries`);
-        }
-      }
-
-      jsonData = null;
-      entries.length = 0;
-      
-      if (global.gc) {
-        global.gc();
-      }
-
-      // 🔥 СТАТИСТИКА ПО ПОЛЯМ ПОСЛЕ ПАРСИНГА
-      let undefinedUnrealized = 0, zeroUnrealized = 0;
-      let undefinedMultiplier = 0, zeroMultiplier = 0;
-      for (const wallet of dragonWallets) {
-        if (wallet.unrealizedProfit === undefined) undefinedUnrealized++;
-        else if (wallet.unrealizedProfit === 0) zeroUnrealized++;
-        
-        if (wallet.multiplier === undefined) undefinedMultiplier++;
-        else if (wallet.multiplier === 0) zeroMultiplier++;
-      }
-      
-      this.logger.info(`📊 FIELD STATISTICS:`);
-      this.logger.info(`   Unrealized: ${undefinedUnrealized} undefined, ${zeroUnrealized} zero, ${dragonWallets.length - undefinedUnrealized - zeroUnrealized} valid`);
-      this.logger.info(`   Multiplier: ${undefinedMultiplier} undefined, ${zeroMultiplier} zero, ${dragonWallets.length - undefinedMultiplier - zeroMultiplier} valid`);
-
-      this.logger.info(`✅ Parsed ${dragonWallets.length}/${processedCount} valid wallets from ${path.basename(filePath)}`);
-      return dragonWallets;
-      
-    } catch (error) {
-      this.logger.error(`❌ Error parsing Dragon JSON file ${filePath}:`, error);
-      
-      if (global.gc) {
-        global.gc();
-      }
-      
-      return [];
+    if (parseResult.errors.length > 0) {
+      this.logger.warn(`⚠️ PapaParse errors in ${path.basename(filePath)}:`, parseResult.errors);
     }
+
+    this.logger.info(`📋 CSV Headers: ${parseResult.meta.fields?.join(', ')}`);
+    this.logger.info(`📊 Total rows to process: ${parseResult.data.length}`);
+
+    for (const row of parseResult.data as any[]) {
+      try {
+        // 🔥 Обращаемся по именам заголовков - надежнее индексов!
+        const wallet: DragonWallet = {
+          identifier: row['Identifier']?.toString() || '',
+          totalProfitPercent: this.parsePercentageString(row['totalProfitPercent']),
+          averageHoldingMins: this.parseHoldingTimeString(row['averageHoldingMins']),
+          usdProfit7d: this.parseUsdString(row['7dUSDProfit']),      
+          usdProfit30d: this.parseUsdString(row['30dUSDProfit']),    
+          winrate7d: this.parseWinrateString(row['winrate_7d']),     // 🔥 Новый метод для обработки "?"
+          tags: this.parseTagsString(row['tags']),                   // 🔥 Сохраняем tags
+          solBalance: parseFloat(row['sol_balance'] || '0'),
+          buy7d: parseInt(row['buy_7d'] || '0', 10),
+        };
+
+        // Проверяем валидность (базовые проверки)
+        if (this.isValidSolanaAddress(wallet.identifier) && wallet.totalProfitPercent > 0) {
+          wallets.push(wallet);
+          
+          // Логируем первые 5 для проверки
+          if (wallets.length <= 5) {
+            this.logger.info(`✅ Wallet ${wallets.length}: ${wallet.identifier.slice(0,8)}... | Growth: ${wallet.totalProfitPercent}% | 7d: $${wallet.usdProfit7d} | 30d: $${wallet.usdProfit30d} | WR: ${wallet.winrate7d}% | Tags: [${wallet.tags.join(',')}]`);
+          }
+        } else {
+          if (wallets.length < 3) { // Логируем первые ошибки
+            this.logger.warn(`❌ Invalid: ${row['Identifier']?.toString()?.slice(0,8) || 'N/A'}... | Growth: ${this.parsePercentageString(row['totalProfitPercent'])}% | Valid: ${this.isValidSolanaAddress(wallet.identifier)}`);
+          }
+        }
+      } catch (error) {
+        this.logger.warn(`⚠️ Error processing row: ${JSON.stringify(row)}`, error);
+      }
+    }
+
+    this.logger.info(`✅ Parsed ${wallets.length} valid wallets from ${path.basename(filePath)} using PapaParse`);
+    return wallets;
+  }
+
+  // 🔥 НОВАЯ ЛОГИКА ФИЛЬТРАЦИИ - ПРИОРИТЕТ НА ДЕНЬГИ, А НЕ % ПОБЕД!
+  private applyProfitFirstFiltering(wallets: DragonWallet[]): DragonWallet[] {
+    this.logger.info(`🔍 Applying MONEY-FIRST gatekeeping filters to ${wallets.length} wallets...`);
+
+    let loggedRejections = 0; // 🔥 ИСПРАВЛЕНИЕ: Счетчик вместо filtered.length
+
+    const filtered = wallets.filter(wallet => {
+      // Отсеиваем кошельки с "?" в winrate (мало торгуют)
+      if (typeof wallet.winrate7d !== 'number' || wallet.winrate7d === 0) {
+        return false;
+      }
+
+      // 🥇 ПРИОРИТЕТ #1: Супер-рост капитала? Мягкие требования к остальному
+      const superGrowth = wallet.totalProfitPercent >= 15 && wallet.usdProfit7d >= 10000;
+      
+      // 🥈 ПРИОРИТЕТ #2: Хорошая прибыль + рост капитала  
+      const goodProfitAndGrowth = wallet.usdProfit7d >= 20000 && wallet.totalProfitPercent >= 10;
+      
+      // 🥉 ПРИОРИТЕТ #3: Стабильность (30d больше 7d) + рост
+      const stabGrowth = wallet.usdProfit30d > wallet.usdProfit7d && 
+                        wallet.totalProfitPercent >= 12 && 
+                        wallet.usdProfit7d >= 8000;
+
+      // 🏅 ПРИОРИТЕТ #4: Высокий баланс + хороший рост (киты)
+      const whaleGrowth = wallet.solBalance >= 150 && 
+                         wallet.totalProfitPercent >= 10 && 
+                         wallet.usdProfit7d >= 8000;
+
+      // Базовые требования
+      const basicRequirements = wallet.solBalance >= this.config.minSolBalance && 
+                               wallet.buy7d >= this.config.minActivity7d;
+
+      const passed = basicRequirements && (superGrowth || goodProfitAndGrowth || stabGrowth || whaleGrowth);
+
+      // 🔥 ИСПРАВЛЕНИЕ: Используем loggedRejections вместо filtered.length
+      if (!passed && loggedRejections < 5) {
+        this.logger.info(`❌ Filtered out: ${wallet.identifier.slice(0,8)}... | Profit7d: $${wallet.usdProfit7d} | Growth: ${wallet.totalProfitPercent}% | WR: ${wallet.winrate7d}% | SOL: ${wallet.solBalance}`);
+        loggedRejections++;
+      }
+
+      return passed;
+    });
+
+    this.logger.info(`✅ MONEY-FIRST filtering complete. Passed: ${filtered.length}/${wallets.length}.`);
+    this.logger.info(`💰 Focus: totalProfitPercent > profit7d/30d > solBalance > activity | winrate IGNORED`);
+    return filtered;
+  }
+
+  // 🔥 ЧИСТАЯ ЛОГИКА КАТЕГОРИЗАЦИИ - ТОЛЬКО ВРЕМЯ ХОЛДА (прибыльность уже проверена в фильтре!)
+  private determineCategory(wallet: DragonWallet): 'sniper' | 'hunter' | 'trader' {
+    // 🎯 ФИЛОСОФИЯ: Если кошелек дошел до этой функции - он УЖЕ прибыльный!
+    // Категория определяется ТОЛЬКО стилем торговли (время холда)
+    
+    // 1. SNIPER: Быстрые сделки (30 минут - 3 часа)
+    if (wallet.averageHoldingMins >= 30 && wallet.averageHoldingMins <= 180) {
+      return 'sniper';
+    }
+
+    // 2. TRADER: Длинные позиции (более 6 часов)  
+    if (wallet.averageHoldingMins >= 360) {
+      return 'trader';
+    }
+
+    // 3. HUNTER: Средние позиции (3-6 часов) или любые другие случаи
+    // Сюда попадают: 180-360 мин, <30 мин, или любые аномальные значения
+    return 'hunter';
   }
 
   private deduplicateWallets(wallets: DragonWallet[]): DragonWallet[] {
     const walletMap = new Map<string, DragonWallet>();
     for (const wallet of wallets) {
-      const existing = walletMap.get(wallet.wallet);
-      if (!existing || wallet.pnl > existing.pnl) {
-        walletMap.set(wallet.wallet, wallet);
+      const existing = walletMap.get(wallet.identifier);
+      if (!existing || wallet.usdProfit7d > existing.usdProfit7d) {
+        walletMap.set(wallet.identifier, wallet);
       }
     }
     return Array.from(walletMap.values());
   }
 
-  // 🔥 ОТЛАДОЧНАЯ ФИЛЬТРАЦИЯ С ДЕТАЛЬНОЙ СТАТИСТИКОЙ
-  private applyProfitFirstFiltering(wallets: DragonWallet[]): DragonWallet[] {
-  this.logger.info(`🔍 DEBUGGING: Starting filtering of ${wallets.length} wallets with criteria:`);
-  this.logger.info(`   PnL≥${this.config.minPnl}, WR≥${this.config.minWinrate}%, Trades≥${this.config.minTrades}, Unrealized≥${this.config.minUnrealizedProfit}, Multiplier≥${this.config.minMultiplier}x`);
-  
-  let filteredByPnl = 0, filteredByUnrealized = 0, filteredByWinrate = 0, filteredByMultiplier = 0, filteredByTrades = 0, filteredByWinrateTooHigh = 0;
-  let unrealizedUndefined = 0, multiplierUndefined = 0;
-  
-  // 🔥 АНАЛИЗИРУЕМ ПЕРВЫЕ 10 КОШЕЛЬКОВ ДЛЯ ОТЛАДКИ
-  this.logger.info(`🔍 SAMPLE DATA from first 10 wallets:`);
-  for (let i = 0; i < Math.min(10, wallets.length); i++) {
-    const w = wallets[i];
-    this.logger.info(`   ${i+1}. PnL:${w.pnl}, WR:${w.winrate}%, Trades:${w.trades}, Unrealized:${w.unrealizedProfit || 'undefined'}, Multi:${w.multiplier || 'undefined'}`);
-  }
-
-  // 🔍 ОТЛАДКА MULTIPLIER РАСПРЕДЕЛЕНИЯ
-  let mult_0_to_1 = 0, mult_1_to_2 = 0, mult_2_plus = 0, mult_nan = 0;
-  wallets.forEach(w => {
-    if (isNaN(w.multiplier || NaN)) mult_nan++;
-    else if ((w.multiplier || 0) < 1) mult_0_to_1++;
-    else if ((w.multiplier || 0) < 2) mult_1_to_2++;
-    else mult_2_plus++;
-  });
-  
-  console.log(`🔍 Multiplier distribution: 0-1x: ${mult_0_to_1}, 1-2x: ${mult_1_to_2}, 2x+: ${mult_2_plus}, NaN: ${mult_nan}`);
-
-  const filtered = wallets.filter(wallet => {
-    // ===== СНАЧАЛА ВСЕ СТРОГИЕ ФИЛЬТРЫ (ПРИМЕНЯЮТСЯ КО ВСЕМ БЕЗ ИСКЛЮЧЕНИЯ) =====
-    if (wallet.pnl < this.config.minPnl) { 
-      filteredByPnl++; 
-      return false; 
-    }
-    
-    if (wallet.unrealizedProfit === undefined) { 
-      unrealizedUndefined++; 
-      return false; 
-    }
-    if (wallet.unrealizedProfit < this.config.minUnrealizedProfit) { 
-      filteredByUnrealized++; 
-      return false; 
-    }
-    
-    if (wallet.winrate < this.config.minWinrate) { 
-      filteredByWinrate++; 
-      return false; 
-    }
-    
-    if (wallet.multiplier === undefined) { 
-      multiplierUndefined++; 
-      return false; 
-    }
-    if (wallet.multiplier < this.config.minMultiplier) { 
-      filteredByMultiplier++; 
-      return false; 
-    }
-    
-    if (wallet.trades < this.config.minTrades) { 
-      filteredByTrades++; 
-      return false; 
-    }
-    
-    if (wallet.winrate > 99.9) { 
-      filteredByWinrateTooHigh++; 
-      return false; 
-    }
-
-    // ===== ТОЛЬКО ДЛЯ ТЕХ, КТО ПРОШЕЛ ВСЕ СТРОГИЕ ПРОВЕРКИ, ПРИСВАИВАЕМ TIER =====
-    // (Это происходит ПОСЛЕ всех фильтров, только для кошельков, которые точно попадут в итоговый список)
-    if (wallet.pnl >= this.config.whaleThresholds.megaWhale) {
-      wallet.tier = 'whale'; 
-    } else if (wallet.pnl >= 200000 && wallet.winrate >= 50) {
-      wallet.tier = 'genius';
-    } else {
-      wallet.tier = 'quality';
-    }
-    
-    return true; // Пропускаем только тех, кто прошел ВСЕ строгие проверки
-  });
-
-  // 🔥 ДЕТАЛЬНАЯ СТАТИСТИКА ФИЛЬТРАЦИИ
-  this.logger.info(`🔍 FILTERING RESULTS:`);
-  this.logger.info(`   ✅ Passed: ${filtered.length}/${wallets.length} (${(filtered.length/wallets.length*100).toFixed(1)}%)`);
-  this.logger.info(`   ❌ Filtered by PnL<${this.config.minPnl}: ${filteredByPnl}`);
-  this.logger.info(`   ❌ Filtered by Unrealized undefined: ${unrealizedUndefined}`);
-  this.logger.info(`   ❌ Filtered by Unrealized<${this.config.minUnrealizedProfit}: ${filteredByUnrealized}`);
-  this.logger.info(`   ❌ Filtered by Winrate<${this.config.minWinrate}%: ${filteredByWinrate}`);
-  this.logger.info(`   ❌ Filtered by Multiplier undefined: ${multiplierUndefined}`);
-  this.logger.info(`   ❌ Filtered by Multiplier<${this.config.minMultiplier}x: ${filteredByMultiplier}`);
-  this.logger.info(`   ❌ Filtered by Trades<${this.config.minTrades}: ${filteredByTrades}`);
-  this.logger.info(`   ❌ Filtered by Winrate>99.9%: ${filteredByWinrateTooHigh}`);
-
-  return filtered;
-}
-
-  // 🔥 БЕЗ ДУБЛИРУЮЩИХ ПРОВЕРОК - только tier определение
-  private determineTier(wallet: DragonWallet): 'whale' | 'genius' | 'quality' | 'filter_out' {
-    if (wallet.pnl >= 1_000_000) {
-      return 'whale';
-    }
-    if (wallet.pnl >= 500_000 && wallet.winrate >= 58) {
-      return 'whale';  
-    }
-    if (wallet.pnl >= 200_000 && wallet.winrate >= 60) {
-      return 'genius';
-    }
-    if (wallet.pnl >= 100_000 && wallet.winrate >= 63) {
-      return 'quality';
-    }
-    return 'quality';
-  }
-
   private calculateProfitFirstScores(wallets: DragonWallet[]): DragonWallet[] {
     if (wallets.length === 0) return wallets;
     
-    const maxPnl = Math.max(...wallets.map(w => w.pnl));
-    const maxVolume = Math.max(...wallets.map(w => w.volume));
-    const maxTrades = Math.max(...wallets.map(w => w.trades));
-    const now = Date.now() / 1000;
+    const maxProfit7d = Math.max(...wallets.map(w => w.usdProfit7d));
+    const maxWinrate = Math.max(...wallets.map(w => w.winrate7d));
+    const maxActivity = Math.max(...wallets.map(w => w.buy7d));
+    const maxBalance = Math.max(...wallets.map(w => w.solBalance));
     
     return wallets.map(wallet => {
-      const pnlScore = maxPnl > 0 ? wallet.pnl / maxPnl : 0;
-      const winrateScore = wallet.winrate / 100;
-      const volumeScore = maxVolume > 0 ? wallet.volume / maxVolume : 0;
-      const tradesScore = maxTrades > 0 ? wallet.trades / maxTrades : 0;
-      const daysSinceActive = (now - (wallet.last_active || 0)) / (24 * 60 * 60);
-      const activityScore = Math.max(0, 1 - (daysSinceActive / this.config.maxDaysInactive));
+      const profit7dScore = maxProfit7d > 0 ? wallet.usdProfit7d / maxProfit7d : 0;
+      const winrateScore = maxWinrate > 0 ? wallet.winrate7d / maxWinrate : 0;
+      const activityScore = maxActivity > 0 ? wallet.buy7d / maxActivity : 0;
+      const balanceScore = maxBalance > 0 ? wallet.solBalance / maxBalance : 0;
       
-      let score = (pnlScore * this.config.scoreWeights.pnl + winrateScore * this.config.scoreWeights.winrate +
-        volumeScore * this.config.scoreWeights.volume + tradesScore * this.config.scoreWeights.trades +
-        activityScore * this.config.scoreWeights.activity) * 100;
-
-      if (wallet.tier === 'whale') score += 25;
-      else if (wallet.tier === 'genius') score += 15;
-      else if (wallet.tier === 'quality') score += 5;
-
-      if (wallet.trades > 0 && wallet.pnl > 0) {
-        const avgProfitPerTrade = wallet.pnl / wallet.trades;
-        wallet.profitFactor = avgProfitPerTrade > 0 ? Math.min(avgProfitPerTrade / 1000, 10) : 0;
-      }
+      const score = (profit7dScore * this.config.scoreWeights.profit7d + 
+                    winrateScore * this.config.scoreWeights.winrate +
+                    activityScore * this.config.scoreWeights.activity + 
+                    balanceScore * this.config.scoreWeights.balance) * 100;
       
       return { ...wallet, score: Math.round(score * 100) / 100 };
     });
   }
 
   private compareProfitPriority(a: DragonWallet, b: DragonWallet): number {
-    const tierPriority = { whale: 4, genius: 3, quality: 2, filter_out: 1 };
-    const aTier = tierPriority[a.tier || 'quality'] || 2;
-    const bTier = tierPriority[b.tier || 'quality'] || 2;
-    
-    if (aTier !== bTier) return bTier - aTier;
-    if (Math.abs(a.pnl - b.pnl) > 10000) return b.pnl - a.pnl;
+    // Сначала по прибыли за 7 дней, потом по score
+    if (Math.abs(a.usdProfit7d - b.usdProfit7d) > 1000) return b.usdProfit7d - a.usdProfit7d;
     return (b.score || 0) - (a.score || 0);
   }
 
+  // 🔥 КОНВЕРТАЦИЯ В SMARTWALLET С НОВОЙ ЛОГИКОЙ
   private convertToSmartWallets(dragonWallets: DragonWallet[]): SmartMoneyWallet[] {
     return dragonWallets.map(wallet => {
-      const category = this.determineCategory(wallet);
-      const tier = this.determineTier(wallet);
-      
-      const tierName = tier.toUpperCase();
-      const nickname = `Dragon-${tierName}-${wallet.wallet.slice(0, 8)}`;
+      // Убедимся, что категория присвоена
+      const category = wallet.category || 'hunter'; 
+
+      // Формируем nickname с учетом tags
+      const tagsStr = wallet.tags.length > 0 ? `-${wallet.tags[0]}` : '';
+      const nickname = `Dragon-${category.toUpperCase()}-${wallet.identifier.slice(0, 8)}${tagsStr}`;
 
       return {
-        address: wallet.wallet, category: category, winRate: wallet.winrate,
-        totalPnL: wallet.pnl, totalTrades: wallet.trades,
-        avgTradeSize: wallet.trades > 0 ? wallet.volume / wallet.trades : 0,
-        maxTradeSize: wallet.volume * 0.1, minTradeSize: wallet.volume * 0.01,
-        performanceScore: wallet.score || 70, sharpeRatio: null, maxDrawdown: null,
-        lastActiveAt: wallet.last_active ? new Date(wallet.last_active * 1000) : new Date(0),
+        address: wallet.identifier,
+        category: category,
+        nickname: nickname,
+        
+        // 🔥 CSV ПОЛЯ + ПРИОРИТЕТ НА РОСТ КАПИТАЛА
+        usdProfit7d: wallet.usdProfit7d,
+        usdProfit30d: wallet.usdProfit30d,
+        winrate7d: wallet.winrate7d,
+        buy7d: wallet.buy7d,
+        avgHoldingMins: wallet.averageHoldingMins,
+        totalProfitPercent: wallet.totalProfitPercent,
+        solBalance: wallet.solBalance,
+        
+        // 🔥 НОВЫЙ SCORING - ПРИОРИТЕТ НА РОСТ КАПИТАЛА
+        performanceScore: (wallet.totalProfitPercent * 3) + (wallet.usdProfit7d / 1000) + (wallet.solBalance / 10),
+        lastActiveAt: new Date(),
         isActive: true,
-        isFamilyMember: false, familyAddresses: null, coordinationScore: 0,
-        stealthLevel: null, earlyEntryRate: null, avgHoldTime: null,
-        volumeScore: null, createdAt: new Date(), updatedAt: new Date(),
-        nickname: nickname
+        
+        // Остальные поля по умолчанию
+        sharpeRatio: null,
+        maxDrawdown: null,
+        isFamilyMember: false,
+        familyAddresses: undefined,
+        coordinationScore: 0,
+        stealthLevel: null,
+        earlyEntryRate: null,
+        volumeScore: null,
+        createdAt: new Date(),
+        updatedAt: new Date()
       } as SmartMoneyWallet;
     });
   }
 
-  /**
-   * 🔍 PRE-FILTERING: Проверяем активность элитных кошельков ДО добавления в БД
-   */
-  private async preFilterByActivity(wallets: DragonWallet[]): Promise<DragonWallet[]> {
-    const eliteWallets = wallets.filter(w => 
-      w.tier === 'whale' || w.tier === 'genius' || w.pnl >= 500_000
-    );
-    
-    if (eliteWallets.length === 0) {
-      this.logger.info('✅ No elite wallets to pre-filter for activity');
-      return wallets;
-    }
-    
-    this.logger.info(`🔍 PRE-FILTERING: Checking activity for ${eliteWallets.length} elite wallets (tier: whale/genius, PnL≥500K)...`);
-    
-    const activeEliteWallets: DragonWallet[] = [];
-    const batchSize = 3;
-    let totalChecked = 0;
-    let totalFiltered = 0;
-    
-    for (let i = 0; i < eliteWallets.length; i += batchSize) {
-      const batch = eliteWallets.slice(i, i + batchSize);
-      
-      this.logger.debug(`🔍 Checking batch ${Math.floor(i/batchSize) + 1}/${Math.ceil(eliteWallets.length/batchSize)}: ${batch.length} wallets`);
-      
-      const checks = await Promise.allSettled(
-        batch.map(wallet => this.checkWalletActivityQuick(wallet.wallet))
-      );
-      
-      checks.forEach((result, index) => {
-        const wallet = batch[index];
-        totalChecked++;
-        
-        if (result.status === 'fulfilled' && result.value.isActive) {
-          if (result.value.lastTransactionTime) {
-            wallet.last_active = result.value.lastTransactionTime;
-          }
-          activeEliteWallets.push(wallet);
-          this.logger.debug(`✅ Active elite: ${wallet.wallet.slice(0,8)} (${wallet.tier}, ${this.formatNumber(wallet.pnl)})`);
-        } else {
-          totalFiltered++;
-          const reason = result.status === 'rejected' ? 'API Error' : 'Inactive >14d';
-          this.logger.info(`❌ FILTERED OUT inactive elite wallet: ${wallet.wallet.slice(0,8)} (${wallet.tier}, ${this.formatNumber(wallet.pnl)}) - ${reason}`);
-        }
-      });
-      
-      if (i + batchSize < eliteWallets.length) {
-        await this.sleep(8000);
-      }
-    }
-    
-    const nonEliteWallets = wallets.filter(w => 
-      w.tier !== 'whale' && w.tier !== 'genius' && w.pnl < 500_000
-    );
-    
-    const finalWallets = [...activeEliteWallets, ...nonEliteWallets];
-    
-    this.logger.info(`✅ PRE-FILTERING completed: ${activeEliteWallets.length}/${eliteWallets.length} elite wallets are active (${totalFiltered} filtered out)`);
-    this.logger.info(`📊 Final count: ${finalWallets.length} wallets (${activeEliteWallets.length} active elite + ${nonEliteWallets.length} quality with old dates)`);
-    this.logger.info(`🔍 Quality wallets will be checked later by DragonActivityChecker (lastActiveAt = 1970)`);
-    
-    return finalWallets;
-  }
-
-  /**
-   * ⚡ БЫСТРАЯ ПРОВЕРКА АКТИВНОСТИ ОДНОГО КОШЕЛЬКА
-   */
-  private async checkWalletActivityQuick(address: string): Promise<{isActive: boolean, lastTransactionTime: number | null}> {
-    try {
-      const response = await this.multiProvider.getSignaturesForAddress(address, { limit: 1 });
-      
-      if (!response.success || !response.data?.[0]?.blockTime) {
-        this.logger.debug(`❌ No transactions found for ${address.slice(0,8)}`);
-        return { isActive: false, lastTransactionTime: null };
-      }
-      
-      const lastTxTime = response.data[0].blockTime;
-      const daysSince = (Date.now() / 1000 - lastTxTime) / (24 * 60 * 60);
-      const isActive = daysSince <= 14;
-      
-      this.logger.debug(`📊 ${address.slice(0,8)}: ${daysSince.toFixed(1)}d ago ${isActive ? '(ACTIVE)' : '(INACTIVE)'}`);
-      
-      return { 
-        isActive, 
-        lastTransactionTime: lastTxTime 
-      };
-      
-    } catch (error) {
-      this.logger.warn(`⚠️ Error checking activity for ${address.slice(0,8)}:`, error);
-      return { isActive: false, lastTransactionTime: null };
-    }
-  }
-
   private async sendReplacementNotification(clearedCount: number, addedCount: number, errors: string[]): Promise<void> {
     const emoji = errors.length > 0 ? '⚠️' : '✅';
-    const message = `${emoji} <b>Dragon Database REPLACED</b>\n\n` +
+    const message = `${emoji} <b>Dragon Database REPLACED (MONEY-FIRST Mode)</b>\n\n` +
       `🗑️ <b>Cleared Old:</b> <code>${clearedCount}</code> Dragon wallets\n` +
-      `➕ <b>Added New:</b> <code>${addedCount}</code> ELITE wallets\n\n` +
-      `💰 <b>DEBUG CRITERIA:</b>\n` +
-      `💸 <b>PnL:</b> ≥${this.config.minPnl/1000}K\n` +
-      `💎 <b>Unrealized:</b> ≥${this.config.minUnrealizedProfit/1000}K\n` +
-      `📈 <b>Multiplier:</b> ≥${this.config.minMultiplier}x\n` +
-      `🎯 <b>Winrate:</b> ≥${this.config.minWinrate}%\n` +
-      `📊 <b>Trades:</b> ≥${this.config.minTrades}\n` +
-      `⏰ <b>Active:</b> ≤${this.config.maxDaysInactive} days\n\n` +
-      `🔍 <b>PRE-FILTERING:</b> Elite wallets checked for activity\n` +
-      `📅 <b>Quality wallets:</b> Old dates → will be checked by ActivityChecker\n` +
-      `🔄 <b>Database Status:</b> <code>Completely Refreshed</code>\n` +
+      `➕ <b>Added New:</b> <code>${addedCount}</code> PROFITABLE wallets\n\n` +
+      `💰 <b>NEW MONEY-FIRST LOGIC:</b>\n` +
+      `🥇 <b>Priority #1:</b> totalProfitPercent ≥ 15% + profit ≥ $10K\n` +
+      `🥈 <b>Priority #2:</b> Profit7d ≥ $20K + growth ≥ 10%\n` +
+      `🥉 <b>Priority #3:</b> Stability (30d > 7d) + growth ≥ 12%\n` +
+      `🏅 <b>Priority #4:</b> Whale balance ≥ 150 SOL + growth ≥ 10%\n\n` +
+      `🚫 <b>Winrate MOSTLY IGNORED</b> (focus on 💰 not %wins)\n` +
+      `🔄 <b>Source:</b> Bulk Wallet Checker CSV\n` +
       (errors.length > 0 ? `⚠️ <b>Errors:</b> <code>${errors.length}</code>\n` : '') +
       `⏰ <code>${new Date().toLocaleString()}</code>`;
 
@@ -813,63 +662,17 @@ export class DragonResultsParser {
   }
 
   private async sendNormalNotification(addedCount: number, updatedCount: number, skippedCount: number, errors: string[]): Promise<void> {
-    const message = `🐲 <b>Dragon Import Complete</b>\n\n` +
-      `➕ <b>Added:</b> <code>${addedCount}</code> new ELITE wallets\n` +
+    const message = `🐲 <b>Dragon CSV Import Complete</b>\n\n` +
+      `➕ <b>Added:</b> <code>${addedCount}</code> new ACTIVE wallets\n` +
       `🔄 <b>Updated:</b> <code>${updatedCount}</code> existing\n` +
       `⏭️ <b>Skipped:</b> <code>${skippedCount}</code> unchanged\n\n` +
-      `💰 <b>DEBUG CRITERIA:</b>\n` +
-      `PnL≥${this.config.minPnl/1000}K | Unrealized≥${this.config.minUnrealizedProfit/1000}K | Multi≥${this.config.minMultiplier}x | WR≥${this.config.minWinrate}% | Trades≥${this.config.minTrades} | Active≤${this.config.maxDaysInactive}d\n` +
-      `🔍 <b>PRE-FILTERING:</b> Elite wallets activity-checked\n` +
-      `📅 <b>Quality wallets:</b> Old dates → ActivityChecker will verify\n` +
+      `💰 <b>ВХОДНОЙ БИЛЕТ:</b>\n` +
+      `Profit7d≥$${this.config.minProfit7d/1000}K | WR7d≥${this.config.minWinrate7d}% | SOL≥${this.config.minSolBalance} | TotalProfit≥${this.config.minTotalProfitPercent}% | Activity≥${this.config.minActivity7d}\n` +
+      `🔄 <b>Source:</b> Bulk Wallet Checker CSV\n` +
       (errors.length > 0 ? `⚠️ <b>Errors:</b> <code>${errors.length}</code>\n` : '') +
       `⏰ <code>${new Date().toLocaleString()}</code>`;
 
     await this.telegramNotifier.sendCycleLog(message);
-  }
-
-  // 🔥 ОТЛАДКА parseUsdString для больших сумм
-  private parseUsdString(usdString: string): number {
-    if (!usdString || typeof usdString !== 'string') return 0;
-    const cleaned = usdString.replace(/[$,\s]/g, '');
-    let multiplier = 1;
-    if (cleaned.endsWith('K') || cleaned.endsWith('k')) multiplier = 1000;
-    else if (cleaned.endsWith('M') || cleaned.endsWith('m')) multiplier = 1000000;
-    else if (cleaned.endsWith('B') || cleaned.endsWith('b')) multiplier = 1000000000;
-    const numberPart = cleaned.replace(/[KMBkmb]$/, '');
-    const number = parseFloat(numberPart);
-    const result = isNaN(number) ? 0 : number * multiplier;
-    
-    // 🔥 ОТЛАДКА для больших значений
-    if (result > 1000000) {
-      this.logger.debug(`parseUsdString: "${usdString}" → cleaned:"${cleaned}" → number:${number} → result:${result}`);
-    }
-    
-    return result;
-  }
-
-  private async updateExistingWallet(existing: any, wallet: SmartMoneyWallet): Promise<void> {
-    await this.smDatabase.updateWalletPerformance(existing.address, {
-      winRate: Math.max(wallet.winRate, existing.winRate),
-      totalPnL: Math.max(wallet.totalPnL, existing.totalPnL),
-      totalTrades: Math.max(wallet.totalTrades, existing.totalTrades),
-      lastActiveAt: wallet.lastActiveAt, performanceScore: wallet.performanceScore
-    });
-  }
-
-  private async isDragonWallet(address: string): Promise<boolean> {
-    try {
-      const source = await this.smDatabase.getWalletSource(address);
-      return source === 'dragon';
-    } catch (error) {
-      return false;
-    }
-  }
-
-  private determineCategory(wallet: DragonWallet): 'sniper' | 'hunter' | 'trader' {
-    if (wallet.tier === 'whale') return 'trader';
-    if (wallet.pnl > 100000 && wallet.trades > 50) return 'trader';
-    if (wallet.pnl > 50000 && wallet.trades > 20) return 'hunter';
-    return 'sniper';
   }
 
   private isValidSolanaAddress(address: string): boolean {
@@ -879,23 +682,11 @@ export class DragonResultsParser {
     return base58Regex.test(address);
   }
 
-  private createBatches<T>(array: T[], batchSize: number): T[][] {
-    const batches: T[][] = [];
-    for (let i = 0; i < array.length; i += batchSize) {
-      batches.push(array.slice(i, i + batchSize));
-    }
-    return batches;
-  }
-
-  private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
-  }
-
   private createResult(totalParsedFromFile: number, filteredOutCount: number, added: number, updated: number,
     skipped: number, cleared: number, finalWallets: DragonWallet[], replaceMode: boolean = false): DragonParseResult {
     const categories = this.categorizeWallets(finalWallets);
     const profitDistribution = this.calculateProfitDistribution(finalWallets);
-    const totalValue = finalWallets.reduce((sum, w) => sum + w.pnl, 0);
+    const totalValue = finalWallets.reduce((sum, w) => sum + w.usdProfit7d, 0);
     const averagePnL = finalWallets.length > 0 ? totalValue / finalWallets.length : 0;
 
     return {
@@ -908,7 +699,7 @@ export class DragonResultsParser {
   private categorizeWallets(wallets: DragonWallet[]): { snipers: number; hunters: number; traders: number } {
     const categories = { snipers: 0, hunters: 0, traders: 0 };
     for (const wallet of wallets) {
-      const category = this.determineCategory(wallet);
+      const category = wallet.category || 'hunter';
       categories[category + 's' as keyof typeof categories]++;
     }
     return categories;
@@ -919,10 +710,10 @@ export class DragonResultsParser {
   } {
     const distribution = { megaWhales: 0, whales: 0, bigPlayers: 0, quality: 0, regular: 0 };
     for (const wallet of wallets) {
-      if (wallet.pnl >= this.config.whaleThresholds.megaWhale) distribution.megaWhales++;
-      else if (wallet.pnl >= this.config.whaleThresholds.whale) distribution.whales++;
-      else if (wallet.pnl >= this.config.whaleThresholds.bigPlayer) distribution.bigPlayers++;
-      else if (wallet.pnl >= this.config.whaleThresholds.quality) distribution.quality++;
+      if (wallet.usdProfit7d >= this.config.whaleThresholds.megaWhale) distribution.megaWhales++;
+      else if (wallet.usdProfit7d >= this.config.whaleThresholds.whale) distribution.whales++;
+      else if (wallet.usdProfit7d >= this.config.whaleThresholds.bigPlayer) distribution.bigPlayers++;
+      else if (wallet.usdProfit7d >= this.config.whaleThresholds.quality) distribution.quality++;
       else distribution.regular++;
     }
     return distribution;

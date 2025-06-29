@@ -42,6 +42,9 @@ interface MonitoringStats {
 }
 
 export class LargeTransactionMonitor {
+  toggleMonitoring() {
+    throw new Error('Method not implemented.');
+  }
   private telegramNotifier: TelegramNotifier;
   private multiProvider: MultiProviderService;
   private tokenMetadataService: TokenMetadataService;

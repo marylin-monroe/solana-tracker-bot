@@ -1,8 +1,9 @@
-// src/services/SmartMoneyFlowAnalyzer.ts - 🔥 ОПТИМИЗАЦИЯ HNT + БАТЧИНГ FDV + 50% МЕНЬШЕ API
+// src/services/SmartMoneyFlowAnalyzer.ts - 🔥 ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ" - ИНТЕГРАЦИЯ С АГРЕГИРОВАННЫМИ ПОЗИЦИЯМИ
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
 import { Database } from './Database';
 import { TelegramNotifier } from './TelegramNotifier';
 import { TokenMetadataService } from './TokenMetadataService';
+import { SolanaMonitor } from './SolanaMonitor';
 import { Logger } from '../utils/Logger';
 import { TokenSwap, SmartMoneyFlow, HotNewToken, SmartMoneyWallet } from '../types';
 
@@ -95,6 +96,7 @@ export class SmartMoneyFlowAnalyzer {
   private database: Database;
   private telegramNotifier: TelegramNotifier;
   private readonly tokenMetadataService: TokenMetadataService;
+  private solanaMonitor: SolanaMonitor | null = null; // 🔥 ДОБАВЛЕН SolanaMonitor
   private logger: Logger;
   private readonly CONCURRENT_ENRICH_CALLS = 3;
   private readonly DELAY_BETWEEN_SUB_BATCHES = 500
@@ -118,30 +120,38 @@ export class SmartMoneyFlowAnalyzer {
     performanceWeights: { recentPnL: 0.4, winRate: 0.25, profitFactor: 0.2, consistency: 0.15 }
   };
 
-  constructor(smDatabase: SmartMoneyDatabase, telegramNotifier: TelegramNotifier, database: Database, tokenMetadataService: TokenMetadataService) {
+  constructor(smDatabase: SmartMoneyDatabase, telegramNotifier: TelegramNotifier, database: Database, tokenMetadataService: TokenMetadataService, solanaMonitor?: SolanaMonitor) {
     this.smDatabase = smDatabase;
     this.database = database;
     this.telegramNotifier = telegramNotifier;
     this.tokenMetadataService = tokenMetadataService;
+    this.solanaMonitor = solanaMonitor || null; // 🔥 ИНТЕГРАЦИЯ С SolanaMonitor
     this.logger = Logger.getInstance();
-    this.logger.info('📊 SmartMoneyFlowAnalyzer initialized with HNT OPTIMIZATION');
+    this.logger.info('📊 SmartMoneyFlowAnalyzer initialized with 🔥 ЕДИНЫЙ РАСЧЕТНЫЙ ЦЕНТР + Position Aggregation Integration');
   }
 
-  // 🔍 ГЛАВНЫЙ МЕТОД с батчингом
+  // 🔥🔥🔥 ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ" - ФИНАЛЬНАЯ ЛОГИКА АНАЛИЗА ПОТОКОВ 🔥🔥🔥
   async analyzeSmartMoneyFlows(): Promise<FlowAnalysisResult> {
-    this.logger.info('🔍 Starting OPTIMIZED Smart Money Flow Analysis...');
+    this.logger.info('🔍 Starting ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ" Smart Money Flow Analysis...');
 
     try {
       const smartWallets = await this.smDatabase.getAllActiveSmartWallets();
-      this.logger.info(`Analyzing flows for ${smartWallets.length} wallets`);
+      this.logger.info(`Analyzing flows for ${smartWallets.length} wallets with AGGREGATED POSITIONS`);
 
       // 🆕 Оптимизированное обновление метрик (только 10 кошельков)
       await this.updateWalletPerformanceMetricsOptimized(smartWallets);
 
-      // Параллельный анализ потоков с батчингом
+      // 🔥 ШАГИ ПРОТОКОЛА "ПОЛНЫЙ КОНТРОЛЬ":
+      // Шаг 1: Сбор Одиночных Сделок
+      // Шаг 2: Запрос Агрегированных Данных
+      // Шаг 3: Объединение Данных
+      // Шаг 4: Анализ Outflows (каждая отдельная продажа)
+      // Шаг 5: Финальный Фильтр
+
+      // Параллельный анализ потоков с новой логикой
       const [hourlyFlows, dailyFlows] = await Promise.all([
-        this.calculateFlowsWithFDVBatched(smartWallets, '1h'),
-        this.calculateFlowsWithFDVBatched(smartWallets, '24h')
+        this.calculateFlowsWithAggregatedPositions(smartWallets, '1h'),
+        this.calculateFlowsWithAggregatedPositions(smartWallets, '24h')
       ]);
 
       // 🚀 Hot New Tokens с оптимизированным батчингом FDV
@@ -158,62 +168,127 @@ export class SmartMoneyFlowAnalyzer {
         topInflowsLastHour
       };
 
-      this.logger.info(`✅ OPTIMIZED Analysis: ${result.inflows.length} inflows, ${result.hotNewTokens.length} hot tokens`);
+      this.logger.info(`✅ ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ" COMPLETE: ${result.inflows.length} inflows, ${result.hotNewTokens.length} hot tokens`);
       return result;
     } catch (error) {
-      this.logger.error('❌ Error in optimized flow analysis:', error);
+      this.logger.error('❌ Error in ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ" flow analysis:', error);
       throw error;
     }
   }
 
-  // 🔥 БАТЧИНГ FDV ЗАПРОСОВ
-  private async calculateFlowsWithFDVBatched(smartWallets: SmartMoneyWallet[], period: '1h' | '24h'): Promise<{ inflows: SmartMoneyFlow[]; outflows: SmartMoneyFlow[] }> {
+  // 🔥🔥🔥 НОВАЯ ЛОГИКА РАСЧЕТА ПОТОКОВ С АГРЕГИРОВАННЫМИ ПОЗИЦИЯМИ + ОПТИМИЗАЦИЯ БД 🔥🔥🔥
+  private async calculateFlowsWithAggregatedPositions(smartWallets: SmartMoneyWallet[], period: '1h' | '24h'): Promise<{ inflows: SmartMoneyFlow[]; outflows: SmartMoneyFlow[] }> {
     const hours = period === '1h' ? 1 : 24;
     const cutoffTime = new Date(Date.now() - hours * 60 * 60 * 1000);
+
+    this.logger.info(`🔥 [ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ"] Starting ${period} flow analysis with aggregated positions...`);
 
     const tokenFlows = new Map<string, {
       tokenAddress: string; tokenSymbol: string; tokenName: string;
       totalBuyUSD: number; totalSellUSD: number;
       uniqueBuyers: Set<string>; uniqueSellers: Set<string>;
       transactions: TokenSwap[]; fdv: number | null; marketCap: number | null;
+      aggregatedPositionsUSD: number; // 🔥 НОВОЕ ПОЛЕ для агрегированных позиций
+      walletsWithAggregatedPositions: Set<string>; // 🔥 НОВОЕ ПОЛЕ
     }>();
 
-    // 🚀 1. Собираем ВСЕ транзакции и токены
+    // 🚀 ШАГ 1: СБОР ОДИНОЧНЫХ СДЕЛОК
+    // 🔥 ИСПРАВЛЕНО: Убран несуществующий метод getTransactionsForMultipleWallets
+    // Используем Promise.all для параллельных запросов
+    this.logger.info(`🔥 [ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ"] Fetching transactions for ${smartWallets.length} wallets with parallel queries...`);
+    
+    const walletAddresses = smartWallets.map(w => w.address);
+    
+    // 🔥 ИСПРАВЛЕНО: Используем только рабочий метод с Promise.all
+    const transactionPromises = smartWallets.map(wallet => 
+      this.getWalletTransactionsAfter(wallet.address, cutoffTime)
+    );
+    
+    const transactionArrays = await Promise.all(transactionPromises);
+    const allTransactions = transactionArrays.flat();
+    this.logger.info(`✅ [PARALLEL] Got ${allTransactions.length} transactions with ${smartWallets.length} parallel queries`);
+
+    // Обрабатываем все транзакции
     const allTokens = new Set<string>();
-    for (const wallet of smartWallets) {
-      const transactions = await this.getWalletTransactionsAfter(wallet.address, cutoffTime);
+    for (const tx of allTransactions) {
+      allTokens.add(tx.tokenAddress);
+      const key = tx.tokenAddress;
       
-      for (const tx of transactions) {
-        allTokens.add(tx.tokenAddress);
-        const key = tx.tokenAddress;
-        
-        if (!tokenFlows.has(key)) {
-          tokenFlows.set(key, {
-            tokenAddress: tx.tokenAddress, tokenSymbol: '', tokenName: '',
-            totalBuyUSD: 0, totalSellUSD: 0,
-            uniqueBuyers: new Set(), uniqueSellers: new Set(),
-            transactions: [], fdv: null, marketCap: null
-          });
-        }
+      if (!tokenFlows.has(key)) {
+        tokenFlows.set(key, {
+          tokenAddress: tx.tokenAddress, tokenSymbol: '', tokenName: '',
+          totalBuyUSD: 0, totalSellUSD: 0,
+          uniqueBuyers: new Set(), uniqueSellers: new Set(),
+          transactions: [], fdv: null, marketCap: null,
+          aggregatedPositionsUSD: 0, // 🔥 НОВОЕ ПОЛЕ
+          walletsWithAggregatedPositions: new Set() // 🔥 НОВОЕ ПОЛЕ
+        });
+      }
 
-        const flow = tokenFlows.get(key)!;
-        flow.transactions.push(tx);
+      const flow = tokenFlows.get(key)!;
+      flow.transactions.push(tx);
 
-        if (this.isBuyTransaction(tx)) {
-          flow.totalBuyUSD += tx.amountUSD;
-          flow.uniqueBuyers.add(tx.walletAddress);
-        } else {
-          flow.totalSellUSD += tx.amountUSD;
-          flow.uniqueSellers.add(tx.walletAddress);
-        }
+      if (this.isBuyTransaction(tx)) {
+        flow.totalBuyUSD += tx.amountUSD;
+        flow.uniqueBuyers.add(tx.walletAddress);
+      } else {
+        flow.totalSellUSD += tx.amountUSD;
+        flow.uniqueSellers.add(tx.walletAddress);
       }
     }
 
-    // 🚀 2. БАТЧ-запрос FDV для всех токенов ОДНОВРЕМЕННО
+    // 🚀 ШАГ 2: ЗАПРОС АГРЕГИРОВАННЫХ ДАННЫХ
+    if (this.solanaMonitor) {
+      this.logger.info(`🔥 [ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ"] Requesting aggregated positions from SolanaMonitor...`);
+      
+      const aggregatedPositions = this.solanaMonitor.getAggregatedPositionsForWallets(walletAddresses);
+      
+      let totalAggregatedPositions = 0;
+      let totalAggregatedUSD = 0;
+
+      // 🚀 ШАГ 3: ОБЪЕДИНЕНИЕ ДАННЫХ
+      for (const [walletAddress, positions] of aggregatedPositions) {
+        for (const position of positions) {
+          const key = position.tokenAddress;
+          totalAggregatedPositions++;
+          totalAggregatedUSD += position.totalUSD;
+          
+          if (!tokenFlows.has(key)) {
+            tokenFlows.set(key, {
+              tokenAddress: position.tokenAddress, tokenSymbol: position.tokenSymbol, tokenName: position.tokenName,
+              totalBuyUSD: 0, totalSellUSD: 0,
+              uniqueBuyers: new Set(), uniqueSellers: new Set(),
+              transactions: [], fdv: null, marketCap: null,
+              aggregatedPositionsUSD: 0,
+              walletsWithAggregatedPositions: new Set()
+            });
+          }
+
+          const flow = tokenFlows.get(key)!;
+          
+          // 🔥 ДОБАВЛЯЕМ ПОЛНЫЕ СУММЫ НАКОПЛЕННЫХ ПОЗИЦИЙ
+          flow.aggregatedPositionsUSD += position.totalUSD;
+          flow.walletsWithAggregatedPositions.add(walletAddress);
+          flow.uniqueBuyers.add(walletAddress); // Учитываем кошелек как покупателя
+          
+          // Обновляем метаданные если есть
+          if (position.tokenSymbol && !flow.tokenSymbol) {
+            flow.tokenSymbol = position.tokenSymbol;
+            flow.tokenName = position.tokenName;
+          }
+        }
+      }
+
+      this.logger.info(`🔥 [ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ"] Integrated ${totalAggregatedPositions} aggregated positions worth ${this.formatNumber(totalAggregatedUSD)}`);
+    } else {
+      this.logger.warn(`⚠️ [ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ"] SolanaMonitor not available - skipping aggregated positions`);
+    }
+
+    // 🚀 4. БАТЧ-запрос FDV для всех токенов ОДНОВРЕМЕННО
     this.logger.info(`🔥 Batching FDV requests for ${allTokens.size} tokens`);
     const tokenMetadata = await this.batchGetTokenMetadata(Array.from(allTokens));
 
-    // 🚀 3. Обогащаем потоки данными из батча
+    // 🚀 5. Обогащаем потоки данными из батча
     for (const [tokenAddress, flow] of tokenFlows) {
       const metadata = tokenMetadata.get(tokenAddress);
       if (metadata) {
@@ -221,21 +296,33 @@ export class SmartMoneyFlowAnalyzer {
         flow.tokenName = metadata.name;
         flow.fdv = metadata.fdv;
         flow.marketCap = metadata.marketCap;
-      } else {
+      } else if (!flow.tokenSymbol) {
         flow.tokenSymbol = `TOKEN_${tokenAddress.slice(0, 6)}`;
         flow.tokenName = 'Unknown Token';
       }
     }
 
-    // Преобразуем в SmartMoneyFlow с фильтрацией
+    // 🚀 ШАГ 4: АНАЛИЗ OUTFLOWS (каждая отдельная продажа = outflow)
+    // 🚀 ШАГ 5: ФИНАЛЬНЫЙ ФИЛЬТР
+
+    // Преобразуем в SmartMoneyFlow с учетом агрегированных позиций
     const inflows: SmartMoneyFlow[] = [];
     const outflows: SmartMoneyFlow[] = [];
 
     for (const [_, flow] of tokenFlows) {
-      const netFlowUSD = flow.totalBuyUSD - flow.totalSellUSD;
-      const uniqueWallets = flow.uniqueBuyers.size + flow.uniqueSellers.size;
+      // 🔥 ОБЪЕДИНЯЕМ ОДИНОЧНЫЕ ПОКУПКИ + АГРЕГИРОВАННЫЕ ПОЗИЦИИ
+      const totalInflowUSD = flow.totalBuyUSD + flow.aggregatedPositionsUSD;
+      const netFlowUSD = totalInflowUSD - flow.totalSellUSD;
+      
+      // 🔥 ОБЪЕДИНЯЕМ УНИКАЛЬНЫЕ КОШЕЛЬКИ
+      const uniqueWallets = new Set([
+        ...flow.uniqueBuyers,
+        ...flow.uniqueSellers,
+        ...flow.walletsWithAggregatedPositions
+      ]).size;
 
-      if (uniqueWallets < 2) continue;
+      // 🔥 ФИНАЛЬНЫЙ ФИЛЬТР: минимум 3 разных Smart Money кошелька и общий объем > $1000
+      if (uniqueWallets < this.PROFIT_CONFIG.minUniqueWallets) continue;
 
       // FDV фильтрация
       if (flow.fdv && (flow.fdv < this.PROFIT_CONFIG.minFDV || flow.fdv > this.PROFIT_CONFIG.maxFDV)) {
@@ -244,18 +331,23 @@ export class SmartMoneyFlowAnalyzer {
 
       const smartMoneyFlow: SmartMoneyFlow = {
         tokenAddress: flow.tokenAddress, tokenSymbol: flow.tokenSymbol, tokenName: flow.tokenName,
-        period, totalInflowUSD: flow.totalBuyUSD, totalOutflowUSD: flow.totalSellUSD,
+        period, totalInflowUSD, totalOutflowUSD: flow.totalSellUSD,
         netFlowUSD, uniqueWallets,
-        avgTradeSize: (flow.totalBuyUSD + flow.totalSellUSD) / uniqueWallets,
+        avgTradeSize: totalInflowUSD / uniqueWallets,
         topWallets: this.getTopWalletsFromFlow(flow)
       };
 
-      if (netFlowUSD > 0 && flow.totalBuyUSD > 5000) {
+      // 🔥 ФИНАЛЬНЫЙ ФИЛЬТР: только токены с общим объемом > $1000
+      if (netFlowUSD > 0 && totalInflowUSD > 1000) {
         inflows.push(smartMoneyFlow);
-      } else if (netFlowUSD < 0 && flow.totalSellUSD > 5000) {
+        this.logger.debug(`🔥 [INFLOW] ${flow.tokenSymbol}: ${this.formatNumber(totalInflowUSD)} (Single: ${this.formatNumber(flow.totalBuyUSD)}, Aggregated: ${this.formatNumber(flow.aggregatedPositionsUSD)}, Wallets: ${uniqueWallets})`);
+      } else if (netFlowUSD < 0 && flow.totalSellUSD > 1000) {
         outflows.push(smartMoneyFlow);
+        this.logger.debug(`🔥 [OUTFLOW] ${flow.tokenSymbol}: ${this.formatNumber(flow.totalSellUSD)} (Wallets: ${uniqueWallets})`);
       }
     }
+
+    this.logger.info(`🔥 [ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ"] ${period} flows: ${inflows.length} inflows, ${outflows.length} outflows`);
 
     return {
       inflows: inflows.sort((a, b) => b.totalInflowUSD - a.totalInflowUSD),
@@ -476,7 +568,7 @@ export class SmartMoneyFlowAnalyzer {
     return sortedTokens.slice(0, 10); // Топ-10 для уведомлений
   }
 
-  // 🆕 ОПТИМИЗИРОВАННОЕ обновление метрик кошельков (только 10 за раз)
+  // 🆕 ИСПРАВЛЕНО: Оптимизированное обновление метрик кошельков с новыми полями
   private async updateWalletPerformanceMetricsOptimized(smartWallets: SmartMoneyWallet[]): Promise<void> {
     this.logger.info('📊 Updating wallet performance (optimized - 10 wallets max)...');
 
@@ -509,11 +601,16 @@ export class SmartMoneyFlowAnalyzer {
           totalTrades: allTransactions.length
         });
 
+        // 🔥 ИСПРАВЛЕНО: Используем новые поля SmartMoneyWallet
+        const avgTradeSize = wallet.buy7d > 0 ? wallet.usdProfit7d / wallet.buy7d : 1000;
+        
         const metrics: WalletPerformanceMetrics = {
-          address: wallet.address, currentPnL: wallet.totalPnL,
+          address: wallet.address, 
+          currentPnL: wallet.usdProfit7d, // 🔥 ИСПРАВЛЕНО: используем usdProfit7d вместо totalPnL
           last30DaysPnL, last7DaysPnL, profitFactor: 0, maxDrawdown: 0,
-          avgHoldTime: 0, recentWinRate, volumeWeightedPrice: 0,
-          riskAdjustedReturn: last30DaysPnL / Math.max(wallet.avgTradeSize, 1000),
+          avgHoldTime: wallet.avgHoldingMins || 0, // 🔥 ИСПРАВЛЕНО: используем avgHoldingMins
+          recentWinRate, volumeWeightedPrice: 0,
+          riskAdjustedReturn: last30DaysPnL / Math.max(avgTradeSize, 1000), // 🔥 ИСПРАВЛЕНО: рассчитываем avgTradeSize
           realTimeScore, trendDirection: last7DaysPnL > 0 ? 'up' : last7DaysPnL < 0 ? 'down' : 'stable',
           hotStreak: this.calculateHotStreak(recentTransactions), recentHitRate: recentWinRate
         };
@@ -521,10 +618,13 @@ export class SmartMoneyFlowAnalyzer {
         this.walletPerformanceCache.set(wallet.address, { metrics, timestamp: Date.now() });
 
         if (realTimeScore !== wallet.performanceScore) {
+          // 🔥 ФИНАЛЬНОЕ ИСПРАВЛЕНИЕ: Данные из CSV - источник правды, только обновляем performanceScore
           await this.smDatabase.updateWalletPerformance(wallet.address, {
-            winRate: recentWinRate, totalPnL: wallet.totalPnL + last30DaysPnL,
-            totalTrades: wallet.totalTrades + allTransactions.length,
-            lastActiveAt: new Date(), performanceScore: realTimeScore
+            winrate7d: wallet.winrate7d,    // Берем из CSV (источник правды)
+            usdProfit7d: wallet.usdProfit7d, // Берем из CSV (источник правды) 
+            buy7d: wallet.buy7d,            // Берем из CSV (источник правды)
+            lastActiveAt: new Date(),
+            performanceScore: realTimeScore  // Обновляем на основе fresh анализа
           });
         }
 
@@ -804,7 +904,7 @@ export class SmartMoneyFlowAnalyzer {
   async sendHoldingsReport(report: HoldingsReport): Promise<void> {
     try {
       await this.telegramNotifier.sendCycleLog(
-        `📊 <b>OPTIMIZED Holdings Report</b>\n\n` +
+        `📊 <b>ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ" Holdings Report</b>\n\n` +
         `🏷️ Tokens: <code>${report.totalTokens}</code>\n` +
         `💰 Value: <code>$${this.formatNumber(report.totalValueUSD)}</code>\n` +
         `💎 Total FDV: <code>$${this.formatNumber(report.summary.totalFDV)}</code>\n` +
@@ -815,7 +915,7 @@ export class SmartMoneyFlowAnalyzer {
       );
 
       if (report.byWalletCount.length > 0) {
-        let message = `👥 <b>Top Tokens (Optimized FDV)</b>\n\n`;
+        let message = `👥 <b>Top Tokens (Единый Расчетный Центр)</b>\n\n`;
         report.byWalletCount.slice(0, 10).forEach((token, i) => {
           const medal = i < 3 ? ['🥇', '🥈', '🥉'][i] : `${i + 1}.`;
           message += `${medal} <b>${token.tokenSymbol}</b>\n`;

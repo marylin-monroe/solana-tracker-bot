@@ -1,4 +1,4 @@
-// src/services/QuickNodeWebhookManager.ts - 🔥 МАКСИМАЛЬНО СТАБИЛЬНАЯ ВЕРСИЯ С TRY/CATCH
+// src/services/QuickNodeWebhookManager.ts - 🔥 ПОЛНОСТЬЮ ИСПРАВЛЕННЫЙ С ПРАВИЛЬНОЙ ЛОГИКОЙ ИЗВЛЕЧЕНИЯ БАЛАНСОВ
 import { Logger } from '../utils/Logger';
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
 import { TelegramNotifier } from './TelegramNotifier';
@@ -60,17 +60,16 @@ export class QuickNodeWebhookManager {
   private currentProviderIndex: number = 0;
   private providerResponseTimes: Map<string, number[]> = new Map();
   
-  private smDatabase: SmartMoneyDatabase | null = null;
+  private smDatabase: SmartMoneyDatabase;
   private telegramNotifier: TelegramNotifier | null = null;
   private tokenMetadataService: TokenMetadataService;
   
-  // 🔥 МАКСИМАЛЬНОЕ СНИЖЕНИЕ API НАГРУЗКИ - ОЧЕНЬ МЕДЛЕННЫЕ КОНСТАНТЫ
-  private readonly POLLING_INTERVAL = 5 * 60 * 1000;         // 🔥 5 минут! (было 2)
-  private readonly MAX_WALLETS_PER_BATCH = 20;               // общий размер батча
-  private readonly CONCURRENT_WALLET_PROCESSING = 3;         // максимум 3 кошелька одновременно
-  private readonly DELAY_BETWEEN_WALLETS = 2000;             // 🔥 2 секунды между кошельками (было 1000)
-  private readonly DELAY_BETWEEN_TRANSACTIONS = 1500;        // 🔥 1.5 секунды между транзакциями (было 200)
-  private readonly SIGNATURES_LIMIT = 2;                     // 🔥 2 последние транзакции (было 3)
+  private readonly POLLING_INTERVAL = 2 * 60 * 1000;
+  private readonly MAX_WALLETS_PER_BATCH = 10;
+  private readonly CONCURRENT_WALLET_PROCESSING = 5;
+  private readonly DELAY_BETWEEN_WALLETS = 1000;
+  private readonly DELAY_BETWEEN_TRANSACTIONS = 300;
+  private readonly SIGNATURES_LIMIT = 5;
   
   private isPollingActive: boolean = false;
   private pollingInterval: NodeJS.Timeout | null = null;
@@ -81,7 +80,6 @@ export class QuickNodeWebhookManager {
   private lastCleanupTime = Date.now();
   private botStartTime = Date.now();
   
-  // 🔥 НОВАЯ СТАТИСТИКА ОШИБОК
   private errorStats = {
     walletProcessingErrors: 0,
     transactionProcessingErrors: 0,
@@ -90,7 +88,14 @@ export class QuickNodeWebhookManager {
     recoveredFromErrors: 0
   };
   
-  // Кеши
+  private syncStats = {
+    walletListUpdates: 0,
+    lastWalletListUpdate: new Date(),
+    walletsFoundInLastUpdate: 0,
+    totalPollingCycles: 0,
+    emptyListCycles: 0
+  };
+  
   private tokenInfoCache = new Map<string, { symbol: string; name: string; decimals: number; timestamp: number; price?: number; }>();
   private priceCache = new Map<string, { priceUSD: number; timestamp: number; }>();
   private addressCache = new Map<string, { hasSwap: boolean; timestamp: number; }>();
@@ -101,13 +106,20 @@ export class QuickNodeWebhookManager {
     minuteReset: Date.now() + 60000, dayReset: Date.now() + 24 * 60 * 60 * 1000, lastRequestTime: 0
   };
 
-  constructor() {
+  constructor(smDatabase: SmartMoneyDatabase, telegramNotifier?: TelegramNotifier) {
     this.logger = Logger.getInstance();
+    this.smDatabase = smDatabase;
+    this.telegramNotifier = telegramNotifier || null;
     this.tokenMetadataService = new TokenMetadataService();
     this.initializeProviders();
     this.startLimitResetTimer();
     this.startCacheCleanup();
-    this.logger.info(`🔥 QuickNodeWebhookManager STABILIZED: ${this.POLLING_INTERVAL/60000}min intervals, max error recovery, safe processing`);
+    this.logger.info(`🔥 QuickNodeWebhookManager: ПОЛНОСТЬЮ ИСПРАВЛЕН - ПРОТОКОЛ "ЖЕЛЕЗНЫЙ ДОЛЛАР" + ПРАВИЛЬНОЕ ИЗВЛЕЧЕНИЕ БАЛАНСОВ`);
+  }
+
+  setTelegramNotifier(telegramNotifier: TelegramNotifier): void {
+    this.telegramNotifier = telegramNotifier;
+    this.logger.info('TelegramNotifier set for QuickNode');
   }
 
   private initializeProviders(): void {
@@ -135,13 +147,13 @@ export class QuickNodeWebhookManager {
     }
 
     this.providers = providers.sort((a, b) => b.priority - a.priority);
-    this.logger.info(`🚀 Initialized ${this.providers.length} RPC providers with error recovery`);
+    this.logger.info(`Initialized ${this.providers.length} RPC providers`);
   }
 
   setDependencies(smDatabase: SmartMoneyDatabase, telegramNotifier: TelegramNotifier): void {
     this.smDatabase = smDatabase;
     this.telegramNotifier = telegramNotifier;
-    this.logger.info('✅ QuickNode dependencies set');
+    this.logger.info('QuickNode dependencies set');
   }
 
   private startLimitResetTimer(): void {
@@ -176,7 +188,7 @@ export class QuickNodeWebhookManager {
       if (this.recentSignatures.size > 1000 && now - this.lastCleanupTime > 10 * 60 * 1000) {
         this.recentSignatures.clear();
         this.lastCleanupTime = now;
-        this.logger.debug('🧹 Simple signature cleanup performed');
+        this.logger.debug('Simple signature cleanup performed');
       }
     }, 5 * 60 * 1000);
   }
@@ -184,7 +196,7 @@ export class QuickNodeWebhookManager {
   private getCurrentProvider(): RpcProvider | null {
     const healthyProviders = this.providers.filter(p => p.isHealthy);
     if (healthyProviders.length === 0) {
-      this.logger.warn('⚠️ No healthy providers available');
+      this.logger.warn('No healthy providers available');
       return null;
     }
 
@@ -200,10 +212,10 @@ export class QuickNodeWebhookManager {
     provider.lastError = error;
     provider.lastErrorTime = Date.now();
     
-    this.logger.warn(`💔 Provider ${provider.name} marked as unhealthy: ${error}`);
+    this.logger.warn(`Provider ${provider.name} marked as unhealthy: ${error}`);
     setTimeout(() => {
       provider.isHealthy = true;
-      this.logger.info(`✅ Provider ${provider.name} restored to healthy status`);
+      this.logger.info(`Provider ${provider.name} restored to healthy status`);
     }, 5 * 60 * 1000);
   }
 
@@ -284,16 +296,20 @@ export class QuickNodeWebhookManager {
     const currentProvider = this.getCurrentProvider();
     const healthyProviders = this.providers.filter(p => p.isHealthy).length;
     
-    this.logger.info(`📊 API: ${minuteUsage}%/min, ${dayUsage}%/day | Provider: ${currentProvider?.name || 'None'} | Healthy: ${healthyProviders}/${this.providers.length} | Errors: ${this.errorStats.walletProcessingErrors} wallet, ${this.errorStats.apiErrors} API`);
+    const syncEfficiency = this.syncStats.totalPollingCycles > 0 ? 
+      ((this.syncStats.totalPollingCycles - this.syncStats.emptyListCycles) / this.syncStats.totalPollingCycles * 100).toFixed(1) : '100';
+    
+    this.logger.info(`API: ${minuteUsage}%/min, ${dayUsage}%/day | Provider: ${currentProvider?.name || 'None'} | Healthy: ${healthyProviders}/${this.providers.length} | Errors: ${this.errorStats.walletProcessingErrors} wallet, ${this.errorStats.apiErrors} API | Sync: ${syncEfficiency}% efficiency`);
   }
 
   async createSmartMoneyWebhook(webhookUrl: string): Promise<string> {
     try {
-      this.logger.info('🎯 Creating Smart Money webhook...');
+      this.logger.info('Creating Smart Money webhook...');
 
       if (!this.canMakeRequest()) {
-        this.logger.warn('⚠️ API limit reached, switching to polling mode');
-        const smartWallets = await this.smDatabase?.getAllActiveSmartWallets() || [];
+        this.logger.warn('API limit reached, switching to polling mode');
+        const smartWallets = await this.smDatabase.getAllActiveSmartWallets();
+        this.logger.info(`FALLBACK: Fetched ${smartWallets.length} wallets from database for polling mode`);
         return await this.startPollingMode(smartWallets);
       }
 
@@ -326,13 +342,14 @@ export class QuickNodeWebhookManager {
 
       const responseData = await response.json();
       const streamResponse: QuickNodeStreamResponse = responseData as QuickNodeStreamResponse;
-      this.logger.info(`✅ Smart Money webhook created: ${streamResponse.id}`);
+      this.logger.info(`Smart Money webhook created: ${streamResponse.id}`);
       
       return streamResponse.id;
 
     } catch (error) {
-      this.logger.warn('⚠️ Webhook creation failed, falling back to polling:', error);
-      const smartWallets = await this.smDatabase?.getAllActiveSmartWallets() || [];
+      this.logger.warn('Webhook creation failed, falling back to polling:', error);
+      const smartWallets = await this.smDatabase.getAllActiveSmartWallets();
+      this.logger.info(`FALLBACK: Fetched ${smartWallets.length} wallets from database for polling mode after webhook failure`);
       return await this.startPollingMode(smartWallets);
     }
   }
@@ -352,10 +369,10 @@ export class QuickNodeWebhookManager {
         return;
       }
 
-      this.logger.info(`🗑️ Deleting QuickNode stream: ${streamId}`);
+      this.logger.info(`Deleting QuickNode stream: ${streamId}`);
 
       if (!this.canMakeRequest()) {
-        this.logger.warn('⚠️ Cannot delete stream - API limit reached');
+        this.logger.warn('Cannot delete stream - API limit reached');
         return;
       }
 
@@ -374,30 +391,35 @@ export class QuickNodeWebhookManager {
         throw new Error(`HTTP error! status: ${response.status}, body: ${errorText}`);
       }
 
-      this.logger.info(`✅ Stream deleted successfully: ${streamId}`);
+      this.logger.info(`Stream deleted successfully: ${streamId}`);
 
     } catch (error) {
-      this.logger.error('❌ Error deleting stream:', error);
+      this.logger.error('Error deleting stream:', error);
       throw error;
     }
   }
 
   async startPollingMode(smartWallets: SmartMoneyWallet[]): Promise<string> {
     try {
-      this.logger.info('🚀 Starting ULTRA-SAFE POLLING mode for Smart Money monitoring...');
+      console.log('=== POLLING MODE START ===');
+      console.log(`Starting polling mode with ${smartWallets.length} wallets`);
       
       this.monitoredWallets = smartWallets;
       this.isPollingActive = true;
+      
+      this.syncStats.walletsFoundInLastUpdate = smartWallets.length;
+      this.syncStats.lastWalletListUpdate = new Date();
+      this.syncStats.walletListUpdates++;
       
       this.pollingInterval = setInterval(() => this.pollWalletsForTransactions(), this.POLLING_INTERVAL);
       
       await this.pollWalletsForTransactions();
       
-      this.logger.info(`✅ Ultra-safe polling started for ${smartWallets.length} wallets (${this.POLLING_INTERVAL/60000}min interval, max ${this.CONCURRENT_WALLET_PROCESSING} concurrent, ${this.SIGNATURES_LIMIT} sigs each)`);
+      this.logger.info(`Polling mode activated for ${smartWallets.length} wallets`);
       return 'polling-mode';
       
     } catch (error) {
-      this.logger.error('❌ Error starting polling mode:', error);
+      this.logger.error('Error starting polling mode:', error);
       throw error;
     }
   }
@@ -408,32 +430,75 @@ export class QuickNodeWebhookManager {
       this.pollingInterval = null;
     }
     this.isPollingActive = false;
-    this.logger.info('⏹️ Polling mode stopped');
+    this.logger.info('Polling mode stopped');
   }
 
-  // 🔥 МАКСИМАЛЬНО БЕЗОПАСНАЯ ОБРАБОТКА С TRY/CATCH НА КАЖДОМ УРОВНЕ
   private async pollWalletsForTransactions(): Promise<void> {
-    if (!this.isPollingActive) return;
+    console.log('=== POLLING CYCLE START ===');
+    console.log(`Time: ${new Date().toISOString()}`);
+    console.log(`Polling active: ${this.isPollingActive}`);
+    console.log(`Database connection: ${this.smDatabase ? 'OK' : 'NULL'}`);
+    
+    if (!this.isPollingActive || !this.smDatabase) {
+      console.log('POLLING STOPPED: inactive or no database');
+      return;
+    }
 
-    this.logger.info(`🔍 Starting ultra-safe polling of ${this.monitoredWallets.length} SM wallets. Concurrency: ${this.CONCURRENT_WALLET_PROCESSING}, Delays: ${this.DELAY_BETWEEN_WALLETS}ms`);
+    try {
+      const previousCount = this.monitoredWallets.length;
+      this.monitoredWallets = await this.smDatabase.getAllActiveSmartWallets();
+      
+      console.log(`Wallets loaded from database: ${this.monitoredWallets.length}`);
+      if (this.monitoredWallets.length > 0) {
+        console.log(`First 3 wallets: ${this.monitoredWallets.slice(0,3).map(w => w.address.slice(0,8)).join(', ')}`);
+      }
+      
+      this.syncStats.totalPollingCycles++;
+      this.syncStats.walletListUpdates++;
+      this.syncStats.walletsFoundInLastUpdate = this.monitoredWallets.length;
+      this.syncStats.lastWalletListUpdate = new Date();
+      
+      if (this.monitoredWallets.length !== previousCount) {
+        console.log(`WALLET LIST UPDATED: ${previousCount} -> ${this.monitoredWallets.length}`);
+        
+        if (this.telegramNotifier && Math.abs(this.monitoredWallets.length - previousCount) >= 5) {
+          await this.telegramNotifier.sendCycleLog(
+            `Wallet List Auto-Update\n\n` +
+            `Previous: ${previousCount}\n` +
+            `Current: ${this.monitoredWallets.length}\n` +
+            `Change: ${this.monitoredWallets.length - previousCount > 0 ? '+' : ''}${this.monitoredWallets.length - previousCount}\n` +
+            `Auto-refresh working correctly!`
+          );
+        }
+      }
+      
+    } catch (error) {
+      console.log('CRITICAL: Failed to update wallet list from database:', error);
+      this.errorStats.walletProcessingErrors++;
+      return;
+    }
+    
+    if (this.monitoredWallets.length === 0) {
+      console.log('NO WALLETS TO MONITOR - waiting for next cycle');
+      this.syncStats.emptyListCycles++;
+      return;
+    }
+
+    console.log(`Starting wallet processing: ${this.monitoredWallets.length} wallets, ${this.CONCURRENT_WALLET_PROCESSING} concurrent`);
     
     const activeWallets = this.monitoredWallets;
     let totalProcessed = 0;
     let totalErrors = 0;
 
-    // 🔥 ОБРАБОТКА ПО ПОД-БАТЧАМ С МАКСИМАЛЬНОЙ ЗАЩИТОЙ ОТ ОШИБОК
     for (let i = 0; i < activeWallets.length; i += this.CONCURRENT_WALLET_PROCESSING) {
       if (!this.isPollingActive) break;
 
       const walletSubBatch = activeWallets.slice(i, i + this.CONCURRENT_WALLET_PROCESSING);
-      this.logger.debug(`[Polling] Processing wallet sub-batch ${Math.floor(i/this.CONCURRENT_WALLET_PROCESSING) + 1}: [${walletSubBatch.map(w => w.address.slice(0,6)).join(', ')}]`);
+      console.log(`Processing wallet batch ${Math.floor(i/this.CONCURRENT_WALLET_PROCESSING) + 1}: [${walletSubBatch.map(w => w.address.slice(0,6)).join(', ')}]`);
 
-      // 🔥 КАЖДЫЙ КОШЕЛЕК В ОТДЕЛЬНОМ TRY/CATCH
       const batchPromises = walletSubBatch.map(wallet => this.processWalletBatchSafely(wallet));
-      
       const results = await Promise.allSettled(batchPromises);
       
-      // Подсчитываем результаты
       for (const result of results) {
         if (result.status === 'fulfilled') {
           totalProcessed++;
@@ -441,47 +506,42 @@ export class QuickNodeWebhookManager {
         } else {
           totalErrors++;
           this.errorStats.walletProcessingErrors++;
-          this.logger.error(`[Polling] CRITICAL: Wallet batch promise rejected: ${result.reason}`);
+          console.log(`CRITICAL: Wallet batch promise rejected: ${result.reason}`);
         }
       }
 
-      // 🔥 УВЕЛИЧЕННАЯ ПАУЗА МЕЖДУ ПОД-БАТЧАМИ
       if (i + this.CONCURRENT_WALLET_PROCESSING < activeWallets.length) {
-        this.logger.debug(`[Polling] 💤 Pausing ${this.DELAY_BETWEEN_WALLETS}ms between wallet sub-batches...`);
+        console.log(`Pausing ${this.DELAY_BETWEEN_WALLETS}ms between wallet batches...`);
         await this.sleep(this.DELAY_BETWEEN_WALLETS);
       }
     }
     
-    this.logger.info(`[Polling] Ultra-safe cycle finished: ${totalProcessed} processed, ${totalErrors} errors, ${activeWallets.length} total wallets.`);
+    console.log(`POLLING CYCLE COMPLETE: ${totalProcessed} processed, ${totalErrors} errors, ${activeWallets.length} total wallets`);
     this.logApiUsageWithProviderStats();
   }
 
-  // 🔥 НОВЫЙ БЕЗОПАСНЫЙ МЕТОД ОБРАБОТКИ КОШЕЛЬКА
   private async processWalletBatchSafely(wallet: SmartMoneyWallet): Promise<'success' | 'error'> {
+    console.log(`--- Processing wallet: ${wallet.address.slice(0,8)} ---`);
+    console.log(`Can make request: ${this.canMakeRequest()}`);
+    
     try {
       if (!this.canMakeRequest()) {
-        this.logger.warn(`⚠️ API limit reached, skipping wallet ${wallet.address.slice(0, 8)}...`);
-        await this.sleep(30000);
+        console.log(`API limit reached for wallet ${wallet.address.slice(0,8)}`);
+        await this.sleep(10000);
         return 'error';
       }
       
-      const lastSignature = this.lastProcessedSignatures.get(wallet.address);
-      
-      // 🔥 БЕЗОПАСНОЕ ПОЛУЧЕНИЕ ПОДПИСЕЙ
       let signatures: Array<{signature: string; blockTime: number}> = [];
       try {
-        signatures = await this.getWalletSignatures(wallet.address, lastSignature);
+        signatures = await this.getWalletSignatures(wallet.address);
       } catch (error) {
-        this.logger.error(`[Wallet] Error getting signatures for ${wallet.address.slice(0, 8)}: ${error}`);
+        console.log(`Error getting signatures for ${wallet.address.slice(0, 8)}: ${error}`);
         return 'error';
       }
       
+      console.log(`Wallet ${wallet.address.slice(0,8)}: found ${signatures.length} recent signatures`);
+      
       if (signatures.length > 0) {
-        this.logger.debug(`🔍 Processing ${signatures.length}/${this.SIGNATURES_LIMIT} recent transactions for ${wallet.address.slice(0, 8)}...`);
-        
-        this.lastProcessedSignatures.set(wallet.address, signatures[0].signature);
-        
-        // 🔥 БЕЗОПАСНАЯ ОБРАБОТКА КАЖДОЙ ТРАНЗАКЦИИ
         let transactionErrors = 0;
         for (const sig of signatures) {
           try {
@@ -490,98 +550,258 @@ export class QuickNodeWebhookManager {
           } catch (error) {
             transactionErrors++;
             this.errorStats.transactionProcessingErrors++;
-            this.logger.error(`[Transaction] Error processing ${sig.signature.slice(0, 12)} for ${wallet.address.slice(0, 8)}: ${error}`);
-            // Продолжаем обработку следующей транзакции
+            console.log(`Error processing transaction ${sig.signature.slice(0, 12)} for ${wallet.address.slice(0, 8)}: ${error}`);
           }
         }
         
         if (transactionErrors > 0) {
-          this.logger.warn(`[Wallet] ${wallet.address.slice(0, 8)}: ${transactionErrors}/${signatures.length} transactions failed`);
+          console.log(`Wallet ${wallet.address.slice(0, 8)}: ${transactionErrors}/${signatures.length} transactions failed`);
         }
       }
       
-      await this.sleep(500);
+      await this.sleep(200);
       return 'success';
       
     } catch (error) {
       this.errorStats.walletProcessingErrors++;
       this.errorStats.lastErrorTime = new Date();
-      this.logger.error(`[Wallet] CRITICAL ERROR processing wallet ${wallet.address.slice(0, 8)}: ${error}`);
-      await this.sleep(1000);
+      console.log(`CRITICAL ERROR processing wallet ${wallet.address.slice(0, 8)}: ${error}`);
+      await this.sleep(500);
       return 'error';
     }
   }
 
-  // 🔥 НОВЫЙ БЕЗОПАСНЫЙ МЕТОД ОБРАБОТКИ ТРАНЗАКЦИИ
   private async processWalletTransactionSafely(signature: string, wallet: SmartMoneyWallet): Promise<void> {
+    console.log(`Processing transaction: ${signature.slice(0,12)} for wallet: ${wallet.address.slice(0,8)}`);
+    
     try {
-      if (this.recentSignatures.has(signature)) return;
+      if (this.recentSignatures.has(signature)) {
+        console.log(`Skipping duplicate transaction: ${signature.slice(0,12)}`);
+        return;
+      }
       this.recentSignatures.add(signature);
 
       if (!this.canMakeRequest()) return;
 
       this.trackApiRequest();
       
-      // 🔥 БЕЗОПАСНОЕ ПОЛУЧЕНИЕ ДЕТАЛЕЙ ТРАНЗАКЦИИ
       let transaction: any = null;
       try {
         transaction = await this.getTransactionDetails(signature);
       } catch (error) {
-        this.logger.error(`[Transaction] Error getting details for ${signature.slice(0, 12)}: ${error}`);
+        console.log(`Error getting transaction details for ${signature.slice(0, 12)}: ${error}`);
         return;
       }
       
-      if (!transaction) return;
+      if (!transaction) {
+        console.log(`No transaction details for ${signature.slice(0,12)}`);
+        return;
+      }
+      
+      console.log(`Transaction details received for ${signature.slice(0,12)}, processing swaps...`);
 
       if (!this.isTransactionRecentAndValid(transaction)) {
         const transactionAge = this.getTransactionAge(transaction);
-        this.logger.debug(`⏰ Skipping old/invalid transaction: ${signature.slice(0, 12)}... (age: ${transactionAge})`);
+        console.log(`Skipping old/invalid transaction: ${signature.slice(0, 12)} (age: ${transactionAge})`);
         return;
       }
 
-      // 🔥 БЕЗОПАСНОЕ ИЗВЛЕЧЕНИЕ СВАПОВ
-      let swaps: SmartMoneySwap[] = [];
-      try {
-        swaps = await this.extractSwapsFromTransaction(transaction, wallet);
-      } catch (error) {
-        this.logger.error(`[Swap] Error extracting swaps from ${signature.slice(0, 12)}: ${error}`);
+      // 🔥🔥🔥 ИСПОЛЬЗУЕМ УНИВЕРСАЛЬНУЮ ФУНКЦИЮ ИЗВЛЕЧЕНИЯ СВАПОВ 🔥🔥🔥
+      const swapInfo = await this.extractSwapInfoFromBalances(transaction);
+      if (!swapInfo) {
+        console.log(`No valid swap found in transaction ${signature.slice(0,12)}`);
         return;
       }
-      
-      // 🔥 БЕЗОПАСНАЯ ОБРАБОТКА КАЖДОГО СВАПА
-      for (const swap of swaps) {
-        try {
-          if (this.shouldProcessSmartMoneySwapOptimized(swap, wallet)) {
-            await this.saveAndNotifySwap(swap);
-            this.logger.info(`🔥 SM swap: ${swap.tokenSymbol} - $${swap.amountUSD.toFixed(0)} (${this.getTransactionAge(transaction)}) ${swap.actualTokenAmount ? `| ACTUAL: ${swap.actualTokenAmount.toLocaleString()}` : ''}`);
-          }
-        } catch (error) {
-          this.logger.error(`[Swap] Error processing swap ${swap.tokenSymbol}: ${error}`);
-          // Продолжаем обработку следующего свапа
-        }
+
+      console.log(`🎯 Perfect swap detected: ${swapInfo.inputMint.slice(0,8)}... → ${swapInfo.outputMint.slice(0,8)}...`);
+
+      // Вызываем единый расчетный центр
+      const valueCalculation = await this.tokenMetadataService.calculateSwapUSDValue(
+        swapInfo.inputMint, swapInfo.inputAmountRaw, swapInfo.outputMint, swapInfo.outputAmountRaw
+      );
+
+      if (!valueCalculation) {
+        console.log(`❌ Value calculation FAILED - swap filtered out by unified calculator`);
+        return;
+      }
+
+      const { amountUSD, swapType, tokenAddress, paymentToken, paymentTokenAmount, paymentTokenPrice } = valueCalculation;
+
+      console.log(`✅ Value calculation SUCCESS: $${amountUSD.toFixed(2)} ${swapType}`);
+
+      if (amountUSD >= 700) {
+        const tokenInfo = await this.getTokenInfoCached(tokenAddress);
+        const paymentTokenInfo = await this.getTokenInfoCached(paymentToken);
+
+        // Получаем правильное количество основного токена
+        const actualTokenAmount = swapType === 'buy' ? 
+          swapInfo.outputAmountRaw / Math.pow(10, tokenInfo.decimals) :
+          swapInfo.inputAmountRaw / Math.pow(10, tokenInfo.decimals);
+
+        // Формируем объект SmartMoneySwap
+        const smartMoneySwap: SmartMoneySwap = {
+          transactionId: signature,
+          walletAddress: wallet.address,
+          tokenAddress,
+          tokenSymbol: tokenInfo.symbol,
+          tokenName: tokenInfo.name,
+          tokenAmount: actualTokenAmount,
+          amountUSD,
+          swapType,
+          timestamp: new Date(transaction.blockTime * 1000),
+          category: wallet.category,
+          usdProfit7d: wallet.usdProfit7d,
+          winrate7d: wallet.winrate7d,
+          buy7d: wallet.buy7d,
+          tokenPrice: actualTokenAmount > 0 ? amountUSD / actualTokenAmount : 0,
+          paymentTokenSymbol: paymentTokenInfo.symbol,
+          paymentTokenAmount: paymentTokenAmount,
+          paymentTokenPrice: paymentTokenPrice,
+          isFamilyMember: false,
+        };
+
+        console.log(`🎉 SWAP CREATED: ${tokenInfo.symbol} - $${amountUSD.toFixed(2)} - ${swapType}`);
+        await this.saveAndNotifySwap(smartMoneySwap);
+        console.log(`🚀 SWAP NOTIFICATION SENT: ${smartMoneySwap.tokenSymbol} - $${smartMoneySwap.amountUSD.toFixed(0)}`);
+      } else {
+        console.log(`💸 Swap below $700 threshold: $${amountUSD.toFixed(2)}`);
       }
 
     } catch (error) {
       this.errorStats.transactionProcessingErrors++;
-      this.logger.error(`[Transaction] CRITICAL ERROR processing transaction ${signature.slice(0, 12)}: ${error}`);
-      throw error; // Пробрасываем ошибку наверх для учета статистики
+      console.log(`CRITICAL ERROR processing transaction ${signature.slice(0, 12)}: ${error}`);
+      throw error;
     }
   }
 
-  private async getWalletSignatures(walletAddress: string, beforeSignature?: string): Promise<Array<{signature: string; blockTime: number}>> {
+  // 🔥🔥🔥 УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ИЗВЛЕЧЕНИЯ СВАПОВ - ФИНАЛЬНАЯ ВЕРСИЯ 🔥🔥🔥
+  private async extractSwapInfoFromBalances(txData: any): Promise<{
+    walletAddress: string; inputMint: string; outputMint: string;
+    inputAmountRaw: number; outputAmountRaw: number;
+  } | null> {
+    try {
+      // В QuickNodeWebhookManager txData - это уже объект транзакции
+      const transaction = txData;
+      
+      if (!transaction?.meta) return null;
+
+      const preTokenBalances = transaction.meta.preTokenBalances || [];
+      const postTokenBalances = transaction.meta.postTokenBalances || [];
+      
+      // 🔥 ИСПРАВЛЕНИЕ №1: Правильный путь к accountKeys
+      const accountKeys = transaction.transaction?.message?.accountKeys || [];
+      const walletAddress = this.extractWalletAddressFromTransaction(transaction);
+
+      if (!walletAddress) return null;
+
+      const tokenChanges = new Map<string, { change: number, mint: string, decimals: number }>();
+
+      // Анализ существующих токен-аккаунтов
+      for (const pre of preTokenBalances) {
+      if (pre.owner !== walletAddress) continue;
+      const post = postTokenBalances.find(p => p.accountIndex === pre.accountIndex);
+  
+      // 🔥 ИСПРАВЛЕНИЕ: Правильное извлечение UI amount vs raw amount
+      const preAmount = parseFloat(pre.uiTokenAmount.uiAmountString || pre.uiTokenAmount.uiAmount?.toString() || '0');
+      const postAmount = post ? parseFloat(post.uiTokenAmount.uiAmountString || post.uiTokenAmount.uiAmount?.toString() || '0') : 0;
+      const change = postAmount - preAmount;
+  
+      console.log(`🔍 TOKEN DEBUG: ${pre.mint.slice(0,8)}, pre=${preAmount}, post=${postAmount}, change=${change}, decimals=${pre.uiTokenAmount.decimals}`);
+  
+      if (Math.abs(change) > 1e-9) {
+        console.log(`📊 Existing token change: ${pre.mint.slice(0,8)}... = ${change}`);
+        tokenChanges.set(pre.mint, { change, mint: pre.mint, decimals: pre.uiTokenAmount.decimals });
+      }
+    }
+
+      // 🔥 ИСПРАВЛЕНИЕ №2: Анализ НОВЫХ токен-аккаунтов
+      for (const post of postTokenBalances) {
+        if (post.owner !== walletAddress || tokenChanges.has(post.mint)) continue;
+      const isNewAccount = !preTokenBalances.find(p => p.accountIndex === post.accountIndex);
+        if (isNewAccount) {
+        // 🔥 ИСПРАВЛЕНО: используем UI amount вместо raw amount
+      const change = parseFloat(post.uiTokenAmount.uiAmountString || post.uiTokenAmount.uiAmount?.toString() || '0');
+      console.log(`🔍 NEW TOKEN DEBUG: ${post.mint.slice(0,8)}, change=${change}, decimals=${post.uiTokenAmount.decimals}`);
+        if (change > 1e-9) {
+      console.log(`🆕 New token account: ${post.mint.slice(0,8)}... = ${change}`);
+      tokenChanges.set(post.mint, { change, mint: post.mint, decimals: post.uiTokenAmount.decimals });
+        }
+      }
+    }
+
+      // Анализ нативного SOL
+      const walletIndex = accountKeys.findIndex((key: any) => (key.pubkey || key) === walletAddress);
+      if (walletIndex !== -1 && transaction.meta.preBalances && transaction.meta.postBalances) {
+        const solChange = (transaction.meta.postBalances[walletIndex] - transaction.meta.preBalances[walletIndex]) / 1e9;
+        if (Math.abs(solChange) > 1e-9) {
+          console.log(`💰 NATIVE SOL CHANGE: ${solChange} SOL`);
+          tokenChanges.set('So11111111111111111111111111111111111111112', {
+            change: solChange,
+            mint: 'So11111111111111111111111111111111111111112',
+            decimals: 9
+          });
+        }
+      }
+
+      const spentTokens = Array.from(tokenChanges.values()).filter(c => c.change < 0);
+      const receivedTokens = Array.from(tokenChanges.values()).filter(c => c.change > 0);
+
+      console.log(`🔄 Balance changes: ${tokenChanges.size} total, ${spentTokens.length} spent, ${receivedTokens.length} received`);
+
+      if (spentTokens.length === 1 && receivedTokens.length === 1) {
+        const inputMint = spentTokens[0].mint;
+        const outputMint = receivedTokens[0].mint;
+        const inputAmountRaw = Math.abs(spentTokens[0].change) * Math.pow(10, spentTokens[0].decimals);
+        const outputAmountRaw = receivedTokens[0].change * Math.pow(10, receivedTokens[0].decimals);
+
+        console.log(`🎯 Perfect swap: ${inputMint.slice(0,8)}... → ${outputMint.slice(0,8)}...`);
+        return { walletAddress, inputMint, outputMint, inputAmountRaw, outputAmountRaw };
+      }
+
+      console.log(`⚠️ Complex or invalid swap: ${spentTokens.length} spent, ${receivedTokens.length} received`);
+      return null;
+
+    } catch (error) {
+      console.log(`❌ Error extracting swap from balances: ${error}`);
+      return null;
+    }
+  }
+
+  private async getWalletSignatures(walletAddress: string): Promise<Array<{signature: string; blockTime: number}>> {
+    console.log(`Getting signatures for wallet: ${walletAddress.slice(0,8)}`);
+    
     try {
       const params: any = [
         walletAddress,
-        { limit: this.SIGNATURES_LIMIT, commitment: 'confirmed' }
+        { 
+          limit: this.SIGNATURES_LIMIT, 
+          commitment: 'confirmed'
+        }
       ];
 
-      if (beforeSignature) params[1].before = beforeSignature;
-
       const data = await this.makeRpcRequest('getSignaturesForAddress', params);
-      return data.result || [];
+      const signatures = data.result || [];
+      
+      console.log(`Raw signatures received: ${signatures.length}`);
+      
+      // 🔥 ИСПРАВЛЕНО: Увеличен временной фильтр до 24 часов
+      const twentyFourHoursAgo = Math.floor(Date.now() / 1000) - (24 * 60 * 60);
+      const recentSignatures = signatures.filter((sig: any) => sig.blockTime > twentyFourHoursAgo);
+      
+      console.log(`After time filter (24h): ${recentSignatures.length}`);
+      console.log(`Filter timestamp: ${twentyFourHoursAgo}, current: ${Math.floor(Date.now() / 1000)}`);
+      
+      if (signatures.length > 0) {
+        const latestTime = signatures[0].blockTime;
+        const currentTime = Math.floor(Date.now() / 1000);
+        const timeDiff = currentTime - latestTime;
+        console.log(`Latest signature time: ${latestTime}, current: ${currentTime}, diff: ${timeDiff} seconds ago`);
+      }
+      
+      return recentSignatures;
 
     } catch (error) {
-      this.logger.error(`Error getting signatures for ${walletAddress}:`, error);
+      console.log(`Error getting signatures for ${walletAddress}: ${error}`);
       return [];
     }
   }
@@ -599,21 +819,25 @@ export class QuickNodeWebhookManager {
     }
   }
 
+  // 🔥🔥🔥 ИСПРАВЛЕНО: Простая и надежная проверка времени с Math.abs()
   private isTransactionRecentAndValid(transaction: any): boolean {
     if (!transaction || !transaction.blockTime) return false;
     
     const transactionTime = transaction.blockTime * 1000;
     const now = Date.now();
-    const timeSinceTransaction = now - transactionTime;
+    const timeDifference = now - transactionTime;
     const maxAge = 24 * 60 * 60 * 1000; // 24 часа
     
-    if (timeSinceTransaction > maxAge) {
-      this.logger.debug(`🚫 Transaction too old (${this.formatTimeDiff(timeSinceTransaction)} ago)`);
+    // 🔥 ЕДИНСТВЕННАЯ НАДЕЖНАЯ ПРОВЕРКА: используем Math.abs() для защиты от рассинхронизации
+    const absoluteTimeDifference = Math.abs(timeDifference);
+    
+    if (absoluteTimeDifference > maxAge) {
+      this.logger.debug(`Transaction too old (${this.formatTimeDiff(timeDifference)} ago)`);
       return false;
     }
     
     if (!transaction.meta || transaction.meta.err) {
-      this.logger.debug(`🚫 Invalid transaction: Has errors or missing meta`);
+      this.logger.debug(`Invalid transaction: Has errors or missing meta`);
       return false;
     }
     
@@ -646,92 +870,26 @@ export class QuickNodeWebhookManager {
     return `${ageMinutes}m`;
   }
 
-  private async extractSwapsFromTransaction(transaction: any, wallet: SmartMoneyWallet): Promise<SmartMoneySwap[]> {
-    const swaps: SmartMoneySwap[] = [];
-
-    try {
-      if (!transaction || !transaction.meta || transaction.meta.err) return swaps;
-
-      const preTokenBalances = transaction.meta.preTokenBalances || [];
-      const postTokenBalances = transaction.meta.postTokenBalances || [];
-      const blockTime = transaction.blockTime;
-
-      for (const postBalance of postTokenBalances) {
-        if (postBalance.owner !== wallet.address) continue;
-
-        const preBalance = preTokenBalances.find((pre: any) => pre.accountIndex === postBalance.accountIndex);
-
-        const postRawAmount = parseFloat(postBalance.uiTokenAmount.amount || '0');
-        const preRawAmount = preBalance ? parseFloat(preBalance.uiTokenAmount.amount || '0') : 0;
-        const rawDifference = postRawAmount - preRawAmount;
-        
-        const tokenMint = postBalance.mint;
-        const decimals = postBalance.uiTokenAmount.decimals || this.getDefaultDecimals(tokenMint);
-        const actualDifference = rawDifference / Math.pow(10, decimals);
-
-        if (Math.abs(actualDifference) < 1) continue;
-
-        const [tokenInfo, tokenPrice] = await Promise.all([
-          this.getTokenInfoCached(tokenMint),
-          this.tokenMetadataService.getTokenPrice(tokenMint)
-        ]);
-
-        const swapType: 'buy' | 'sell' = actualDifference > 0 ? 'buy' : 'sell';
-        const tokenAmount = Math.abs(actualDifference);
-        
-        const estimatedUSD = await this.estimateTokenValueUSDCached(tokenMint, tokenAmount, decimals);
-
-        this.logger.debug(`🔍 ${swapType.toUpperCase()} | ${tokenInfo.symbol} | RAW: ${Math.abs(rawDifference).toLocaleString()} | ACTUAL: ${tokenAmount.toLocaleString()} | USD: ${estimatedUSD.toLocaleString()}`);
-
-        if (estimatedUSD > 5000) {
-          swaps.push({
-            transactionId: transaction.transaction.signatures[0],
-            walletAddress: wallet.address,
-            tokenAddress: tokenMint,
-            tokenSymbol: tokenInfo.symbol,
-            tokenName: tokenInfo.name,
-            tokenAmount,
-            amountUSD: estimatedUSD,
-            swapType,
-            timestamp: new Date(blockTime * 1000),
-            category: wallet.category,
-            winRate: wallet.winRate,
-            pnl: wallet.totalPnL,
-            totalTrades: wallet.totalTrades,
-            tokenPrice: tokenPrice || undefined,
-            isFamilyMember: false,
-            familySize: 0,
-            familyId: undefined,
-            actualTokenAmount: tokenAmount,
-            decimals: decimals
-          });
-        }
-      }
-
-    } catch (error) {
-      this.logger.error('Error extracting swaps from transaction:', error);
-    }
-
-    return swaps;
-  }
-
-  private shouldProcessSmartMoneySwapOptimized(swap: SmartMoneySwap, wallet: SmartMoneyWallet): boolean {
-    const minAmounts: Record<string, number> = { sniper: 8000, hunter: 10000, trader: 25000 };
-    const minAmount = minAmounts[wallet.category] || 10000;
-    if (swap.amountUSD < minAmount) return false;
-
-    const daysSinceActive = (Date.now() - wallet.lastActiveAt.getTime()) / (1000 * 60 * 60 * 24);
-    if (daysSinceActive > 15) return false;
-    if (wallet.winRate < 70) return false;
-    if (wallet.performanceScore < 80) return false;
-
-    return true;
+  // 🔥🔥🔥 ИСПРАВЛЕНО: Правильное извлечение адреса кошелька с правильным приоритетом
+  private extractWalletAddressFromTransaction(txData: any): string | null {
+    // 🔥 ПРАВИЛЬНЫЙ ПОРЯДОК ПРИОРИТЕТОВ:
+    // 1. feePayer (наиболее надежный - это всегда кошелек пользователя)
+    if (txData.feePayer) return txData.feePayer;
+    
+    // 2. Из балансов - берем первого owner (это реальный кошелек пользователя)
+    if (txData.meta?.preTokenBalances?.[0]?.owner) return txData.meta.preTokenBalances[0].owner;
+    if (txData.meta?.postTokenBalances?.[0]?.owner) return txData.meta.postTokenBalances[0].owner;
+    
+    // 3. ТОЛЬКО В КРАЙНЕМ СЛУЧАЕ: первый accountKey (может быть программой!)
+    if (txData.transaction?.message?.accountKeys?.[0]) return txData.transaction.message.accountKeys[0];
+    
+    return null;
   }
 
   private getDefaultDecimals(tokenMint: string): number {
-    if (tokenMint === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') return 6; // USDC
-    if (tokenMint === 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB') return 6; // USDT  
-    return 9; // SOL и большинство других
+    // 🔥 УСТРАНЯЕМ ДУБЛИРОВАНИЕ - используем TokenMetadataService
+    return this.tokenMetadataService.getTokenSymbol(tokenMint) === 'USDC' || 
+           this.tokenMetadataService.getTokenSymbol(tokenMint) === 'USDT' ? 6 : 9;
   }
 
   private async getTokenInfoCached(tokenMint: string): Promise<{ symbol: string; name: string; decimals: number }> {
@@ -744,7 +902,7 @@ export class QuickNodeWebhookManager {
       const metadata = await this.tokenMetadataService.getTokenMetadata(tokenMint);
       
       const tokenInfo = {
-        symbol: metadata?.symbol || `${tokenMint.slice(0, 6).toUpperCase()}`,
+        symbol: metadata?.symbol || this.tokenMetadataService.getTokenSymbol(tokenMint),
         name: metadata?.name || 'Unknown Token',
         decimals: metadata?.decimals || this.getDefaultDecimals(tokenMint),
         timestamp: Date.now()
@@ -756,54 +914,21 @@ export class QuickNodeWebhookManager {
     } catch (error) {
       this.logger.error(`Error getting token info for ${tokenMint}:`, error);
       return { 
-        symbol: `${tokenMint.slice(0, 6).toUpperCase()}`, 
+        symbol: this.tokenMetadataService.getTokenSymbol(tokenMint), 
         name: 'Unknown Token',
         decimals: this.getDefaultDecimals(tokenMint)
       };
     }
   }
 
-  private async estimateTokenValueUSDCached(tokenMint: string, amount: number, decimals?: number): Promise<number> {
-    const cached = this.priceCache.get(tokenMint);
-    if (cached && Date.now() - cached.timestamp < 5 * 60 * 1000) {
-      return cached.priceUSD * amount;
-    }
-
-    try {
-      const tokenPrice = await this.tokenMetadataService.getTokenPrice(tokenMint);
-      
-      let estimatedPrice = tokenPrice || 1;
-      
-      if (!tokenPrice) {
-        if (tokenMint === 'So11111111111111111111111111111111111111112') {
-          estimatedPrice = 140; // SOL
-        } else if (tokenMint === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') {
-          estimatedPrice = 1; // USDC
-        } else if (tokenMint === 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB') {
-          estimatedPrice = 1; // USDT
-        } else {
-          estimatedPrice = 0.001;
-        }
-      }
-      
-      this.priceCache.set(tokenMint, { priceUSD: estimatedPrice, timestamp: Date.now() });
-      
-      const estimatedUSD = estimatedPrice * amount;
-      if (decimals) {
-        this.logger.debug(`💰 Price: ${estimatedPrice} | Amount: ${amount.toLocaleString()} | Decimals: ${decimals} | USD: ${estimatedUSD.toLocaleString()}`);
-      }
-      
-      return estimatedUSD;
-
-    } catch (error) {
-      this.logger.error(`Error estimating price for ${tokenMint}:`, error);
-      return amount * 0.001;
-    }
-  }
-
   private async saveAndNotifySwap(swap: SmartMoneySwap): Promise<void> {
+    console.log(`Saving and notifying swap: ${swap.tokenSymbol} - $${swap.amountUSD.toFixed(2)}`);
+    
     try {
-      if (!this.smDatabase || !this.telegramNotifier) return;
+      if (!this.telegramNotifier) {
+        console.log(`No telegram notifier available for swap notification`);
+        return;
+      }
 
       await this.smDatabase.saveSmartMoneyTransaction({
         transactionId: swap.transactionId,
@@ -816,17 +941,22 @@ export class QuickNodeWebhookManager {
         swapType: swap.swapType,
         timestamp: swap.timestamp,
         category: swap.category,
-        winRate: swap.winRate,
-        pnl: swap.pnl,
-        totalTrades: swap.totalTrades,
+        
+        usdProfit7d: swap.usdProfit7d,
+        winrate7d: swap.winrate7d,
+        buy7d: swap.buy7d,
+        
         dex: 'Multi-Provider'
       });
 
-      await this.telegramNotifier.sendSmartMoneySwapAlert(swap, 'QuickNodeWebhookManager');
-      this.errorStats.recoveredFromErrors++; // Успешная обработка считается восстановлением
+      console.log(`Swap saved to database, sending Telegram notification...`);
+      await this.telegramNotifier.sendSmartMoneySwapAlert(swap);
+      console.log(`Telegram notification sent successfully`);
+      
+      this.errorStats.recoveredFromErrors++;
 
     } catch (error) {
-      this.logger.error('Error saving and notifying swap:', error);
+      console.log(`Error saving and notifying swap: ${error}`);
     }
   }
 
@@ -877,7 +1007,6 @@ export class QuickNodeWebhookManager {
     };
   }
 
-  // 🔥 НОВАЯ СТАТИСТИКА ОШИБОК
   getErrorStats(): {
     walletProcessingErrors: number;
     transactionProcessingErrors: number;
@@ -900,6 +1029,31 @@ export class QuickNodeWebhookManager {
     };
   }
 
+  getSyncStats(): {
+    walletListUpdates: number;
+    lastWalletListUpdate: string;
+    walletsFoundInLastUpdate: number;
+    totalPollingCycles: number;
+    emptyListCycles: number;
+    syncEfficiency: string;
+    isHealthy: boolean;
+  } {
+    const syncEfficiency = this.syncStats.totalPollingCycles > 0 ? 
+      ((this.syncStats.totalPollingCycles - this.syncStats.emptyListCycles) / this.syncStats.totalPollingCycles * 100).toFixed(1) + '%' : '100%';
+    
+    const isHealthy = this.syncStats.emptyListCycles / Math.max(this.syncStats.totalPollingCycles, 1) < 0.5;
+    
+    return {
+      walletListUpdates: this.syncStats.walletListUpdates,
+      lastWalletListUpdate: this.syncStats.lastWalletListUpdate.toISOString(),
+      walletsFoundInLastUpdate: this.syncStats.walletsFoundInLastUpdate,
+      totalPollingCycles: this.syncStats.totalPollingCycles,
+      emptyListCycles: this.syncStats.emptyListCycles,
+      syncEfficiency,
+      isHealthy
+    };
+  }
+
   getPollingStats(): {
     isActive: boolean;
     walletsMonitored: number;
@@ -912,7 +1066,8 @@ export class QuickNodeWebhookManager {
     concurrentWalletProcessing: number;
     delayBetweenWallets: number;
     delayBetweenTransactions: number;
-    errorStats: any; // 🔥 НОВАЯ СТАТИСТИКА
+    errorStats: any;
+    syncStats: any;
   } {
     return {
       isActive: this.isPollingActive,
@@ -926,7 +1081,8 @@ export class QuickNodeWebhookManager {
       concurrentWalletProcessing: this.CONCURRENT_WALLET_PROCESSING,
       delayBetweenWallets: this.DELAY_BETWEEN_WALLETS,
       delayBetweenTransactions: this.DELAY_BETWEEN_TRANSACTIONS,
-      errorStats: this.getErrorStats() // 🔥 ВКЛЮЧАЕМ СТАТИСТИКУ ОШИБОК
+      errorStats: this.getErrorStats(),
+      syncStats: this.getSyncStats()
     };
   }
 }

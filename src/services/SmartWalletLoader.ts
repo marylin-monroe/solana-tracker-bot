@@ -1,4 +1,4 @@
-// src/services/SmartWalletLoader.ts - ИСПРАВЛЕН: syncDatabaseWithConfig() работает только с MANUAL кошельками
+// src/services/SmartWalletLoader.ts - 🔥 ПОЛНОСТЬЮ ИСПРАВЛЕН под новую структуру CSV
 import fs from 'fs';
 import path from 'path';
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
@@ -6,6 +6,7 @@ import { TelegramNotifier } from './TelegramNotifier';
 import { Logger } from '../utils/Logger';
 import { SmartMoneyWallet } from '../types';
 
+// 🔥 НОВЫЙ ИНТЕРФЕЙС ПОД НОВУЮ СТРУКТУРУ CSV
 interface WalletConfig {
   address: string;
   category: 'sniper' | 'hunter' | 'trader';
@@ -14,11 +15,16 @@ interface WalletConfig {
   addedBy: 'manual' | 'discovery' | 'placeholder';
   addedAt: string;
   verified: boolean;
-  winRate: number;
-  totalPnL: number;
-  totalTrades: number;
-  avgTradeSize: number;
-  maxTradeSize: number;
+  
+  // 🔥 ОБНОВЛЕННЫЕ МЕТРИКИ ПОД CSV СТРУКТУРУ
+  usdProfit7d: number;
+  usdProfit30d: number;
+  winrate7d: number;
+  buy7d: number;
+  avgHoldingMins: number;
+  totalProfitPercent: number;
+  solBalance: number;
+  
   performanceScore: number;
   minTradeAlert: number;
   priority: 'high' | 'medium' | 'low';
@@ -39,9 +45,9 @@ interface SmartWalletsConfig {
     lastDiscovery: string | null;
   };
   filters: {
-    minWinRate: number;
-    minTotalPnL: number;
-    minTotalTrades: number;
+    minWinrate7d: number;
+    minUsdProfit7d: number;
+    minBuy7d: number;
     maxInactiveDays: number;
   };
 }
@@ -60,7 +66,7 @@ export class SmartWalletLoader {
     this.configPath = path.join(process.cwd(), 'data', 'smart_wallets.json');
   }
 
-  // 🚀 HARDCODED кошельки - актуальные кошельки
+  // 🔥 HARDCODED кошельки - ПОЛНОСТЬЮ ОБНОВЛЕНЫ под новую структуру
   private getHardcodedWallets(): WalletConfig[] {
     return [
       {
@@ -71,11 +77,14 @@ export class SmartWalletLoader {
         addedBy: "manual",
         addedAt: "2025-06-13T09:00:00.000Z",
         verified: true,
-        winRate: 82.4,
-        totalPnL: 245000,
-        totalTrades: 89,
-        avgTradeSize: 12000,
-        maxTradeSize: 45000,
+        // 🔥 НОВЫЕ МЕТРИКИ
+        usdProfit7d: 45000,
+        usdProfit30d: 165000,
+        winrate7d: 82.4,
+        buy7d: 12,
+        avgHoldingMins: 45,
+        totalProfitPercent: 28.5,
+        solBalance: 85.2,
         performanceScore: 88,
         minTradeAlert: 2000,
         priority: "high",
@@ -89,11 +98,13 @@ export class SmartWalletLoader {
         addedBy: "manual",
         addedAt: "2025-06-13T09:00:00.000Z",
         verified: true,
-        winRate: 76.8,
-        totalPnL: 189000,
-        totalTrades: 142,
-        avgTradeSize: 8500,
-        maxTradeSize: 28000,
+        usdProfit7d: 38000,
+        usdProfit30d: 142000,
+        winrate7d: 76.8,
+        buy7d: 8,
+        avgHoldingMins: 180,
+        totalProfitPercent: 24.1,
+        solBalance: 156.7,
         performanceScore: 84,
         minTradeAlert: 3000,
         priority: "high",
@@ -107,11 +118,13 @@ export class SmartWalletLoader {
         addedBy: "manual",
         addedAt: "2025-06-13T09:00:00.000Z",
         verified: true,
-        winRate: 71.2,
-        totalPnL: 165000,
-        totalTrades: 97,
-        avgTradeSize: 15000,
-        maxTradeSize: 35000,
+        usdProfit7d: 52000,
+        usdProfit30d: 198000,
+        winrate7d: 71.2,
+        buy7d: 5,
+        avgHoldingMins: 320,
+        totalProfitPercent: 31.8,
+        solBalance: 234.3,
         performanceScore: 81,
         minTradeAlert: 5000,
         priority: "high",
@@ -125,11 +138,13 @@ export class SmartWalletLoader {
         addedBy: "manual",
         addedAt: "2025-06-13T09:00:00.000Z",
         verified: true,
-        winRate: 85.7,
-        totalPnL: 198000,
-        totalTrades: 76,
-        avgTradeSize: 8000,
-        maxTradeSize: 22000,
+        usdProfit7d: 41000,
+        usdProfit30d: 178000,
+        winrate7d: 85.7,
+        buy7d: 15,
+        avgHoldingMins: 38,
+        totalProfitPercent: 26.9,
+        solBalance: 67.4,
         performanceScore: 89,
         minTradeAlert: 1500,
         priority: "high",
@@ -143,11 +158,13 @@ export class SmartWalletLoader {
         addedBy: "manual",
         addedAt: "2025-06-13T09:00:00.000Z",
         verified: true,
-        winRate: 73.4,
-        totalPnL: 152000,
-        totalTrades: 118,
-        avgTradeSize: 7200,
-        maxTradeSize: 19000,
+        usdProfit7d: 33000,
+        usdProfit30d: 125000,
+        winrate7d: 73.4,
+        buy7d: 6,
+        avgHoldingMins: 240,
+        totalProfitPercent: 19.8,
+        solBalance: 142.1,
         performanceScore: 78,
         minTradeAlert: 2500,
         priority: "medium",
@@ -161,11 +178,13 @@ export class SmartWalletLoader {
         addedBy: "manual",
         addedAt: "2025-06-13T09:00:00.000Z",
         verified: true,
-        winRate: 68.9,
-        totalPnL: 187000,
-        totalTrades: 203,
-        avgTradeSize: 11000,
-        maxTradeSize: 42000,
+        usdProfit7d: 47000,
+        usdProfit30d: 187000,
+        winrate7d: 68.9,
+        buy7d: 4,
+        avgHoldingMins: 480,
+        totalProfitPercent: 29.3,
+        solBalance: 312.8,
         performanceScore: 76,
         minTradeAlert: 4000,
         priority: "medium",
@@ -179,11 +198,13 @@ export class SmartWalletLoader {
         addedBy: "manual", 
         addedAt: "2025-06-13T09:00:00.000Z",
         verified: true,
-        winRate: 79.3,
-        totalPnL: 176000,
-        totalTrades: 68,
-        avgTradeSize: 9500,
-        maxTradeSize: 26000,
+        usdProfit7d: 39000,
+        usdProfit30d: 156000,
+        winrate7d: 79.3,
+        buy7d: 11,
+        avgHoldingMins: 42,
+        totalProfitPercent: 23.7,
+        solBalance: 73.9,
         performanceScore: 86,
         minTradeAlert: 1800,
         priority: "high",
@@ -197,11 +218,13 @@ export class SmartWalletLoader {
         addedBy: "manual",
         addedAt: "2025-06-13T09:00:00.000Z",
         verified: true,
-        winRate: 74.8,
-        totalPnL: 143000,
-        totalTrades: 129,
-        avgTradeSize: 6800,
-        maxTradeSize: 17500,
+        usdProfit7d: 29000,
+        usdProfit30d: 118000,
+        winrate7d: 74.8,
+        buy7d: 7,
+        avgHoldingMins: 200,
+        totalProfitPercent: 17.2,
+        solBalance: 134.6,
         performanceScore: 77,
         minTradeAlert: 2200,
         priority: "medium",
@@ -215,11 +238,13 @@ export class SmartWalletLoader {
         addedBy: "manual",
         addedAt: "2025-06-13T09:00:00.000Z",
         verified: true,
-        winRate: 70.1,
-        totalPnL: 201000,
-        totalTrades: 156,
-        avgTradeSize: 13200,
-        maxTradeSize: 38000,
+        usdProfit7d: 58000,
+        usdProfit30d: 215000,
+        winrate7d: 70.1,
+        buy7d: 3,
+        avgHoldingMins: 540,
+        totalProfitPercent: 34.2,
+        solBalance: 287.5,
         performanceScore: 79,
         minTradeAlert: 6000,
         priority: "medium",
@@ -233,11 +258,13 @@ export class SmartWalletLoader {
         addedBy: "manual",
         addedAt: "2025-06-13T09:00:00.000Z", 
         verified: true,
-        winRate: 81.6,
-        totalPnL: 167000,
-        totalTrades: 82,
-        avgTradeSize: 7800,
-        maxTradeSize: 24000,
+        usdProfit7d: 43000,
+        usdProfit30d: 167000,
+        winrate7d: 81.6,
+        buy7d: 13,
+        avgHoldingMins: 35,
+        totalProfitPercent: 25.4,
+        solBalance: 69.1,
         performanceScore: 87,
         minTradeAlert: 1600,
         priority: "high",
@@ -248,9 +275,9 @@ export class SmartWalletLoader {
 
   private createDefaultConfig(): SmartWalletsConfig {
     return {
-      version: "1.0.0",
+      version: "2.0.0",
       lastUpdated: new Date().toISOString(),
-      description: "Smart Money wallets configuration with manual and discovered wallets",
+      description: "Smart Money wallets configuration with CSV structure (usdProfit7d, winrate7d, buy7d)",
       totalWallets: 0,
       wallets: [],
       discovery: {
@@ -261,9 +288,9 @@ export class SmartWalletLoader {
         lastDiscovery: null
       },
       filters: {
-        minWinRate: 65,
-        minTotalPnL: 10000,
-        minTotalTrades: 15,
+        minWinrate7d: 65,
+        minUsdProfit7d: 20000,
+        minBuy7d: 1,
         maxInactiveDays: 7
       }
     };
@@ -271,7 +298,7 @@ export class SmartWalletLoader {
 
   async loadWallets(): Promise<number> {
     try {
-      this.logger.info('📂 Loading Smart Money wallets...');
+      this.logger.info('📂 Loading Smart Money wallets (NEW CSV STRUCTURE)...');
       
       // Загружаем конфиг
       await this.loadConfig();
@@ -294,7 +321,6 @@ export class SmartWalletLoader {
     }
   }
 
-  // ✅ ИСПРАВЛЕНО: Добавлен метод loadWalletsFromConfig который используется в main.ts
   async loadWalletsFromConfig(): Promise<number> {
     return await this.loadWallets();
   }
@@ -324,7 +350,7 @@ export class SmartWalletLoader {
       const newConfig = this.createDefaultConfig();
       newConfig.wallets = hardcodedWallets;
       newConfig.totalWallets = hardcodedWallets.length;
-      newConfig.description = "Smart Money wallets (hardcoded defaults)";
+      newConfig.description = "Smart Money wallets (hardcoded defaults) - CSV structure v2.0";
       
       // Создаем директорию если не существует
       const configDir = path.dirname(this.configPath);
@@ -335,7 +361,7 @@ export class SmartWalletLoader {
       fs.writeFileSync(this.configPath, JSON.stringify(newConfig, null, 2), 'utf8');
       this.config = newConfig;
       
-      this.logger.info(`✅ Created config with ${hardcodedWallets.length} hardcoded wallets`);
+      this.logger.info(`✅ Created config with ${hardcodedWallets.length} hardcoded wallets (NEW STRUCTURE)`);
       
     } catch (error) {
       this.logger.error('❌ Error creating config from hardcoded wallets:', error);
@@ -418,7 +444,6 @@ export class SmartWalletLoader {
     }
   }
 
-  // ✅ ИСПРАВЛЕНО: Добавлен недостающий метод exportConfigFromDatabase
   async exportConfigFromDatabase(): Promise<void> {
     try {
       this.logger.info('📤 Exporting wallet config from database...');
@@ -439,11 +464,14 @@ export class SmartWalletLoader {
               addedBy: 'discovery',
               addedAt: new Date().toISOString(),
               verified: true,
-              winRate: wallet.winRate,
-              totalPnL: wallet.totalPnL,
-              totalTrades: wallet.totalTrades,
-              avgTradeSize: wallet.avgTradeSize,
-              maxTradeSize: wallet.maxTradeSize,
+              // 🔥 ИСПОЛЬЗУЕМ НОВЫЕ ПОЛЯ
+              usdProfit7d: wallet.usdProfit7d,
+              usdProfit30d: wallet.usdProfit30d,
+              winrate7d: wallet.winrate7d,
+              buy7d: wallet.buy7d,
+              avgHoldingMins: wallet.avgHoldingMins,
+              totalProfitPercent: wallet.totalProfitPercent,
+              solBalance: wallet.solBalance,
               performanceScore: wallet.performanceScore,
               minTradeAlert: settings.minTradeAlert,
               priority: settings.priority,
@@ -458,7 +486,7 @@ export class SmartWalletLoader {
       const newConfig: SmartWalletsConfig = this.createDefaultConfig();
       newConfig.wallets = exportedWallets;
       newConfig.totalWallets = exportedWallets.length;
-      newConfig.description = "Smart Money кошельки (экспорт из БД)";
+      newConfig.description = "Smart Money кошельки (экспорт из БД) - CSV structure v2.0";
 
       // 🔒 БЕЗОПАСНОЕ КОПИРОВАНИЕ СУЩЕСТВУЮЩИХ НАСТРОЕК
       if (this.config?.discovery) {
@@ -489,9 +517,7 @@ export class SmartWalletLoader {
     }
   }
 
-  // ✅ ИСПРАВЛЕНО: Добавлен недостающий метод exportCurrentDatabaseToConfig
   async exportCurrentDatabaseToConfig(): Promise<void> {
-    // Это просто алиас для exportConfigFromDatabase для совместимости
     await this.exportConfigFromDatabase();
   }
 
@@ -534,7 +560,17 @@ export class SmartWalletLoader {
     metrics?: any
   ): Promise<boolean> {
     try {
-      const validatedMetrics = this.validateMetrics(metrics);
+      // 🔥 УБРАЛИ validateMetrics - используем дефолтные значения под новую структуру
+      const defaultMetrics = {
+        usdProfit7d: metrics?.usdProfit7d || 25000,
+        usdProfit30d: metrics?.usdProfit30d || 95000,
+        winrate7d: metrics?.winrate7d || 75,
+        buy7d: metrics?.buy7d || 5,
+        avgHoldingMins: category === 'sniper' ? 45 : category === 'hunter' ? 180 : 360,
+        totalProfitPercent: metrics?.totalProfitPercent || 20,
+        solBalance: category === 'sniper' ? 70 : category === 'hunter' ? 150 : 250,
+        performanceScore: metrics?.performanceScore || 80
+      };
       
       const walletConfig: WalletConfig = {
         address,
@@ -544,14 +580,9 @@ export class SmartWalletLoader {
         addedBy: 'manual',
         addedAt: new Date().toISOString(),
         verified: true,
-        winRate: validatedMetrics.winRate,
-        totalPnL: validatedMetrics.totalPnL,
-        totalTrades: validatedMetrics.totalTrades,
-        avgTradeSize: validatedMetrics.avgTradeSize,
-        maxTradeSize: validatedMetrics.maxTradeSize,
-        performanceScore: validatedMetrics.performanceScore,
+        ...defaultMetrics,
         minTradeAlert: category === 'trader' ? 15000 : category === 'hunter' ? 5000 : 3000,
-        priority: validatedMetrics.performanceScore > 85 ? 'high' : 'medium',
+        priority: defaultMetrics.performanceScore > 85 ? 'high' : 'medium',
         enabled: true
       };
 
@@ -605,7 +636,6 @@ export class SmartWalletLoader {
     }
   }
 
-  // ✅ ИСПРАВЛЕНО: Добавлен недостающий метод forceReplaceAllWallets
   async forceReplaceAllWallets(): Promise<boolean> {
     try {
       this.logger.info('🔄 Force replacing all wallets...');
@@ -623,7 +653,7 @@ export class SmartWalletLoader {
       const newConfig = this.createDefaultConfig();
       newConfig.wallets = hardcodedWallets;
       newConfig.totalWallets = hardcodedWallets.length;
-      newConfig.description = "Smart Money wallets (force replaced with hardcoded)";
+      newConfig.description = "Smart Money wallets (force replaced with hardcoded) - CSV v2.0";
 
       // Создаем директорию если не существует
       const configDir = path.dirname(this.configPath);
@@ -673,58 +703,28 @@ export class SmartWalletLoader {
     }
   }
 
-  private validateMetrics(metrics?: any): {
-    winRate: number;
-    totalPnL: number;
-    totalTrades: number;
-    avgTradeSize: number;
-    maxTradeSize: number;
-    performanceScore: number;
-  } {
-    try {
-      return {
-        winRate: Math.max(0, Math.min(100, Number(metrics?.winRate) || 70)),
-        totalPnL: Number(metrics?.totalPnL) || 50000,
-        totalTrades: Math.max(1, Number(metrics?.totalTrades) || 50),
-        avgTradeSize: Math.max(100, Number(metrics?.avgTradeSize) || 5000),
-        maxTradeSize: Math.max(1000, Number(metrics?.maxTradeSize) || 20000),
-        performanceScore: Math.max(0, Math.min(100, Number(metrics?.performanceScore) || 75))
-      };
-    } catch (error) {
-      this.logger.error('❌ Error validating metrics, using defaults:', error);
-      return {
-        winRate: 70,
-        totalPnL: 50000,
-        totalTrades: 50,
-        avgTradeSize: 5000,
-        maxTradeSize: 20000,
-        performanceScore: 75
-      };
-    }
-  }
-
+  // 🔥 ПОЛНОСТЬЮ ПЕРЕПИСАН под новую структуру SmartMoneyWallet
   private createSmartWalletFromConfig(walletConfig: WalletConfig): SmartMoneyWallet {
     return {
       address: walletConfig.address,
       category: walletConfig.category,
-      winRate: walletConfig.winRate,
-      totalPnL: walletConfig.totalPnL,
-      totalTrades: walletConfig.totalTrades,
-      avgTradeSize: walletConfig.avgTradeSize,
-      maxTradeSize: walletConfig.maxTradeSize,
-      minTradeSize: Math.min(walletConfig.avgTradeSize * 0.3, 1000),
-      lastActiveAt: new Date(Date.now() - Math.random() * 7 * 24 * 60 * 60 * 1000),
+      nickname: walletConfig.nickname,
+      
+      // 🔥 ПРЯМОЕ СОПОСТАВЛЕНИЕ С НОВЫМИ ПОЛЯМИ
+      usdProfit7d: walletConfig.usdProfit7d,
+      usdProfit30d: walletConfig.usdProfit30d,
+      winrate7d: walletConfig.winrate7d,
+      buy7d: walletConfig.buy7d,
+      avgHoldingMins: walletConfig.avgHoldingMins,
+      totalProfitPercent: walletConfig.totalProfitPercent,
+      solBalance: walletConfig.solBalance,
+      
+      // Системные поля
       performanceScore: walletConfig.performanceScore,
       isActive: true,
-      sharpeRatio: 2.1,
-      maxDrawdown: 15.0,
-      volumeScore: 80,
-      isFamilyMember: false,
-      familyAddresses: undefined,
-      coordinationScore: null,
-      stealthLevel: null,
-      earlyEntryRate: walletConfig.category === 'sniper' ? 45 : 25,
-      avgHoldTime: walletConfig.category === 'trader' ? 72 : walletConfig.category === 'hunter' ? 12 : 4
+      lastActiveAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date()
     };
   }
 

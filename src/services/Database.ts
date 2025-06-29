@@ -1,4 +1,4 @@
-// src/services/Database.ts - ПОЛНЫЙ файл со ВСЕМИ методами
+// src/services/Database.ts - 🔥 ИСПРАВЛЕНО ПОД УПРОЩЕННЫЙ TokenSwap
 import BetterSqlite3 from 'better-sqlite3';
 import { TokenSwap, WalletInfo, PositionAggregation } from '../types';
 import { Logger } from '../utils/Logger';
@@ -6,6 +6,9 @@ import path from 'path';
 import fs from 'fs';
 
 export class Database {
+  deduplicateTransactions() {
+    throw new Error('Method not implemented.');
+  }
   private db: BetterSqlite3.Database;
   private logger: Logger;
   
@@ -136,7 +139,7 @@ export class Database {
 
   async init(): Promise<void> {
     try {
-      // 🔧 СОЗДАЕМ ВСЕ ТАБЛИЦЫ
+      // 🔧 СОЗДАЕМ ВСЕ ТАБЛИЦЫ С УПРОЩЕННОЙ СХЕМОЙ token_swaps
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS token_swaps (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -151,13 +154,8 @@ export class Database {
           dex TEXT NOT NULL,
           is_new_wallet BOOLEAN NOT NULL,
           is_reactivated_wallet BOOLEAN NOT NULL,
-          wallet_age INTEGER NOT NULL,
           days_since_last_activity INTEGER NOT NULL,
           price REAL,
-          pnl REAL,
-          multiplier REAL,
-          winrate REAL,
-          time_to_target TEXT,
           swap_type TEXT CHECK (swap_type IN ('buy', 'sell')),
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
           is_aggregated BOOLEAN DEFAULT 0,
@@ -302,7 +300,7 @@ export class Database {
         CREATE INDEX IF NOT EXISTS idx_whale_transactions_processed ON whale_transactions(processed);
       `);
 
-      this.logger.info('✅ Database initialized successfully with optimizations');
+      this.logger.info('✅ Database initialized successfully with optimizations (SIMPLIFIED TokenSwap schema)');
     } catch (error) {
       this.logger.error('❌ Error initializing database:', error);
       throw error;
@@ -324,14 +322,15 @@ export class Database {
     return result;
   }
 
+  // 🔥 ИСПРАВЛЕНО: Убрали поля pnl, multiplier, winrate, time_to_target, wallet_age
   async saveTransaction(swap: TokenSwap): Promise<void> {
     const stmt = this.getPreparedStatement('save_transaction', `
       INSERT OR REPLACE INTO token_swaps (
         transaction_id, wallet_address, token_address, token_symbol, token_name,
         amount, amount_usd, timestamp, dex, is_new_wallet, is_reactivated_wallet,
-        wallet_age, days_since_last_activity, price, pnl, multiplier, winrate, time_to_target, swap_type,
+        days_since_last_activity, price, swap_type,
         is_aggregated, aggregation_id, suspicion_score, aggregation_group
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     try {
@@ -347,13 +346,8 @@ export class Database {
         swap.dex,
         swap.isNewWallet ? 1 : 0,
         swap.isReactivatedWallet ? 1 : 0,
-        swap.walletAge,
         swap.daysSinceLastActivity,
         swap.price || null,
-        swap.pnl || null,
-        swap.multiplier || null,
-        swap.winrate || null,
-        swap.timeToTarget || null,
         swap.swapType || null,
         swap.isAggregated ? 1 : 0,
         swap.aggregationId || null,
@@ -938,6 +932,7 @@ export class Database {
   }
 
   // 🗃️ HELPER METHODS
+  // 🔥 ИСПРАВЛЕНО: Убрали поля pnl, multiplier, winrate, time_to_target
   private mapRowToTransaction(row: any): TokenSwap {
     return {
       transactionId: row.transaction_id,
@@ -951,13 +946,8 @@ export class Database {
       dex: row.dex,
       isNewWallet: !!row.is_new_wallet,
       isReactivatedWallet: !!row.is_reactivated_wallet,
-      walletAge: row.wallet_age,
       daysSinceLastActivity: row.days_since_last_activity,
       price: row.price,
-      pnl: row.pnl,
-      multiplier: row.multiplier,
-      winrate: row.winrate,
-      timeToTarget: row.time_to_target,
       swapType: row.swap_type as 'buy' | 'sell',
       isAggregated: !!row.is_aggregated,
       aggregationId: row.aggregation_id,

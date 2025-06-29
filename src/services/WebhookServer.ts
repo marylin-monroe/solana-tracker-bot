@@ -1,4 +1,4 @@
-// src/services/WebhookServer.ts - 🔥 ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ФИЛЬТРАЦИИ PAYMENT→PAYMENT
+// src/services/WebhookServer.ts - 🔥 ПОЛНОСТЬЮ ИСПРАВЛЕННЫЙ С ПРАВИЛЬНОЙ ЛОГИКОЙ ИЗВЛЕЧЕНИЯ БАЛАНСОВ
 import express from 'express';
 import { Database } from './Database';
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
@@ -14,6 +14,39 @@ interface SolanaWebhookPayload {
   signature: string;
   slot: number;
   timestamp: number;
+  transaction?: {
+    signatures: string[];
+    message?: {
+      accountKeys?: string[];
+    };
+  };
+  meta?: {
+    preBalances: number[];
+    postBalances: number[];
+    err?: any;
+    preTokenBalances?: Array<{
+      accountIndex: number;
+      mint: string;
+      owner: string;
+      uiTokenAmount: {
+        amount: string;
+        decimals: number;
+        uiAmount: number;
+        uiAmountString: string;
+      };
+    }>;
+    postTokenBalances?: Array<{
+      accountIndex: number;
+      mint: string;
+      owner: string;
+      uiTokenAmount: {
+        amount: string;
+        decimals: number;
+        uiAmount: number;
+        uiAmountString: string;
+      };
+    }>;
+  };
   tokenTransfers?: Array<{
     fromUserAccount: string;
     toUserAccount: string;
@@ -80,17 +113,10 @@ interface ProcessingStats {
   };
   profitableSwaps: number;
   ignoredMajorSwaps: number;
-  ignoredSameTokenSwaps: number;
   oldTransactionsFiltered: number;
-  // 🔥 НОВАЯ ДЕТАЛЬНАЯ СТАТИСТИКА ФИЛЬТРАЦИИ
-  filteringStats: {
-    paymentToPayment: number;
-    altToAlt: number;
-    validBuys: number;
-    validSells: number;
-    belowThreshold: number;
-    unknownTokens: number;
-  };
+  unifiedCalculatorIgnored: number;
+  balancesExtracted: number;
+  eventsIgnored: number;
 }
 
 export class WebhookServer {
@@ -115,38 +141,7 @@ export class WebhookServer {
 
   private readonly PRICE_CACHE_TTL = 5 * 60 * 1000; // 5 минут
 
-  // 🔥 ИСПРАВЛЕНО: Отдельный PAYMENT_ASSETS с LST токенами
-  private readonly PAYMENT_ASSETS = new Set([
-    // Базовые стейблы и SOL
-    'So11111111111111111111111111111111111111112', // SOL
-    'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
-    'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
-    
-    // LST токены (Liquid Staking Tokens)
-    'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So', // mSOL (Marinade)
-    'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn', // JitoSOL (Jito)
-    '7Q2afV64in6N6SeZsAAB81TJzwDoD6zpqmHkzi9Dcavn', // stSOL (Lido)
-    'bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1', // bSOL (Blaze)
-    'he1iusmfkpAdwvxLNGV8Y1iSbj4rUy6yMhEA3fotn9A', // hSOL (Helius)
-    
-    // Популярные ликвидные токены
-    'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263', // BONK
-    'WENWENvqqNya429ubCdR81ZmD69brwQaaBYY6p3LCpk', // WEN
-    'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN', // JUP (Jupiter)
-    
-    // Дополнительные стейблкоины
-    'A9mUU4qviSctJVPJdBJWkb28deg915LYJKrzQ19ji3FM', // UXD
-    'USDH1SM1ojwWUga67PGrgFWUHibbjqMvuMaDkRJTgkX' // USDH
-  ]);
-
-  // 🔥 ОСТАВЛЯЕМ MAJOR_TOKENS для совместимости в других местах
-  private readonly MAJOR_TOKENS = new Set([
-    'So11111111111111111111111111111111111111112', // SOL
-    'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
-    'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'  // USDT
-  ]);
-
-  // 📈 ПОПУЛЯРНЫЕ CEX ТОКЕНЫ
+  // 📈 ПОПУЛЯРНЫЕ CEX ТОКЕНЫ - РАСШИРЕННЫЙ СПИСОК
   private readonly CEX_TOKENS = new Set([
     'So11111111111111111111111111111111111111112', // SOL
     'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
@@ -155,7 +150,20 @@ export class WebhookServer {
     'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn', // JitoSOL
     'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263', // Bonk
     'WENWENvqqNya429ubCdR81ZmD69brwQaaBYY6p3LCpk', // WEN
-    'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN' // JUP
+    'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN', // JUP
+    '4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R', // RAY
+    'SRMuApVNdxXokk5GT7XD5cUUgXMBCoAz2LHeuAoKWRt', // SRM
+    '7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs', // WIF
+    '2qEHjDLDLbuBgRYvsxhc5D6uDWAivNFZGan56P1tpump', // PNUT
+    'CzLSujWBLFsSjncfkh59rUFqvafWcY5tzedWJSuypump', // GOAT
+    'ukHH6c7mMyiWCf1b9pnWe25TSpkDDt3H5pQZgZ74J82', // BOME
+    'hntyVP6YFm1Hg25TN9WGLqM12b8TQmcknKrdu1oxWux', // HNT
+    'kinXdEcpDQeHPEuQnqmUgtYykqKGVFq6CeVX5iAHJq6', // KIN
+    '7Q2afV64in6N6SeZsAAB81TJzwDoD6zpqmHkzi9Dcavn', // stSOL
+    'bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1', // bSOL
+    'he1iusmfkpAdwvxLNGV8Y1iSbj4rUy6yMhEA3fotn9A', // hSOL
+    'A9mUU4qviSctJVPJdBJWkb28deg915LYJKrzQ19ji3FM', // UXD
+    'USDH1SM1ojwWUga67PGrgFWUHibbjqMvuMaDkRJTgkX' // USDH
   ]);
 
   private processingStats: ProcessingStats = {
@@ -179,17 +187,10 @@ export class WebhookServer {
     },
     profitableSwaps: 0,
     ignoredMajorSwaps: 0,
-    ignoredSameTokenSwaps: 0,
     oldTransactionsFiltered: 0,
-    // 🔥 НОВАЯ ДЕТАЛЬНАЯ СТАТИСТИКА
-    filteringStats: {
-      paymentToPayment: 0,
-      altToAlt: 0,
-      validBuys: 0,
-      validSells: 0,
-      belowThreshold: 0,
-      unknownTokens: 0
-    }
+    unifiedCalculatorIgnored: 0,
+    balancesExtracted: 0,
+    eventsIgnored: 0
   };
 
   private requestCounters = {
@@ -216,7 +217,7 @@ export class WebhookServer {
     this.setupMiddleware();
     this.setupRoutes();
     this.startCacheCleanup();
-    this.logger.info('🚀 WebhookServer ENHANCED: PAYMENT_ASSETS with detailed filtering logs');
+    this.logger.info('🚀 WebhookServer ENHANCED: 🔥 ПРОТОКОЛ "ЖЕЛЕЗНЫЙ ДОЛЛАР" + ПРАВИЛЬНОЕ ИЗВЛЕЧЕНИЕ БАЛАНСОВ');
   }
 
   private setupMiddleware(): void {
@@ -301,13 +302,14 @@ export class WebhookServer {
     const startTime = Date.now();
     
     try {
-      // Фильтр времени - только свежие транзакции
+      // 🔥 ИСПРАВЛЕНО: Увеличен временной фильтр до 24 часов
       if (!this.isTransactionRecentAndValid(txData)) {
         this.processingStats.oldTransactionsFiltered++;
         return;
       }
 
-      if (txData.events?.swap && txData.events.swap.length > 0) {
+      // Определяем тип транзакции для статистики
+      if (txData.meta?.preTokenBalances && txData.meta?.postTokenBalances) {
         this.processingStats.transactionTypes.swaps++;
       } else if (txData.tokenTransfers && txData.tokenTransfers.length > 0) {
         this.processingStats.transactionTypes.transfers++;
@@ -327,49 +329,58 @@ export class WebhookServer {
     }
   }
 
+  // 🔥🔥🔥 ФИНАЛЬНАЯ ВЕРСИЯ: Единая надежная проверка времени (как в QuickNodeWebhookManager)
   private isTransactionRecentAndValid(txData: SolanaWebhookPayload): boolean {
     if (!txData || !txData.timestamp) return false;
-    
+
     const transactionTime = txData.timestamp * 1000;
     const now = Date.now();
-    const timeSinceTransaction = now - transactionTime;
-    
-    const MAX_AGE = 2 * 60 * 1000; // 2 минуты
-    
-    if (timeSinceTransaction > MAX_AGE) {
-      this.logger.debug(`🚫 Transaction too old: ${Math.floor(timeSinceTransaction / (60 * 1000))} minutes`);
-      return false;
+    const maxAge = 24 * 60 * 60 * 1000; // 24 часа
+
+    // 🔥 ЕДИНСТВЕННАЯ НАДЕЖНАЯ ПРОВЕРКА, как в QuickNodeWebhookManager
+    const transactionAge = Math.abs(now - transactionTime);
+
+    if (transactionAge > maxAge) {
+        this.logger.debug(`🚫 Transaction too old: ${Math.floor(transactionAge / (60 * 1000))} minutes`);
+        return false;
     }
     
+    // Также проверяем, есть ли ошибка в метаданных
+    if (txData.meta?.err) {
+        this.logger.debug(`🚫 Invalid transaction: Has errors in meta`);
+        return false;
+    }
+
     return true;
   }
 
   private async processWebhookTransaction(txData: SolanaWebhookPayload): Promise<void> {
     try {
-      if (!txData.events?.swap || txData.events.swap.length === 0) {
+      // 🔥🔥🔥 ПОЛНОСТЬЮ ПЕРЕПИСАН - ТЕПЕРЬ РАБОТАЕМ С БАЛАНСАМИ, НЕ С EVENTS 🔥🔥🔥
+      
+      // Проверяем наличие балансов (это главный источник данных)
+      if (!txData.meta?.preTokenBalances || !txData.meta?.postTokenBalances) {
+        this.processingStats.eventsIgnored++;
+        
+        // Попробуем fallback к SolanaMonitor для обработки
+        if (this.solanaMonitor) {
+          await this.solanaMonitor.processTransaction(txData);
+          this.processingStats.regularTransactions++;
+        }
         return;
       }
 
-      const swapEvents = txData.events.swap;
+      this.processingStats.balancesExtracted++;
       
-      for (const swapEvent of swapEvents) {
-        await this.processSwapEvent(txData, swapEvent);
-      }
-    } catch (error) {
-      this.logger.error(`❌ Error processing transaction ${txData.signature}:`, error as Error);
-    }
-  }
+      // 🔥🔥🔥 ИСПОЛЬЗУЕМ УНИВЕРСАЛЬНУЮ ФУНКЦИЮ ИЗВЛЕЧЕНИЯ СВАПОВ 🔥🔥🔥
+      const swapInfo = await this.extractSwapInfoFromBalances(txData);
+      if (!swapInfo) return;
 
-  private async processSwapEvent(txData: SolanaWebhookPayload, swapEvent: any): Promise<void> {
-    const startTime = Date.now();
-    
-    try {
-      const walletAddress = this.extractWalletAddress(swapEvent);
-      if (!walletAddress) return;
-
-      const smartWallet = await this.smDatabase.getSmartWallet(walletAddress);
+      // Проверяем, является ли это Smart Money кошельком
+      const smartWallet = await this.smDatabase.getSmartWallet(swapInfo.walletAddress);
       
       if (!smartWallet || !smartWallet.isActive) {
+        // Обычная транзакция - отправляем в SolanaMonitor
         if (this.solanaMonitor) {
           await this.solanaMonitor.processTransaction(txData);
         }
@@ -377,307 +388,231 @@ export class WebhookServer {
         return;
       }
 
-      // 🔥 ИСПРАВЛЕНО: Используем PAYMENT_ASSETS в extractSwapInfo с детальным логированием
-      const swapInfo = await this.extractSwapInfo(txData, swapEvent, smartWallet);
-      if (!swapInfo) return;
-
-      if (!this.shouldProcessSmartMoneySwap(swapInfo, smartWallet)) {
-        this.processingStats.filteredTransactions++;
-        return;
-      }
-
-      const validationResult = await this.validateSmartMoneyTransaction(
-        swapInfo.walletAddress,
-        swapInfo.tokenAddress,
-        swapInfo.amountUSD,
-        swapInfo.swapType
-      );
-
-      if (!validationResult.isValid) {
-        this.logger.warn(`🚫 BLOCKED Smart Money tx: ${swapInfo.tokenSymbol} - $${swapInfo.amountUSD} | ${validationResult.reason}`);
-        this.processingStats.filteredTransactions++;
-        return;
-      }
-
-      await this.saveSmartMoneyTransaction(swapInfo);
-      await this.sendSmartMoneyNotification(swapInfo, smartWallet);
-      
-      this.processingStats.smartMoneyTransactions++;
-      this.processingStats.profitableSwaps++;
-
-      this.logger.info(`✅ PROFITABLE SWAP: ${swapInfo.tokenSymbol} - $${swapInfo.amountUSD.toFixed(0)} (${Date.now() - startTime}ms)`);
+      // Smart Money транзакция - обрабатываем здесь
+      await this.processSmartMoneySwap(swapInfo, smartWallet, txData);
 
     } catch (error) {
-      this.logger.error('❌ Error processing swap event:', error as Error);
-      this.processingStats.errorCount++;
+      this.logger.error(`❌ Error processing transaction ${txData.signature}:`, error as Error);
     }
   }
 
-  // 🔥 МАКСИМАЛЬНО ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ В extractSwapInfo
-  private async extractSwapInfo(txData: SolanaWebhookPayload, swapEvent: any, smartWallet: SmartMoneyWallet): Promise<SmartMoneySwap | null> {
+  // 🔥🔥🔥 УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ИЗВЛЕЧЕНИЯ СВАПОВ - ФИНАЛЬНАЯ ВЕРСИЯ 🔥🔥🔥
+  private async extractSwapInfoFromBalances(txData: SolanaWebhookPayload): Promise<{
+    walletAddress: string; inputMint: string; outputMint: string;
+    inputAmountRaw: number; outputAmountRaw: number;
+  } | null> {
     try {
-      if (!swapEvent || !swapEvent.tokenInputs || !swapEvent.tokenOutputs || 
-          swapEvent.tokenInputs.length === 0 || swapEvent.tokenOutputs.length === 0) {
-        this.logger.debug(`[extractSwapInfo] Invalid swapEvent structure for TX ${txData.signature}`);
-        return null;
-      }
-
-      const tokenInputData = swapEvent.tokenInputs[0];
-      const tokenOutputData = swapEvent.tokenOutputs[0];
-
-      if (!tokenInputData.mint || !tokenOutputData.mint || 
-          !tokenInputData.rawTokenAmount || !tokenOutputData.rawTokenAmount) {
-        this.logger.debug(`[extractSwapInfo] Missing mint or rawTokenAmount in swapEvent for TX ${txData.signature}`);
-        return null;
-      }
+      // 🔥 ИСПРАВЛЕНИЕ: В WebhookServer txData может быть массивом, берем первый элемент
+      const transaction = Array.isArray(txData) ? txData[0] : txData;
       
-      const inputMint = tokenInputData.mint;
-      const outputMint = tokenOutputData.mint;
-      const signature = txData.signature;
+      if (!transaction?.meta) return null;
 
-      // 🔥 ДЕТАЛЬНАЯ ПРОВЕРКА И ЛОГИРОВАНИЕ КАЖДОГО ТОКЕНА
-      const inputIsPayment = this.PAYMENT_ASSETS.has(inputMint);
-      const outputIsPayment = this.PAYMENT_ASSETS.has(outputMint);
+      const preTokenBalances = transaction.meta.preTokenBalances || [];
+      const postTokenBalances = transaction.meta.postTokenBalances || [];
       
-      // Получаем символы для более понятного логирования
-      const inputSymbol = await this.getTokenSymbolWithFallback(inputMint);
-      const outputSymbol = await this.getTokenSymbolWithFallback(outputMint);
+      // 🔥 ИСПРАВЛЕНИЕ №1: Правильный путь к accountKeys для WebhookServer
+      const accountKeys = transaction.transaction?.message?.accountKeys || [];
+      const walletAddress = this.extractWalletAddressFromTransaction(transaction);
+
+      if (!walletAddress) {
+        this.logger.debug(`[extractSwapInfoFromBalances] Cannot determine wallet address`);
+        return null;
+      }
+
+      const tokenChanges = new Map<string, { change: number, mint: string, decimals: number }>();
+
+      // Анализ существующих токен-аккаунтов
+      for (const pre of preTokenBalances) {
+        if (pre.owner !== walletAddress) continue;
+        const post = postTokenBalances.find(p => p.accountIndex === pre.accountIndex);
+        const change = (post ? parseFloat(post.uiTokenAmount.amount) : 0) - parseFloat(pre.uiTokenAmount.amount);
+        if (Math.abs(change) > 1e-9) {
+          console.log(`📊 Existing token change: ${pre.mint.slice(0,8)}... = ${change}`);
+          tokenChanges.set(pre.mint, { change, mint: pre.mint, decimals: pre.uiTokenAmount.decimals });
+        }
+      }
+
+      // 🔥 ИСПРАВЛЕНИЕ №2: Анализ НОВЫХ токен-аккаунтов
+      for (const post of postTokenBalances) {
+        if (post.owner !== walletAddress || tokenChanges.has(post.mint)) continue;
+        const isNewAccount = !preTokenBalances.find(p => p.accountIndex === post.accountIndex);
+        if (isNewAccount) {
+          const change = parseFloat(post.uiTokenAmount.amount);
+          if (change > 1e-9) {
+            console.log(`🆕 New token account: ${post.mint.slice(0,8)}... = ${change}`);
+            tokenChanges.set(post.mint, { change, mint: post.mint, decimals: post.uiTokenAmount.decimals });
+          }
+        }
+      }
+
+      // 🔥🔥🔥 АНАЛИЗИРУЕМ ИЗМЕНЕНИЯ НАТИВНОГО SOL 🔥🔥🔥
+      const walletIndex = accountKeys.findIndex((key: any) => {
+        const keyString = typeof key === 'string' ? key : key?.pubkey || key?.toString?.() || '';
+        return keyString === walletAddress;
+      });
       
-      this.logger.info(`[SwapAnalysis] TX: ${signature.slice(0,8)}... | ${inputSymbol} (Payment: ${inputIsPayment}) → ${outputSymbol} (Payment: ${outputIsPayment}) | Wallet: ${smartWallet.address.slice(0,8)}...`);
+      if (walletIndex !== -1 && transaction.meta?.preBalances && transaction.meta?.postBalances) {
+        const preSolBalance = transaction.meta.preBalances[walletIndex] || 0;
+        const postSolBalance = transaction.meta.postBalances[walletIndex] || 0;
+        const solChangeRaw = postSolBalance - preSolBalance;
+        const solChange = solChangeRaw / 1e9; // SOL имеет 9 decimals
+        
+        if (Math.abs(solChange) > 1e-9) {
+          console.log(`💰 NATIVE SOL CHANGE: ${solChange} SOL (raw: ${solChangeRaw})`);
+          tokenChanges.set('So11111111111111111111111111111111111111112', {
+            change: solChange,
+            mint: 'So11111111111111111111111111111111111111112',
+            decimals: 9
+          });
+        }
+      } else {
+        console.log(`⚠️ Could not find wallet ${walletAddress.slice(0,8)} in accountKeys (index: ${walletIndex})`);
+      }
 
-      // 🔥 ГЛАВНАЯ ФИЛЬТРАЦИЯ С ДЕТАЛЬНЫМ ЛОГИРОВАНИЕМ КАЖДОГО СЛУЧАЯ
-      if (inputMint === outputMint) {
-        this.processingStats.ignoredSameTokenSwaps++;
-        this.logger.debug(`[SwapFilter] ⏭️ IGNORED (Same Token): ${inputSymbol} → ${outputSymbol} | TX: ${signature.slice(0,8)}...`);
+      console.log(`🔄 Balance changes detected: ${tokenChanges.size} for wallet ${walletAddress.slice(0,8)}`);
+
+      // Ищем пары "ушло/пришло", которые формируют свап
+      const spentTokens = Array.from(tokenChanges.values()).filter(c => c.change < 0);
+      const receivedTokens = Array.from(tokenChanges.values()).filter(c => c.change > 0);
+
+      console.log(`💸 Spent tokens: ${spentTokens.length}, 💰 Received tokens: ${receivedTokens.length}`);
+
+      // Простой случай: один токен ушел, один пришел
+      if (spentTokens.length === 1 && receivedTokens.length === 1) {
+        const inputMint = spentTokens[0].mint;
+        const outputMint = receivedTokens[0].mint;
+        const inputAmountRaw = Math.abs(spentTokens[0].change) * Math.pow(10, spentTokens[0].decimals);
+        const outputAmountRaw = receivedTokens[0].change * Math.pow(10, receivedTokens[0].decimals);
+
+        console.log(`🎯 Perfect swap detected: ${inputMint.slice(0,8)}... → ${outputMint.slice(0,8)}...`);
+        console.log(`📊 Raw amounts: input=${inputAmountRaw}, output=${outputAmountRaw}`);
+
+        return { walletAddress, inputMint, outputMint, inputAmountRaw, outputAmountRaw };
+      } else {
+        console.log(`⚠️ Complex swap detected (${spentTokens.length} spent, ${receivedTokens.length} received) - skipping for now`);
+        if (spentTokens.length > 0) {
+          console.log(`   Spent: ${spentTokens.map(t => `${this.tokenMetadataService.getTokenSymbol(t.mint)}(${t.change.toFixed(4)})`).join(', ')}`);
+        }
+        if (receivedTokens.length > 0) {
+          console.log(`   Received: ${receivedTokens.map(t => `${this.tokenMetadataService.getTokenSymbol(t.mint)}(${t.change.toFixed(4)})`).join(', ')}`);
+        }
         return null;
       }
-
-      if (inputIsPayment && outputIsPayment) {
-        this.processingStats.filteringStats.paymentToPayment++;
-        this.logger.warn(`[SwapFilter] ❌ IGNORED (Payment → Payment): ${inputSymbol} → ${outputSymbol} | TX: ${signature.slice(0,8)}... | Wallet: ${smartWallet.address.slice(0,8)}...`);
-        this.logger.warn(`[SwapFilter] 🚨 THIS SHOULD NOT HAPPEN! Payment assets trading between each other: ${inputMint.slice(0,8)}... → ${outputMint.slice(0,8)}...`);
-        return null;
-      }
-
-      if (!inputIsPayment && !outputIsPayment) {
-        this.processingStats.filteringStats.altToAlt++;
-        this.logger.debug(`[SwapFilter] ⏭️ IGNORED (Alt → Alt): ${inputSymbol} → ${outputSymbol} | TX: ${signature.slice(0,8)}...`);
-        return null;
-      }
-
-      // Если дошли сюда - это валидный свап PAYMENT ↔ ALT
-      let targetToken = '';
-      let paymentToken = '';
-      let amountUSD = 0;
-      let swapType: 'buy' | 'sell' = 'buy';
-      let tokenAmount = 0;
-      let tokenPrice = 0;
-
-      if (inputIsPayment && !outputIsPayment) {
-        // 🔥 ПОКУПКА: PAYMENT_ASSET → АЛЬТКОИН
-        swapType = 'buy';
-        targetToken = outputMint;
-        paymentToken = inputMint;
-        this.processingStats.filteringStats.validBuys++;
-        
-        this.logger.info(`[SwapFilter] ✅ VALID BUY: ${inputSymbol} → ${outputSymbol} | TX: ${signature.slice(0,8)}...`);
-        
-        // 🔥 ИСПРАВЛЕНО: Правильные decimals через TokenMetadataService
-        const [paymentDecimals, targetDecimals] = await Promise.all([
-          this.tokenMetadataService.getDecimals(paymentToken),
-          this.tokenMetadataService.getDecimals(targetToken)
-        ]);
-        
-        if (paymentDecimals === null || targetDecimals === null) {
-          this.processingStats.filteringStats.unknownTokens++;
-          this.logger.warn(`[SwapFilter] ❌ Could not determine decimals. Payment: ${paymentToken} (${paymentDecimals}), Target: ${targetToken} (${targetDecimals})`);
-          return null;
-        }
-        
-        const inputRawAmount = parseFloat(tokenInputData.rawTokenAmount.tokenAmount || '0');
-        const outputRawAmount = parseFloat(tokenOutputData.rawTokenAmount.tokenAmount || '0');
-
-        const actualInputAmount = inputRawAmount / Math.pow(10, paymentDecimals);
-        tokenAmount = outputRawAmount / Math.pow(10, targetDecimals);
-        
-        // 🔥 ИСПРАВЛЕНО: Правильная цена через TokenMetadataService
-        const paymentTokenPrice = await this.tokenMetadataService.getTokenPrice(paymentToken);
-        amountUSD = actualInputAmount * (paymentTokenPrice || this.getFallbackPrice(paymentToken));
-        
-        if (tokenAmount > 0 && amountUSD > 0) {
-          tokenPrice = amountUSD / tokenAmount;
-        }
-        
-        this.logger.debug(`[SwapCalc] BUY: Spent ${actualInputAmount.toFixed(2)} ${inputSymbol} ($${amountUSD.toFixed(2)}) → Got ${tokenAmount.toFixed(2)} ${outputSymbol}`);
-        this.processingStats.usdCalculationStats.correctCalculations++;
-        
-      } else if (!inputIsPayment && outputIsPayment) {
-        // 🔥 ПРОДАЖА: АЛЬТКОИН → PAYMENT_ASSET
-        swapType = 'sell';
-        targetToken = inputMint;
-        paymentToken = outputMint;
-        this.processingStats.filteringStats.validSells++;
-        
-        this.logger.info(`[SwapFilter] ✅ VALID SELL: ${inputSymbol} → ${outputSymbol} | TX: ${signature.slice(0,8)}...`);
-
-        const [targetDecimals, paymentDecimals] = await Promise.all([
-          this.tokenMetadataService.getDecimals(targetToken),
-          this.tokenMetadataService.getDecimals(paymentToken)
-        ]);
-        
-        if (paymentDecimals === null || targetDecimals === null) {
-          this.processingStats.filteringStats.unknownTokens++;
-          this.logger.warn(`[SwapFilter] ❌ Could not determine decimals. Target: ${targetToken} (${targetDecimals}), Payment: ${paymentToken} (${paymentDecimals})`);
-          return null;
-        }
-        
-        const inputRawAmount = parseFloat(tokenInputData.rawTokenAmount.tokenAmount || '0');
-        const outputRawAmount = parseFloat(tokenOutputData.rawTokenAmount.tokenAmount || '0');
-
-        tokenAmount = inputRawAmount / Math.pow(10, targetDecimals);
-        const actualOutputAmount = outputRawAmount / Math.pow(10, paymentDecimals);
-        
-        const paymentTokenPrice = await this.tokenMetadataService.getTokenPrice(paymentToken);
-        amountUSD = actualOutputAmount * (paymentTokenPrice || this.getFallbackPrice(paymentToken));
-        
-        if (tokenAmount > 0 && amountUSD > 0) {
-          tokenPrice = amountUSD / tokenAmount;
-        }
-        
-        this.logger.debug(`[SwapCalc] SELL: Sold ${tokenAmount.toFixed(2)} ${inputSymbol} → Got ${actualOutputAmount.toFixed(2)} ${outputSymbol} ($${amountUSD.toFixed(2)})`);
-        this.processingStats.usdCalculationStats.correctCalculations++;
-      }
-
-      // Проверяем минимальный порог для категории
-      const minAmountCategory = smartWallet.category === 'sniper' ? 5000 : 
-                               smartWallet.category === 'hunter' ? 20000 : 50000;                       
-      if (amountUSD < minAmountCategory) {
-        this.processingStats.filteringStats.belowThreshold++;
-        this.logger.debug(`[SwapFilter] 💸 Amount $${amountUSD.toFixed(2)} below category threshold $${minAmountCategory} for ${smartWallet.category} | TX: ${signature.slice(0,8)}...`);
-        return null;
-      }
-
-      const tokenInfo = await this.getTokenInfo(targetToken);
-      
-      const result: SmartMoneySwap = {
-        transactionId: txData.signature,
-        walletAddress: smartWallet.address,
-        tokenAddress: targetToken,
-        tokenSymbol: tokenInfo.symbol,
-        tokenName: tokenInfo.name,
-        tokenAmount,
-        tokenPrice,
-        amountUSD,
-        swapType,
-        timestamp: new Date(txData.timestamp * 1000),
-        category: smartWallet.category,
-        winRate: smartWallet.winRate,
-        pnl: smartWallet.totalPnL,
-        totalTrades: smartWallet.totalTrades,
-        paymentToken: await this.getTokenSymbolWithFallback(paymentToken),
-        isCexListed: this.CEX_TOKENS.has(targetToken),
-        isFamilyMember: false as const,
-        familySize: 0,
-        familyId: undefined
-      };
-
-      this.logger.info(`[SwapFinal] ✅ VALID ${swapType.toUpperCase()}: ${result.tokenSymbol} - $${result.amountUSD.toFixed(0)} | Wallet: ${smartWallet.address.slice(0,8)}... | TX: ${signature.slice(0,8)}...`);
-      return result;
 
     } catch (error) {
-      this.logger.error(`[extractSwapInfo] Error for TX ${txData.signature}:`, error);
-      this.processingStats.usdCalculationStats.errorCalculations++;
+      this.logger.error('[extractSwapInfoFromBalances] Error:', error);
       return null;
     }
   }
 
-  private getDefaultDecimals(tokenMint: string): number {
-    if (tokenMint === 'So11111111111111111111111111111111111111112') return 9; // SOL
-    if (tokenMint === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') return 6; // USDC
-    if (tokenMint === 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB') return 6; // USDT
-    if (tokenMint === 'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So') return 9; // mSOL
-    if (tokenMint === 'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn') return 9; // JitoSOL
-    if (tokenMint === '7Q2afV64in6N6SeZsAAB81TJzwDoD6zpqmHkzi9Dcavn') return 9; // stSOL
-    return 9;
+  // 🔥🔥🔥 ИСПРАВЛЕНО: Правильное извлечение адреса кошелька с правильным приоритетом
+  private extractWalletAddressFromTransaction(txData: any): string | null {
+    // 🔥 ПРАВИЛЬНЫЙ ПОРЯДОК ПРИОРИТЕТОВ:
+    // 1. feePayer (наиболее надежный - это всегда кошелек пользователя)
+    if (txData.feePayer) return txData.feePayer;
+    
+    // 2. Из балансов - берем первого owner (это реальный кошелек пользователя)
+    if (txData.meta?.preTokenBalances?.[0]?.owner) return txData.meta.preTokenBalances[0].owner;
+    if (txData.meta?.postTokenBalances?.[0]?.owner) return txData.meta.postTokenBalances[0].owner;
+    
+    // 3. ТОЛЬКО В КРАЙНЕМ СЛУЧАЕ: первый accountKey (может быть программой!)
+    if (txData.transaction?.message?.accountKeys?.[0]) return txData.transaction.message.accountKeys[0];
+    
+    return null;
   }
 
-  private getFallbackPrice(tokenMint: string): number {
-    // Стейблкоины
-    if (tokenMint === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') return 1.0; // USDC
-    if (tokenMint === 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB') return 1.0; // USDT
-    if (tokenMint === 'A9mUU4qviSctJVPJdBJWkb28deg915LYJKrzQ19ji3FM') return 1.0; // UXD
-    if (tokenMint === 'USDH1SM1ojwWUga67PGrgFWUHibbjqMvuMaDkRJTgkX') return 1.0; // USDH
-    
-    // SOL и LST токены
-    if (tokenMint === 'So11111111111111111111111111111111111111112') return 140.8; // SOL
-    if (tokenMint === 'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So') return 140.0; // mSOL
-    if (tokenMint === 'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn') return 140.0; // JitoSOL
-    if (tokenMint === '7Q2afV64in6N6SeZsAAB81TJzwDoD6zpqmHkzi9Dcavn') return 140.0; // stSOL
-    if (tokenMint === 'bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1') return 140.0; // bSOL
-    if (tokenMint === 'he1iusmfkpAdwvxLNGV8Y1iSbj4rUy6yMhEA3fotn9A') return 140.0; // hSOL
-    
-    // Популярные токены (примерные цены)
-    if (tokenMint === 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263') return 0.00002; // BONK
-    if (tokenMint === 'WENWENvqqNya429ubCdR81ZmD69brwQaaBYY6p3LCpk') return 0.0001; // WEN
-    if (tokenMint === 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN') return 0.8; // JUP
-    
-    return 1.0; // Общий фоллбэк
-  }
+  // Обработка Smart Money свапа
+  private async processSmartMoneySwap(
+    balanceInfo: { walletAddress: string; inputMint: string; outputMint: string; inputAmountRaw: number; outputAmountRaw: number; },
+    smartWallet: SmartMoneyWallet,
+    txData: SolanaWebhookPayload
+  ): Promise<void> {
+    try {
+      // 🔥🔥🔥 ВЫЗЫВАЕМ ЕДИНЫЙ РАСЧЕТНЫЙ ЦЕНТР 🔥🔥🔥
+      const valueCalculation = await this.tokenMetadataService.calculateSwapUSDValue(
+        balanceInfo.inputMint,
+        balanceInfo.inputAmountRaw,
+        balanceInfo.outputMint,
+        balanceInfo.outputAmountRaw
+      );
+      
+      if (!valueCalculation) {
+        this.logger.debug(`[processSmartMoneySwap] ⏭️ IGNORED by Unified Calculator`);
+        this.processingStats.unifiedCalculatorIgnored++;
+        return;
+      }
+      
+      // 🔥 ПОЛУЧАЕМ ВСЕ ГОТОВЫЕ ДАННЫЕ ИЗ ЕДИНОГО РАСЧЕТНОГО ЦЕНТРА
+      const { amountUSD, swapType, tokenAddress, paymentToken, paymentTokenAmount, paymentTokenPrice } = valueCalculation;
 
-  private async getTokenSymbolWithFallback(mint: string): Promise<string> {
-    if (this.PAYMENT_ASSETS.has(mint)) {
-      return this.getTokenSymbol(mint);
+      // Первичный фильтр по минимальной сумме
+      if (amountUSD < 700) {
+        this.processingStats.filteredTransactions++;
+        return;
+      }
+
+      this.processingStats.usdCalculationStats.correctCalculations++;
+
+      // Получаем метаданные токенов
+      const tokenInfo = await this.getTokenInfo(tokenAddress);
+      const paymentTokenInfo = await this.getTokenInfo(paymentToken);
+      
+      // Рассчитываем количество основного токена
+      const actualTokenAmount = swapType === 'buy' ? 
+        balanceInfo.outputAmountRaw / Math.pow(10, tokenInfo.decimals) :
+        balanceInfo.inputAmountRaw / Math.pow(10, tokenInfo.decimals);
+      
+      const tokenPrice = actualTokenAmount > 0 ? amountUSD / actualTokenAmount : 0;
+
+      // 🔥🔥🔥 ФОРМИРУЕМ ИДЕАЛЬНЫЙ ПАСПОРТ СДЕЛКИ С ПРОТОКОЛОМ "ЖЕЛЕЗНЫЙ ДОЛЛАР" 🔥🔥🔥
+      const smartMoneySwap: SmartMoneySwap = {
+        transactionId: txData.signature,
+        walletAddress: smartWallet.address,
+        tokenAddress: tokenAddress,
+        tokenSymbol: tokenInfo.symbol,
+        tokenName: tokenInfo.name,
+        tokenAmount: actualTokenAmount,
+        amountUSD: amountUSD,
+        swapType: swapType,
+        timestamp: new Date(txData.timestamp * 1000),
+        category: smartWallet.category,
+        usdProfit7d: smartWallet.usdProfit7d,
+        winrate7d: smartWallet.winrate7d,
+        buy7d: smartWallet.buy7d,
+        
+        // 🔥🔥🔥 ПРОТОКОЛ "ЖЕЛЕЗНЫЙ ДОЛЛАР" - КЛЮЧЕВЫЕ ПОЛЯ 🔥🔥🔥
+        tokenPrice: tokenPrice,
+        paymentTokenSymbol: paymentTokenInfo.symbol,
+        paymentTokenAmount: paymentTokenAmount,
+        paymentTokenPrice: paymentTokenPrice,
+        
+        isCexListed: this.CEX_TOKENS.has(tokenAddress),
+        isFamilyMember: false as const,
+      };
+
+      // Проверяем фильтры и отправляем
+      if (this.shouldProcessSmartMoneySwap(smartMoneySwap, smartWallet)) {
+        await this.saveSmartMoneyTransaction(smartMoneySwap);
+        await this.sendSmartMoneyNotification(smartMoneySwap, smartWallet);
+        
+        this.processingStats.smartMoneyTransactions++;
+        this.processingStats.profitableSwaps++;
+
+        this.logger.info(`✅ SMART MONEY SWAP: ${smartMoneySwap.tokenSymbol} - $${smartMoneySwap.amountUSD.toFixed(0)} - ${smartMoneySwap.swapType}`);
+      } else {
+        this.processingStats.filteredTransactions++;
+      }
+
+    } catch (error) {
+      this.logger.error('❌ Error processing Smart Money swap:', error as Error);
+      this.processingStats.errorCount++;
     }
-    const info = await this.getTokenInfo(mint);
-    return info.symbol;
   }
 
+  // 🔥🔥🔥 ДЕМОНТАЖ ИЗБЫТОЧНЫХ ФИЛЬТРОВ - ДОВЕРЯЕМ ОТОБРАННЫМ КОШЕЛЬКАМ! 🔥🔥🔥
   private shouldProcessSmartMoneySwap(swapInfo: SmartMoneySwap, smartWallet: SmartMoneyWallet): boolean {
-    if (smartWallet.category === 'sniper') {
-      if (swapInfo.amountUSD < 2500 || swapInfo.amountUSD > 19999) {
-        return false;
-      }
-    } else if (smartWallet.category === 'hunter') {
-      if (swapInfo.amountUSD < 20000 || swapInfo.amountUSD > 49999) {
-        return false;
-      }
-    } else if (smartWallet.category === 'trader') {
-      if (swapInfo.amountUSD < 50000) {
-        return false;
-      }
-    }
-
-    const daysSinceActive = (Date.now() - smartWallet.lastActiveAt.getTime()) / (1000 * 60 * 60 * 24);
-    if (daysSinceActive > 30) {
-      return false;
-    }
-
-    if (smartWallet.winRate < 60) {
-      return false;
-    }
-
-    if (smartWallet.totalPnL < 100000) {
-      return false;
-    }
-
-    return true;
-  }
-
-  private getTokenSymbol(tokenMint: string): string {
-    switch (tokenMint) {
-      case 'So11111111111111111111111111111111111111112': return 'SOL';
-      case 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': return 'USDC';
-      case 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB': return 'USDT';
-      case 'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So': return 'mSOL';
-      case 'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn': return 'JitoSOL';
-      case '7Q2afV64in6N6SeZsAAB81TJzwDoD6zpqmHkzi9Dcavn': return 'stSOL';
-      case 'bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1': return 'bSOL';
-      case 'he1iusmfkpAdwvxLNGV8Y1iSbj4rUy6yMhEA3fotn9A': return 'hSOL';
-      case 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263': return 'BONK';
-      case 'WENWENvqqNya429ubCdR81ZmD69brwQaaBYY6p3LCpk': return 'WEN';
-      case 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN': return 'JUP';
-      default: return 'TOKEN';
-    }
+    // 🔥 ЕДИНСТВЕННЫЙ ФИЛЬТР: Мы доверяем кошельку, поэтому проверяем только минимальную сумму сделки.
+    return swapInfo.amountUSD >= 700;
   }
 
   private async validateSmartMoneyTransaction(
@@ -716,21 +651,6 @@ export class WebhookServer {
     }
   }
 
-  private extractWalletAddress(swapEvent: any): string | null {
-    try {
-      if (swapEvent.tokenInputs && swapEvent.tokenInputs.length > 0) {
-        return swapEvent.tokenInputs[0].userAccount;
-      }
-      if (swapEvent.tokenOutputs && swapEvent.tokenOutputs.length > 0) {
-        return swapEvent.tokenOutputs[0].userAccount;
-      }
-      return null;
-    } catch (error) {
-      this.logger.error('Error extracting wallet address:', error);
-      return null;
-    }
-  }
-
   private async saveSmartMoneyTransaction(swapInfo: SmartMoneySwap): Promise<void> {
     try {
       if (!this.smDatabase || !this.telegramNotifier) return;
@@ -746,10 +666,10 @@ export class WebhookServer {
         swapType: swapInfo.swapType,
         timestamp: swapInfo.timestamp,
         category: swapInfo.category,
-        winRate: swapInfo.winRate,
-        pnl: swapInfo.pnl,
-        totalTrades: swapInfo.totalTrades,
-        dex: 'QuickNode-Webhook'
+        winrate7d: swapInfo.winrate7d,
+        usdProfit7d: swapInfo.usdProfit7d,
+        buy7d: swapInfo.buy7d,
+        dex: 'QuickNode-Webhook-Balances'
       });
 
       const tokenSwap: TokenSwap = {
@@ -762,13 +682,18 @@ export class WebhookServer {
         amountUSD: swapInfo.amountUSD,
         timestamp: swapInfo.timestamp,
         dex: 'Smart Money Filtered',
+        price: swapInfo.tokenPrice || (swapInfo.amountUSD / swapInfo.tokenAmount),
+        swapType: swapInfo.swapType,
         isNewWallet: false,
         isReactivatedWallet: false,
-        walletAge: 0,
         daysSinceLastActivity: 0,
-        price: swapInfo.tokenPrice || (swapInfo.amountUSD / swapInfo.tokenAmount),
-        pnl: swapInfo.pnl,
-        swapType: swapInfo.swapType
+        // 🔥🔥🔥 ПРОТОКОЛ "ЖЕЛЕЗНЫЙ ДОЛЛАР" - ДОБАВЛЯЕМ НОВЫЕ ПОЛЯ В TokenSwap 🔥🔥🔥
+        paymentTokenSymbol: swapInfo.paymentTokenSymbol,
+        paymentTokenAmount: swapInfo.paymentTokenAmount,
+        paymentTokenPrice: swapInfo.paymentTokenPrice,
+        decimals: (await this.tokenMetadataService.getDecimals(swapInfo.tokenAddress)) || 9,
+        actualTokenAmount: swapInfo.tokenAmount,
+        rawTokenAmount: Math.floor(swapInfo.tokenAmount * Math.pow(10, 9)) // Примерный расчет
       };
 
       await this.database.saveTransaction(tokenSwap);
@@ -811,7 +736,8 @@ export class WebhookServer {
         name = metadata.name || name;
         decimals = metadata.decimals || decimals;
       } else {
-        symbol = tokenAddress.slice(0, 6).toUpperCase();
+        // 🔥 ИСПОЛЬЗУЕМ ЕДИНЫЙ МЕТОД ИЗ TokenMetadataService (УСТРАНЯЕМ ДУБЛИРОВАНИЕ)
+        symbol = this.tokenMetadataService.getTokenSymbol(tokenAddress);
         name = `Token ${tokenAddress.slice(0, 8)}...`;
         decimals = 9;
       }
@@ -830,7 +756,8 @@ export class WebhookServer {
     } catch (error) {
       this.logger.error(`Error getting token info for ${tokenAddress}:`, error);
       
-      const fallbackSymbol = tokenAddress ? tokenAddress.slice(0, 6).toUpperCase() : 'UNKNOWN';
+      // 🔥 ИСПОЛЬЗУЕМ ЕДИНЫЙ МЕТОД ИЗ TokenMetadataService (УСТРАНЯЕМ ДУБЛИРОВАНИЕ)
+      const fallbackSymbol = this.tokenMetadataService.getTokenSymbol(tokenAddress);
       const fallbackName = tokenAddress ? `Token ${tokenAddress.slice(0, 8)}...` : 'Unknown Token';
       const fallbackDecimals = 9;
       const isCexListed = this.CEX_TOKENS.has(tokenAddress);
@@ -861,39 +788,25 @@ export class WebhookServer {
     }, 5 * 60 * 1000);
   }
 
-  // 🔥 НОВЫЙ МЕТОД: Получение детальной статистики фильтрации
-  getDetailedFilteringStats(): {
+  getFilteringStats(): {
     totalSwapsAnalyzed: number;
-    paymentToPaymentIgnored: number;
-    altToAltIgnored: number;
-    validBuys: number;
-    validSells: number;
-    belowThresholdIgnored: number;
-    unknownTokensIgnored: number;
-    sameTokenIgnored: number;
+    ignoredByUnifiedCalculator: number;
+    successfulCalculations: number;
     successRate: string;
+    balancesExtracted: number;
+    eventsIgnored: number;
   } {
-    const total = this.processingStats.filteringStats.paymentToPayment + 
-                  this.processingStats.filteringStats.altToAlt +
-                  this.processingStats.filteringStats.validBuys + 
-                  this.processingStats.filteringStats.validSells +
-                  this.processingStats.filteringStats.belowThreshold +
-                  this.processingStats.filteringStats.unknownTokens +
-                  this.processingStats.ignoredSameTokenSwaps;
-
-    const successful = this.processingStats.filteringStats.validBuys + this.processingStats.filteringStats.validSells;
+    const total = this.processingStats.unifiedCalculatorIgnored + this.processingStats.usdCalculationStats.correctCalculations;
+    const successful = this.processingStats.usdCalculationStats.correctCalculations;
     const successRate = total > 0 ? ((successful / total) * 100).toFixed(2) + '%' : '0%';
 
     return {
       totalSwapsAnalyzed: total,
-      paymentToPaymentIgnored: this.processingStats.filteringStats.paymentToPayment,
-      altToAltIgnored: this.processingStats.filteringStats.altToAlt,
-      validBuys: this.processingStats.filteringStats.validBuys,
-      validSells: this.processingStats.filteringStats.validSells,
-      belowThresholdIgnored: this.processingStats.filteringStats.belowThreshold,
-      unknownTokensIgnored: this.processingStats.filteringStats.unknownTokens,
-      sameTokenIgnored: this.processingStats.ignoredSameTokenSwaps,
-      successRate
+      ignoredByUnifiedCalculator: this.processingStats.unifiedCalculatorIgnored,
+      successfulCalculations: successful,
+      successRate,
+      balancesExtracted: this.processingStats.balancesExtracted,
+      eventsIgnored: this.processingStats.eventsIgnored
     };
   }
 
@@ -905,7 +818,7 @@ export class WebhookServer {
     return new Promise((resolve, reject) => {
       try {
         this.server = this.app.listen(this.port, () => {
-          this.logger.info(`🚀 Webhook server started on port ${this.port} with ENHANCED PAYMENT_ASSETS filtering and detailed logging`);
+          this.logger.info(`🚀 Webhook server started on port ${this.port} with 🔥 ПРОТОКОЛ "ЖЕЛЕЗНЫЙ ДОЛЛАР" + ПРАВИЛЬНОЕ ИЗВЛЕЧЕНИЕ БАЛАНСОВ`);
           resolve();
         });
 

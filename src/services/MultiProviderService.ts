@@ -1,4 +1,4 @@
-// src/services/MultiProviderService.ts - ИСПРАВЛЕНА УТЕЧКА ПАМЯТИ В КЕШАХ
+// src/services/MultiProviderService.ts - ИСПРАВЛЕНА УТЕЧКА ПАМЯТИ В КЕШАХ + КРИТИЧЕСКАЯ ОШИБКА init()
 import { Logger } from '../utils/Logger';
 import { ProviderConfig, APIResponse, ProviderStats, LoadBalancingResult, RetryConfig,
   HealthCheckResult, CacheEntry, CacheConfig, MultiProviderMetrics } from '../types';
@@ -56,6 +56,23 @@ export class MultiProviderService {
     this.logger.info('🚀 MultiProviderService initialized with MEMORY LIMITS (NO HELIUS)');
   }
 
+  /**
+   * 🔥 ИСПРАВЛЕНА КРИТИЧЕСКАЯ ОШИБКА - убрана заглушка throw new Error
+   */
+  public init(): void {
+    this.logger.info('🚀 MultiProviderService.init() called - providers already initialized in constructor');
+    
+    // Проверяем, что у нас есть рабочие провайдеры
+    const healthyProviders = this.getHealthyProviders();
+    if (healthyProviders.length === 0) {
+      this.logger.error('💀 CRITICAL: No healthy providers available after initialization!');
+      throw new Error('No healthy providers available');
+    }
+    
+    this.logger.info(`✅ MultiProviderService ready with ${healthyProviders.length} healthy providers`);
+    this.logger.info(`🎯 Primary provider: ${this.primaryProvider || 'none'}`);
+  }
+
   private initializeProviders(): void {
     const providerConfigs: ProviderConfig[] = [
       {
@@ -110,6 +127,7 @@ export class MultiProviderService {
     });
     
     this.metrics.totalProviders++;
+    // 🔥 ИСПРАВЛЕНО: инициализируем счетчик для нового провайдера
     this.metrics.providerDistribution[config.name] = 0;
   }
 

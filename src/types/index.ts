@@ -1,4 +1,4 @@
-// src/types/index.ts - 🔥 КРИТИЧЕСКИЕ ИСПРАВЛЕНИЯ: добавлены поля для отладки USD расчетов
+// src/types/index.ts - 🔥 ПРОТОКОЛ "ЖЕЛЕЗНЫЙ ДОЛЛАР": Модернизация "Паспортов Сделки"
 
 // ===== ОСНОВНЫЕ ТИПЫ ТРАНЗАКЦИЙ =====
 
@@ -14,13 +14,8 @@ export interface TokenSwap {
   dex: string;
   isNewWallet: boolean;
   isReactivatedWallet: boolean;
-  walletAge: number;
   daysSinceLastActivity: number;
   price?: number;
-  pnl?: number;
-  multiplier?: number;
-  winrate?: number;
-  timeToTarget?: string;
   swapType?: 'buy' | 'sell';
   // 🆕 ПОЛЯ ДЛЯ POSITION AGGREGATION
   isAggregated?: boolean;
@@ -30,6 +25,10 @@ export interface TokenSwap {
   decimals?: number;
   rawTokenAmount?: number;
   actualTokenAmount?: number;
+  // 🔥🔥🔥 ПРОТОКОЛ "ЖЕЛЕЗНЫЙ ДОЛЛАР" - НОВЫЕ ПОЛЯ ДЛЯ TokenSwap 🔥🔥🔥
+  paymentTokenSymbol?: string;    // Символ платежного токена (SOL, USDC)
+  paymentTokenAmount?: number;    // ТОЧНОЕ количество платежного токена
+  paymentTokenPrice?: number;     // ТОЧНАЯ цена платежного токена
 }
 
 export interface WalletInfo {
@@ -108,7 +107,6 @@ export interface InsiderAlert {
   tradingHistory: TradingHistory;
 }
 
-// ✅ ИСПРАВЛЕНО: убрали упоминание Helius, теперь общий интерфейс для Solana транзакций
 export interface SolanaTransaction {
   signature: string;
   timestamp: number;
@@ -124,24 +122,31 @@ export interface SolanaTransaction {
   transactionError?: any;
 }
 
-// ===== SMART MONEY ТИПЫ =====
+// ===== SMART MONEY ТИПЫ - 🔥 CLEAN SLATE VERSION =====
 
 export interface SmartMoneyWallet {
   address: string;
   category: 'sniper' | 'hunter' | 'trader';
   nickname?: string;
-  winRate: number;
-  totalPnL: number;
-  totalTrades: number;
-  avgTradeSize: number;
-  maxTradeSize: number;
-  minTradeSize: number;
+  
+  // 🔥 ТОЛЬКО РЕАЛЬНЫЕ ПОЛЯ ИЗ CSV BULK WALLET CHECKER
+  usdProfit7d: number;           // Прибыль за 7 дней - КЛЮЧЕВОЕ ПОЛЕ
+  usdProfit30d: number;          // Прибыль за 30 дней  
+  winrate7d: number;             // Винрейт за 7 дней - КЛЮЧЕВОЕ ПОЛЕ  
+  buy7d: number;                 // Покупки за 7 дней - показатель активности
+  avgHoldingMins: number;        // Среднее время держания в минутах
+  totalProfitPercent: number;    // Общий процент прибыли
+  solBalance: number;            // Баланс SOL
+  
+  // Системные поля
+  performanceScore: number;
+  lastActiveAt: Date;
+  isActive: boolean;
+  
+  // Остальные поля остаются как есть
   sharpeRatio?: number;
   maxDrawdown?: number;
-  lastActiveAt: Date;
-  performanceScore: number;
   volumeScore?: number;
-  isActive: boolean;
   
   // Family поля ОТКЛЮЧЕНЫ - всегда false/undefined
   isFamilyMember?: false; // всегда false
@@ -151,7 +156,6 @@ export interface SmartMoneyWallet {
   
   // Категория-специфичные метрики
   earlyEntryRate?: number;
-  avgHoldTime?: number;
   
   createdAt?: Date;
   updatedAt?: Date;
@@ -204,11 +208,11 @@ export interface SmartMoneySwap {
   swapType: 'buy' | 'sell';
   timestamp: Date;
   
-  // Smart Money метрики
+  // 🔥 ТОЛЬКО CSV МЕТРИКИ - Smart Money кошелек
   category: 'sniper' | 'hunter' | 'trader';
-  winRate: number;
-  pnl: number;
-  totalTrades: number;
+  usdProfit7d: number;           // CSV поле
+  winrate7d: number;             // CSV поле
+  buy7d: number;                 // CSV поле
   tokenPrice?: number;
   
   // Family поля ОТКЛЮЧЕНЫ - всегда false/0/undefined
@@ -216,11 +220,15 @@ export interface SmartMoneySwap {
   familySize?: 0; // всегда 0
   familyId?: undefined; // всегда undefined
   
+  // 🔥🔥🔥 ПРОТОКОЛ "ЖЕЛЕЗНЫЙ ДОЛЛАР" - КЛЮЧЕВЫЕ ПОЛЯ 🔥🔥🔥
+  paymentTokenSymbol?: string;    // Символ платежного токена (SOL, USDC)
+  paymentTokenAmount?: number;    // ТОЧНОЕ количество платежного токена
+  paymentTokenPrice?: number;     // ТОЧНАЯ цена платежного токена
+  
   // 🔥 КРИТИЧЕСКИЕ ДОБАВЛЕНИЯ для отладки USD расчетов
   decimals?: number;
   rawTokenAmount?: number;
   actualTokenAmount?: number;
-  paymentToken?: string;
   isCexListed?: boolean;
 }
 
@@ -390,7 +398,7 @@ export interface WalletFilterResult {
 
 export interface ProviderConfig {
   name: string;
-  type: 'quicknode' | 'alchemy' | 'genesysgo' | 'triton'; // ✅ ИСПРАВЛЕНО: убрали 'helius'
+  type: 'quicknode' | 'alchemy' | 'genesysgo' | 'triton';
   baseUrl: string;
   apiKey: string;
   
@@ -584,17 +592,14 @@ export interface ProcessingStats {
 // ===== ТИПЫ ДЛЯ ВНЕШНЕГО ПОИСКА КОШЕЛЬКОВ =====
 
 export interface WalletPerformanceMetrics {
-  totalPnL: number;
-  winRate: number;
-  totalTrades: number;
-  avgTradeSize: number;
-  maxTradeSize: number;
-  minTradeSize: number;
-  sharpeRatio: number;
-  maxDrawdown: number;
-  profitFactor: number;
-  avgHoldTime: number; // в часах
-  earlyEntryRate: number; // процент ранних входов
+  // 🔥 ТОЛЬКО CSV ПОЛЯ
+  usdProfit7d: number;
+  usdProfit30d: number;
+  winrate7d: number;
+  buy7d: number;
+  avgHoldingMins: number;
+  totalProfitPercent: number;
+  solBalance: number;
   performanceScore?: number; // общий скор 0-100 (опционально для обратной совместимости)
   recentActivity: Date;
   volumeScore?: number;
@@ -636,7 +641,7 @@ export interface ExternalWalletCandidate {
 }
 
 export interface ApiCreditUsage {
-  provider: 'quicknode' | 'alchemy'; // ✅ ИСПРАВЛЕНО: убрали 'helius'
+  provider: 'quicknode' | 'alchemy';
   operation: string;
   credits: number;
   timestamp: Date;
@@ -769,11 +774,14 @@ export interface SmartMoneyDetectionResult {
   };
   
   metrics: {
-    winRate: number;
-    avgTradeSize: number;
-    totalPnL: number;
-    tradingFrequency: number;
-    riskAdjustedReturns: number;
+    // 🔥 ТОЛЬКО CSV ПОЛЯ
+    usdProfit7d: number;
+    usdProfit30d: number;
+    winrate7d: number;
+    buy7d: number;
+    avgHoldingMins: number;
+    totalProfitPercent: number;
+    solBalance: number;
   };
   
   redFlags: string[];

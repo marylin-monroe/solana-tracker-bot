@@ -12,9 +12,19 @@
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
-    "solana", "telegram", "bot", "smart-money", "crypto", "trading",
-    "blockchain", "quicknode", "alchemy", "jupiter", "dragon",
-    "large-transactions", "monitoring"
+    "solana",
+    "telegram",
+    "bot",
+    "smart-money",
+    "crypto",
+    "trading",
+    "blockchain",
+    "quicknode",
+    "alchemy",
+    "jupiter",
+    "dragon",
+    "large-transactions",
+    "monitoring"
   ],
   "author": "Smart Money Bot Team",
   "license": "MIT",
@@ -28,7 +38,8 @@
     "dotenv": "^16.4.5",
     "express": "^4.18.2",
     "node-cron": "^3.0.3",
-    "node-telegram-bot-api": "^0.66.0",
+    "node-telegram-bot-api": "^0.63.0",
+    "papaparse": "^5.5.3",
     "sqlite3": "^5.1.7",
     "winston": "^3.13.0"
   },
@@ -39,6 +50,7 @@
     "@types/node": "^20.12.0",
     "@types/node-cron": "^3.0.11",
     "@types/node-telegram-bot-api": "^0.64.0",
+    "@types/papaparse": "^5.3.16",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.4.0"
   },

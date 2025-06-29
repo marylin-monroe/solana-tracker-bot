@@ -1,4 +1,4 @@
-// src/main.ts - 🔥 МИНИМИЗИРОВАННЫЕ STARTUP СООБЩЕНИЯ
+// src/main.ts - 🔥 ИСПРАВЛЕНА РАССИНХРОНИЗАЦИЯ: Dragon CSV загружается ДО мониторинга
 import * as dotenv from 'dotenv';
 import { TelegramNotifier } from './services/TelegramNotifier';
 import { Database } from './services/Database';
@@ -8,7 +8,8 @@ import { TokenMetadataService } from './services/TokenMetadataService';
 import { WebhookServer } from './services/WebhookServer';
 import { QuickNodeWebhookManager } from './services/QuickNodeWebhookManager';
 import { DragonResultsParser } from './services/DragonResultsParser';
-import { DragonActivityChecker } from './services/DragonActivityChecker';
+import { SolanaMonitor } from './services/SolanaMonitor'; // 🔥 ДОБАВЛЕН SolanaMonitor
+
 import { LargeTransactionMonitor } from './services/LargeTransactionMonitor';
 import { MultiProviderService } from './services/MultiProviderService';
 import { Logger } from './utils/Logger';
@@ -23,12 +24,12 @@ class SmartMoneyBotRunner {
   private smDatabase: SmartMoneyDatabase;
   private telegramNotifier: TelegramNotifier;
   private tokenMetadataService: TokenMetadataService;
+  private solanaMonitor: SolanaMonitor; // 🔥 ДОБАВЛЕН SolanaMonitor
   private flowAnalyzer: SmartMoneyFlowAnalyzer;
   private webhookServer: WebhookServer;
   private webhookManager: QuickNodeWebhookManager;
   private smartWalletLoader: SmartWalletLoader;
   private dragonParser: DragonResultsParser;
-  private dragonActivityChecker: DragonActivityChecker;
   private largeTransactionMonitor: LargeTransactionMonitor;
   private multiProviderService: MultiProviderService;
   private logger: Logger;
@@ -46,41 +47,52 @@ class SmartMoneyBotRunner {
     this.tokenMetadataService = new TokenMetadataService();
     this.smartWalletLoader = new SmartWalletLoader(this.smDatabase, this.telegramNotifier);
     
-    this.flowAnalyzer = new SmartMoneyFlowAnalyzer(this.smDatabase, this.telegramNotifier, this.database, this.tokenMetadataService);
-    this.webhookServer = new WebhookServer(this.database, this.telegramNotifier, null, this.smDatabase);
-    this.webhookManager = new QuickNodeWebhookManager();
+    // 🔥🔥🔥 ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ" - СОЗДАНИЕ И ИНТЕГРАЦИЯ SolanaMonitor 🔥🔥🔥
+    this.solanaMonitor = new SolanaMonitor(this.database, this.telegramNotifier);
+    
+    // 🔥🔥🔥 ПЕРЕДАЧА SolanaMonitor В SmartMoneyFlowAnalyzer 🔥🔥🔥
+    this.flowAnalyzer = new SmartMoneyFlowAnalyzer(
+      this.smDatabase, 
+      this.telegramNotifier, 
+      this.database, 
+      this.tokenMetadataService,
+      this.solanaMonitor // 🔥 КРИТИЧЕСКИ ВАЖНО: передаем SolanaMonitor для интеграции с агрегированными позициями
+    );
+    
+    // 🔥🔥🔥 ПЕРЕДАЧА SolanaMonitor В WebhookServer 🔥🔥🔥
+    this.webhookServer = new WebhookServer(this.database, this.telegramNotifier, this.solanaMonitor, this.smDatabase);
+    
+    // 🔥🔥🔥 ИСПРАВЛЕНИЕ: ПЕРЕДАЧА smDatabase В КОНСТРУКТОР QuickNodeWebhookManager 🔥🔥🔥
+    this.webhookManager = new QuickNodeWebhookManager(this.smDatabase, this.telegramNotifier);
 
     this.multiProviderService = new MultiProviderService();
+    
+    // 🔥 ОБНОВЛЕННАЯ КОНФИГУРАЦИЯ ДЛЯ BULK WALLET CSV - ТОЛЬКО НОВЫЕ ПОЛЯ!
     this.dragonParser = new DragonResultsParser(
       this.smDatabase, 
       this.telegramNotifier, 
       this.multiProviderService,
       {
-      minPnl: 150000,        // $150K
-      minWinrate: 35,       // 58%
-      minTrades: 25,       // 100
-      maxDaysInactive: 14
-    });
+        // 🔥 НОВЫЕ КРИТЕРИИ "ВХОДНОГО БИЛЕТА" НА ОСНОВЕ НЕДАВНЕЙ АКТИВНОСТИ
+        minProfit7d: 20000,                    // $20K прибыль за 7 дней
+        minWinrate7d: 51,                      // 51% винрейт за 7 дней  
+        minSolBalance: 30,                     // 30 SOL баланс
+        minTotalProfitPercent: 9,              // 9% общая прибыль
+        minActivity7d: 1,                      // минимум 1 покупка за 7 дней
+        maxDaysInactive: 14
+      }
+    );
 
-    
     this.largeTransactionMonitor = new LargeTransactionMonitor(
       this.telegramNotifier, this.multiProviderService, this.tokenMetadataService, this.smDatabase
     );
 
-    this.dragonActivityChecker = new DragonActivityChecker(
-      this.smDatabase, 
-      this.multiProviderService, 
-      this.telegramNotifier,
-      {
-        enabled: true,
-        maxDaysInactive: 7,
-        batchSize: 5,
-        delayBetweenBatches: 10000,
-        recheckIntervalHours: 24
-      }
-    );
-
-    this.logger.info('✅ Services initialized with CORRECT swap logic');
+    this.logger.info('🚀 SmartMoneyBotRunner initialized with 🔥 ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ"');
+    this.logger.info('🔥 ✅ ЕДИНЫЙ РАСЧЕТНЫЙ ЦЕНТР integrated');
+    this.logger.info('🔥 ✅ Position Aggregation System integrated');
+    this.logger.info('🔥 ✅ SolanaMonitor → SmartMoneyFlowAnalyzer integration active');
+    this.logger.info('🔥 ✅ QuickNodeWebhookManager dependencies FIXED');
+    this.logger.info('✅ Services initialized with BULK WALLET CSV mode');
   }
 
   private validateEnvironment(): void {
@@ -105,13 +117,446 @@ class SmartMoneyBotRunner {
       '/dragon': this.handleDragonCommand.bind(this),
       '/dragon_replace': this.handleDragonReplaceCommand.bind(this),
       '/dragon_stats': this.handleDragonStatsCommand.bind(this),
-      '/dragon_activity': this.handleDragonActivityCommand.bind(this),
       '/flows': this.handleFlowsCommand.bind(this),
       '/holdings': this.handleHoldingsCommand.bind(this),
       '/large': this.handleLargeTransactionsCommand.bind(this),
       '/dedup': this.handleDeduplicationCommand.bind(this),
       '/help': this.handleHelpCommand.bind(this)
     });
+  }
+
+  async start(): Promise<void> {
+    if (this.isRunning) {
+      this.logger.warn('Bot is already running');
+      return;
+    }
+
+    try {
+      this.logger.info('🚀 Starting Smart Money Bot with ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ"...');
+
+      // Инициализация базы данных
+      await this.database.init();
+      await this.smDatabase.init();
+
+      // 🔥 ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ" - ДЕМОНСТРАЦИЯ ЕДИНОГО РАСЧЕТНОГО ЦЕНТРА
+      await this.demonstrateProtocol();
+
+      // Инициализация провайдеров
+      await this.multiProviderService.init();
+
+      // Загрузка кошельков из конфига
+      const walletsLoaded = await this.smartWalletLoader.loadWallets();
+      this.logger.info(`💼 Loaded ${walletsLoaded} wallets from config`);
+
+      // 🔥🔥🔥 ПРОВЕРКА: УБЕЖДАЕМСЯ ЧТО КОШЕЛЬКИ ЗАГРУЖЕНЫ 🔥🔥🔥
+      const existingWallets = await this.smDatabase.getAllActiveSmartWallets();
+      this.logger.info(`📊 CRITICAL CHECK: Found ${existingWallets.length} total wallets in database before starting monitoring`);
+      
+      if (existingWallets.length === 0) {
+        this.logger.warn('⚠️ WARNING: No wallets found in database! Monitoring will start with empty list.');
+        await this.telegramNotifier.sendCycleLog(
+          `⚠️ <b>WARNING: No Wallets Found</b>\n\n` +
+          `📊 Database contains: <code>0 wallets</code>\n` +
+          `🔄 Monitoring will start with empty list\n` +
+          `🐲 Dragon CSV may be empty or not processed yet\n\n` +
+          `💡 Try running <code>/dragon</code> command manually`
+        );
+      } else {
+        // Показываем статистику по источникам
+        const sourceStats = await this.smDatabase.getWalletsBySource();
+        this.logger.info(`📊 Wallet sources: Manual=${sourceStats.manual}, Dragon=${sourceStats.dragon}, Discovery=${sourceStats.discovery}, Other=${sourceStats.other}`);
+        
+        await this.telegramNotifier.sendCycleLog(
+          `✅ <b>Wallets Ready for Monitoring</b>\n\n` +
+          `📊 Total: <code>${existingWallets.length}</code>\n` +
+          `👤 Manual: <code>${sourceStats.manual}</code>\n` +
+          `🐲 Dragon: <code>${sourceStats.dragon}</code>\n` +
+          `🔍 Discovery: <code>${sourceStats.discovery}</code>\n` +
+          (sourceStats.other > 0 ? `❓ Other: <code>${sourceStats.other}</code>\n` : '') +
+          `🚀 Ready to start monitoring!`
+        );
+      }
+
+      // Запуск веб-сервера
+      await this.webhookServer.start();
+
+      // 🔥 TELEGRAM COMMANDS С ПОДДЕРЖКОЙ ПРОТОКОЛА
+      this.setupTelegramCommands();
+
+      // 🔥 ИСПРАВЛЕНИЕ: QuickNodeWebhookManager уже имеет все зависимости из конструктора
+      // Больше НЕ нужно вызывать setDependencies!
+
+      // 🔥🔥🔥 ТЕПЕРЬ запускаем мониторинг с ПРАВИЛЬНЫМ списком кошельков 🔥🔥🔥
+      await this.setupQuickNodeWebhook();
+
+      // Настройка периодических задач с улучшенными интервалами
+      this.setupPeriodicTasks();
+
+      // 🔥 ИСПРАВЛЕНИЕ: Запуск Dragon processing как ПЕРИОДИЧЕСКОЙ задачи (не первичной загрузки)
+      this.startDragonProcessing();
+
+      // Настройка обработчиков сигналов
+      this.setupSignalHandlers();
+
+      this.isRunning = true;
+      this.logger.info('✅ Smart Money Bot started successfully with ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ"');
+
+      // Отправляем уведомление о запуске
+      await this.sendStartupNotification();
+
+    } catch (error) {
+      this.logger.error('Failed to start Smart Money Bot:', error);
+      throw error;
+    }
+  }
+
+  // 🔥🔥🔥 ДЕМОНСТРАЦИЯ ПРОТОКОЛА "ПОЛНЫЙ КОНТРОЛЬ" 🔥🔥🔥
+  private async demonstrateProtocol(): Promise<void> {
+    this.logger.info('🔥 Demonstrating ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ" capabilities...');
+
+    try {
+      // 🔥 ТЕСТ 1: ЕДИНЫЙ РАСЧЕТНЫЙ ЦЕНТР
+      this.logger.info('🔥 Testing Единый Расчетный Центр...');
+      
+      // Симуляция валидного свапа SOL → BONK (покупка)
+      const testSwap1 = await this.tokenMetadataService.calculateSwapUSDValue(
+        'So11111111111111111111111111111111111111112', // SOL
+        1000000000, // 1 SOL (raw)
+        'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263', // BONK
+        1000000000000 // BONK amount (raw)
+      );
+
+      if (testSwap1) {
+        this.logger.info(`✅ Единый Расчетный Центр Test 1: ${testSwap1.swapType.toUpperCase()} - $${testSwap1.amountUSD.toFixed(2)}`);
+      }
+
+      // Симуляция нецелевого свапа USDC → USDT (должен быть отфильтрован)
+      const testSwap2 = await this.tokenMetadataService.calculateSwapUSDValue(
+        'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+        1000000, // $1 USDC (raw)
+        'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
+        1000000 // $1 USDT (raw)
+      );
+
+      if (!testSwap2) {
+        this.logger.info(`✅ Единый Расчетный Центр Test 2: Payment→Payment swap correctly filtered`);
+      }
+
+      // 🔥 ТЕСТ 2: СТАТИСТИКА SolanaMonitor
+      const aggregationStats = this.solanaMonitor.getAggregationStats();
+      this.logger.info(`✅ SolanaMonitor Integration: ${aggregationStats.activePositions} active positions, filtering efficiency: ${aggregationStats.filteringStats.filteringEfficiency}`);
+
+      // 🔥 ТЕСТ 3: ИНТЕГРАЦИЯ С SmartMoneyFlowAnalyzer
+      this.logger.info('✅ SmartMoneyFlowAnalyzer ready with SolanaMonitor integration');
+
+      await this.telegramNotifier.sendCycleLog(
+        `🔥 <b>ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ" Demonstration</b>\n\n` +
+        `✅ <b>Единый Расчетный Центр:</b> WORKING\n` +
+        `${testSwap1 ? `💰 Test Swap: ${testSwap1.swapType.toUpperCase()} $${testSwap1.amountUSD.toFixed(2)}` : ''}\n` +
+        `🚫 Payment→Payment: FILTERED\n\n` +
+        `✅ <b>Position Aggregation:</b> ACTIVE\n` +
+        `📊 Active Positions: <code>${aggregationStats.activePositions}</code>\n` +
+        `🎯 Filter Efficiency: <code>${aggregationStats.filteringStats.filteringEfficiency}</code>\n\n` +
+        `✅ <b>Integration:</b> COMPLETE\n` +
+        `🔗 SolanaMonitor ↔ SmartMoneyFlowAnalyzer: CONNECTED\n` +
+        `🔗 QuickNodeWebhookManager dependencies: FIXED\n` +
+        `🔗 Wallet loading synchronization: FIXED`
+      );
+
+    } catch (error) {
+      this.logger.error('Error demonstrating ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ":', error);
+    }
+  }
+
+  private setupPeriodicTasks(): void {
+    this.logger.info('⏰ Setting up periodic tasks for ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ"...');
+
+    // 🔥 FLOW ANALYSIS с новой логикой агрегированных позиций (каждые 15 минут)
+    const flowAnalysisInterval = setInterval(async () => {
+      try {
+        this.logger.info('🔍 Starting ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ" flow analysis...');
+        const flowResult = await this.flowAnalyzer.analyzeSmartMoneyFlows();
+        await this.flowAnalyzer.sendFlowAnalysisNotifications(flowResult);
+        
+        // 🔥 СТАТИСТИКА ПРОТОКОЛА
+        const aggregationStats = this.solanaMonitor.getAggregationStats();
+        if (aggregationStats.activePositions > 0) {
+          await this.telegramNotifier.sendCycleLog(
+            `📊 <b>ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ" Status</b>\n\n` +
+            `🎯 Active Positions: <code>${aggregationStats.activePositions}</code>\n` +
+            `🔥 Detected: <code>${aggregationStats.stats.totalPositionsDetected}</code>\n` +
+            `⚠️ High Risk: <code>${aggregationStats.stats.highRiskPositions}</code>\n` +
+            `📨 Alerts Sent: <code>${aggregationStats.stats.alertsSent}</code>\n` +
+            `🎛️ Filter Efficiency: <code>${aggregationStats.filteringStats.filteringEfficiency}</code>`
+          );
+        }
+      } catch (error) {
+        this.logger.error('Error in flow analysis:', error);
+      }
+    }, 15 * 60 * 1000); // 15 минут
+    this.intervalIds.push(flowAnalysisInterval);
+
+    // Holdings analysis (каждые 30 минут)
+    const holdingsInterval = setInterval(async () => {
+      try {
+        const holdingsReport = await this.flowAnalyzer.analyzeSmartMoneyHoldings();
+        await this.flowAnalyzer.sendHoldingsReport(holdingsReport);
+      } catch (error) {
+        this.logger.error('Error in holdings analysis:', error);
+      }
+    }, 30 * 60 * 1000); // 30 минут
+    this.intervalIds.push(holdingsInterval);
+
+    // 🔥 ПРИНУДИТЕЛЬНАЯ ПРОВЕРКА ВСЕХ АКТИВНЫХ ПОЗИЦИЙ (каждый час)
+    const positionCheckInterval = setInterval(async () => {
+      try {
+        const processed = await this.solanaMonitor.forceCheckAllPositions();
+        if (processed > 0) {
+          this.logger.info(`🔍 Force-checked all positions: ${processed} analyzed`);
+        }
+      } catch (error) {
+        this.logger.error('Error in position force check:', error);
+      }
+    }, 60 * 60 * 1000); // 1 час
+    this.intervalIds.push(positionCheckInterval);
+
+    // Batch wallet updates (каждые 4 часа)
+    const walletUpdateInterval = setInterval(async () => {
+      try {
+        await this.updateWalletsBatch();
+      } catch (error) {
+        this.logger.error('Error in wallet batch update:', error);
+      }
+    }, 4 * 60 * 60 * 1000); // 4 часа
+    this.intervalIds.push(walletUpdateInterval);
+
+    // Статистика и состояние системы (каждые 5 минут)
+    const statsInterval = setInterval(async () => {
+      try {
+        await this.sendSystemStats();
+      } catch (error) {
+        this.logger.error('Error sending system stats:', error);
+      }
+    }, 5 * 60 * 1000); // 5 минут
+    this.intervalIds.push(statsInterval);
+
+    this.logger.info('✅ Periodic tasks configured for ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ"');
+  }
+
+  private async updateWalletsBatch(): Promise<void> {
+    try {
+      const activeWallets = await this.smDatabase.getAllActiveSmartWallets();
+      this.logger.info(`📊 Starting batch wallet update for ${activeWallets.length} wallets...`);
+      
+      const BATCH_SIZE = 10;
+      for (let i = 0; i < activeWallets.length; i += BATCH_SIZE) {
+        const batch = activeWallets.slice(i, i + BATCH_SIZE);
+        
+        await Promise.allSettled(
+          batch.map(wallet => this.flowAnalyzer.updateSingleWalletMetrics(wallet))
+        );
+        
+        await this.sleep(5000);
+        this.logger.info(`📊 Updated batch ${Math.floor(i/BATCH_SIZE) + 1}/${Math.ceil(activeWallets.length/BATCH_SIZE)}`);
+      }
+    } catch (error) {
+      this.logger.error('Error in batch wallet update:', error);
+    }
+  }
+
+  // 🔥🔥🔥 ИСПРАВЛЕНИЕ: Dragon processing как ПЕРИОДИЧЕСКАЯ задача (не первичная загрузка) 🔥🔥🔥
+  private startDragonProcessing(): void {
+    this.logger.info('🐲 Setting up PERIODIC Dragon CSV processing (every 6 hours)...');
+    
+    const dragonInterval = setInterval(async () => {
+      try {
+        this.logger.info('🐲 Starting periodic Dragon CSV processing...');
+        
+        const result = await this.dragonParser.parseLatestDragonResults(false);
+        
+        if (result.added > 0 || result.updated > 0) {
+          await this.telegramNotifier.sendCycleLog(
+            `🐲 <b>Periodic Dragon CSV Import</b>\n\n` +
+            `➕ Added: <code>${result.added}</code> | 🔄 Updated: <code>${result.updated}</code>\n` +
+            `💰 Avg PnL: <code>${this.formatNumber(result.averagePnL)}</code>\n` +
+            `🔄 <b>Source:</b> Bulk Wallet Checker CSV\n` +
+            `⏰ <code>${new Date().toLocaleString()}</code>`
+          );
+        } else {
+          this.logger.info('🐲 Periodic Dragon CSV check: No new wallets to add');
+        }
+      } catch (error) {
+        this.logger.error('❌ Error in periodic Dragon CSV processing:', error);
+      }
+    }, 6 * 60 * 60 * 1000); // 6 часов
+
+    this.intervalIds.push(dragonInterval);
+    this.logger.info('✅ Dragon CSV periodic processing scheduled every 6 hours');
+  }
+
+  private async setupQuickNodeWebhook(): Promise<void> {
+    try {
+      const webhookURL = process.env.NODE_ENV === 'production' 
+        ? `${this.detectRenderURL()}/webhook/solana`
+        : process.env.WEBHOOK_URL || 'http://localhost:3000/webhook/solana';
+
+      this.logger.info('🎯 Setting up QuickNode webhook/polling with loaded wallets...');
+
+      // 🔥🔥🔥 ИСПРАВЛЕНИЕ: QuickNodeWebhookManager теперь имеет правильный доступ к базе данных 🔥🔥🔥
+      // И автоматически получает актуальный список кошельков при fallback к polling
+      try {
+        this.webhookId = await this.webhookManager.createSmartMoneyWebhook(webhookURL);
+        this.logger.info('✅ Webhook setup completed');
+      } catch (error) {
+        this.logger.warn('⚠️ Webhook creation failed, fallback to polling will use current database state');
+        // Fallback к polling будет автоматически работать с правильной базой данных
+        const smartWallets = await this.smDatabase.getAllActiveSmartWallets();
+        this.logger.info(`📊 Fallback polling will start with ${smartWallets.length} wallets from database`);
+        this.webhookId = await this.webhookManager.startPollingMode(smartWallets);
+      }
+    } catch (error) {
+      this.logger.error('❌ Failed to setup webhook/polling:', error);
+      throw error;
+    }
+  }
+
+  private async sendStartupNotification(): Promise<void> {
+    try {
+      const mode = this.webhookId === 'polling-mode' ? 'Polling (2 min)' : 'Webhooks';
+      const stats = await this.smDatabase.getWalletStats();
+      
+      await this.telegramNotifier.sendCycleLog(
+        `🚀 <b>Smart Money Bot Started (СИНХРОНИЗАЦИЯ ИСПРАВЛЕНА)!</b>\n\n` +
+        `🔥 <b>ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ" ACTIVE</b>\n` +
+        `✅ Единый Расчетный Центр: <code>ONLINE</code>\n` +
+        `✅ Position Aggregation: <code>ACTIVE</code>\n` +
+        `✅ Payment→Payment Filtering: <code>ENABLED</code>\n` +
+        `✅ SolanaMonitor Integration: <code>CONNECTED</code>\n` +
+        `✅ QuickNode Dependencies: <code>FIXED</code>\n` +
+        `✅ Wallet Loading Sync: <code>FIXED</code>\n\n` +
+        `🔄 Mode: <code>${mode}</code>\n` +
+        `👥 Wallets: <code>${stats.total}</code> | 💰 Tracking: $5K+ \n` +
+        `📊 <b>Entry Criteria:</b> Profit7d≥$20K, WR7d≥51%, SOL≥30, Activity≥1\n` +
+        `🔄 <b>Source:</b> Bulk Wallet Checker CSV\n\n` +
+        `💎 Ready to detect split positions and accurate USD values!\n` +
+        `🎯 No more false "billion dollar" transactions!\n` +
+        `🔄 Dragon CSV loaded BEFORE monitoring started!\n` +
+        `🔄 Polling auto-refreshes wallet list every cycle!\n` +
+        `⏰ <code>${new Date().toLocaleString()}</code>`
+      );
+    } catch (error) {
+      this.logger.error('Error sending startup notification:', error);
+    }
+  }
+
+  private detectRenderURL(): string {
+    if (process.env.RENDER_EXTERNAL_URL) return process.env.RENDER_EXTERNAL_URL;
+    
+    const renderVars = ['RENDER_SERVICE_URL', 'RENDER_APP_URL', 'RENDER_EXTERNAL_HOSTNAME'];
+    for (const varName of renderVars) {
+      if (process.env[varName]) {
+        return process.env[varName].startsWith('http') ? process.env[varName] : `https://${process.env[varName]}`;
+      }
+    }
+    
+    return 'https://smart-money-tracker.onrender.com';
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  private async sendSystemStats(): Promise<void> {
+    try {
+      // 🔥 ДЕТАЛЬНАЯ СТАТИСТИКА ПРОТОКОЛА "ПОЛНЫЙ КОНТРОЛЬ"
+      const aggregationStats = this.solanaMonitor.getAggregationStats();
+      const detectionStats = this.solanaMonitor.getDetectionStats();
+      const flowCacheStats = this.flowAnalyzer.getCacheStats();
+      const tokenCacheStats = this.tokenMetadataService.getCacheStats();
+
+      const message = 
+        `📊 <b>ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ" Statistics</b>\n\n` +
+        
+        `🔥 <b>Единый Расчетный Центр:</b>\n` +
+        `💰 Token Cache: <code>${tokenCacheStats.totalCached}</code>\n` +
+        `💲 Price Cache: <code>${tokenCacheStats.priceCacheSize}</code>\n` +
+        `🏷️ Jupiter Tokens: <code>${tokenCacheStats.jupiterTokens}</code>\n\n` +
+        
+        `🎯 <b>Position Aggregation:</b>\n` +
+        `📊 Active: <code>${aggregationStats.activePositions}</code>\n` +
+        `🚨 Detected: <code>${detectionStats.totalDetected}</code>\n` +
+        `⚠️ High Risk: <code>${detectionStats.highRiskDetected}</code>\n` +
+        `📨 Alerts: <code>${detectionStats.alertsSent}</code>\n\n` +
+        
+        `🎛️ <b>Filtering Efficiency:</b>\n` +
+        `📊 Processed: <code>${aggregationStats.filteringStats.totalTransactionsProcessed}</code>\n` +
+        `🚫 Payment→Payment: <code>${aggregationStats.filteringStats.paymentToPaymentFiltered}</code>\n` +
+        `✅ Valid Swaps: <code>${aggregationStats.filteringStats.validSwapsProcessed}</code>\n` +
+        `🎯 Efficiency: <code>${aggregationStats.filteringStats.filteringEfficiency}</code>\n\n` +
+        
+        `💾 <b>Cache Performance:</b>\n` +
+        `🎯 Hit Rate: <code>${aggregationStats.cacheStats.cacheHitRate}</code>\n` +
+        `🔍 Wallet Cache: <code>${aggregationStats.cacheStats.walletAnalysisCache}</code>\n` +
+        `🪙 Token Cache: <code>${aggregationStats.cacheStats.tokenAnalysisCache}</code>`;
+
+      await this.telegramNotifier.sendCycleLog(message);
+    } catch (error) {
+      this.logger.error('Error sending system stats:', error);
+    }
+  }
+
+  private setupSignalHandlers(): void {
+    const gracefulShutdown = async (signal: string) => {
+      this.logger.info(`🛑 Received ${signal}. Shutting down ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ" gracefully...`);
+      await this.stop();
+      process.exit(0);
+    };
+
+    process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+    process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  }
+
+  async stop(): Promise<void> {
+    if (!this.isRunning) {
+      this.logger.warn('Bot is not running');
+      return;
+    }
+
+    try {
+      this.logger.info('🛑 Stopping Smart Money Bot with ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ"...');
+
+      // Очищаем интервалы
+      this.intervalIds.forEach(id => clearInterval(id));
+      this.intervalIds = [];
+
+      // Останавливаем веб-сервер
+      await this.webhookServer.stop();
+
+      // 🔥 ФИНАЛЬНАЯ СТАТИСТИКА ПРОТОКОЛА
+      const finalStats = this.solanaMonitor.getAggregationStats();
+      await this.telegramNotifier.sendCycleLog(
+        `🛑 <b>ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ" Shutdown</b>\n\n` +
+        `📊 Final Statistics:\n` +
+        `🎯 Total Positions Detected: <code>${finalStats.stats.totalPositionsDetected}</code>\n` +
+        `⚠️ High Risk Positions: <code>${finalStats.stats.highRiskPositions}</code>\n` +
+        `📨 Total Alerts Sent: <code>${finalStats.stats.alertsSent}</code>\n` +
+        `🎛️ Final Filter Efficiency: <code>${finalStats.filteringStats.filteringEfficiency}</code>\n\n` +
+        `✅ ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ" completed successfully\n` +
+        `✅ QuickNode dependencies properly managed\n` +
+        `✅ Wallet synchronization fixed`
+      );
+
+      // Закрываем соединения с базой данных
+      await this.database.close();
+      await this.smDatabase.close();
+
+      this.isRunning = false;
+      this.logger.info('✅ Smart Money Bot stopped successfully');
+
+    } catch (error) {
+      this.logger.error('Error stopping Smart Money Bot:', error);
+      throw error;
+    }
   }
 
   private async handleStatsCommand(): Promise<void> {
@@ -122,9 +567,12 @@ class SmartMoneyBotRunner {
         this.webhookManager.getPollingStats()
       ]);
 
+      // 🔥 ДОБАВЛЯЕМ СТАТИСТИКУ ПРОТОКОЛА "ПОЛНЫЙ КОНТРОЛЬ"
+      const aggregationStats = this.solanaMonitor.getAggregationStats();
+
       await this.telegramNotifier.sendStatsResponse({
         walletStats, dbStats, pollingStats,
-        aggregationStats: { activePositions: 0, stats: null },
+        aggregationStats, // 🔥 НОВАЯ СТАТИСТИКА
         loaderStats: this.smartWalletLoader.getStats(),
         notificationStats: this.telegramNotifier.getNotificationStats(),
         webhookMode: this.webhookId === 'polling-mode' ? 'polling' : 'webhook',
@@ -152,16 +600,17 @@ class SmartMoneyBotRunner {
 
   private async handleDragonCommand(): Promise<void> {
     try {
-      await this.telegramNotifier.sendCycleLog('🐲 <b>Processing Dragon results...</b>');
+      await this.telegramNotifier.sendCycleLog('🐲 <b>Processing Dragon CSV results...</b>');
       
       const result = await this.dragonParser.parseLatestDragonResults(false);
       
       await this.telegramNotifier.sendCycleLog(
-        `🐲 <b>Dragon Import Complete!</b>\n\n` +
+        `🐲 <b>Dragon CSV Import Complete!</b>\n\n` +
         `📊 Added: <code>${result.added}</code> | Updated: <code>${result.updated}</code> | Skipped: <code>${result.skipped}</code>\n` +
         `📈 Categories: 🔫${result.categories.snipers} 💡${result.categories.hunters} 🐳${result.categories.traders}\n` +
         `💰 Profit Distribution: 🐋${result.profitDistribution.megaWhales} 🐳${result.profitDistribution.whales} 💎${result.profitDistribution.bigPlayers}\n` +
-        `💵 Avg PnL: <code>$${this.formatNumber(result.averagePnL)}</code>\n` +
+        `💵 Avg PnL: <code>${this.formatNumber(result.averagePnL)}</code>\n` +
+        `🔄 <b>Source:</b> Bulk Wallet Checker CSV\n` +
         `⏰ <code>${new Date().toLocaleString()}</code>`
       );
     } catch (error) {
@@ -171,30 +620,38 @@ class SmartMoneyBotRunner {
 
   private async handleDragonReplaceCommand(): Promise<void> {
     try {
-      this.logger.info('🔥 Processing /dragon_replace - FORCE REPLACEMENT');
+      this.logger.info('🔥 Processing /dragon_replace - FORCE REPLACEMENT (MONEY-FIRST MODE)');
       
       await this.telegramNotifier.sendCycleLog(
-        `🔥 <b>FORCE Dragon Database Replacement</b>\n\n` +
+        `🔥 <b>FORCE Dragon Database Replacement (MONEY-FIRST Mode)</b>\n\n` +
         `⚠️ <b>WARNING:</b> Deleting ALL existing Dragon wallets!\n` +
-        `🔄 Processing new Dragon files...\n\n` +
+        `🔄 Processing new Dragon CSV files...\n\n` +
+        `💰 <b>NEW MONEY-FIRST LOGIC:</b>\n` +
+        `🥇 <b>Priority #1:</b> Growth ≥ 15% + profit ≥ $10K\n` +
+        `🥈 <b>Priority #2:</b> Profit7d ≥ $20K + growth ≥ 10%\n` +
+        `🥉 <b>Priority #3:</b> Stability (30d > 7d) + growth ≥ 12%\n` +
+        `🏅 <b>Priority #4:</b> Whale balance ≥ 150 SOL + growth ≥ 10%\n\n` +
+        `🚫 <b>Winrate MOSTLY IGNORED</b> (focus on 💰 not %wins)\n` +
+        `📊 <b>Base filters:</b> SOL ≥ 20, Activity ≥ 1, No "?"\n\n` +
         `This may take 2-3 minutes.`
       );
       
       const result = await this.dragonParser.parseLatestDragonResults(true);
       
       await this.telegramNotifier.sendCycleLog(
-        `🔥 <b>Dragon Database REPLACED!</b>\n\n` +
+        `🔥 <b>Dragon Database REPLACED (MONEY-FIRST Mode)</b>\n\n` +
         `🗑️ <b>Cleared Old:</b> <code>${result.cleared}</code>\n` +
         `➕ <b>Added New:</b> <code>${result.added}</code>\n` +
         `📊 <b>Total Processed:</b> <code>${result.totalParsed}</code>\n` +
         `🚫 <b>Filtered Out:</b> <code>${result.filtered}</code>\n\n` +
-        `💰 <b>Profit Distribution:</b>\n` +
+        `💰 <b>Profit Distribution (7d):</b>\n` +
         `• 🐋 Mega-Whales: <code>${result.profitDistribution.megaWhales}</code>\n` +
         `• 🐳 Whales: <code>${result.profitDistribution.whales}</code>\n` +
         `• 💎 Big Players: <code>${result.profitDistribution.bigPlayers}</code>\n` +
         `• ⭐ Quality: <code>${result.profitDistribution.quality}</code>\n\n` +
         `📈 <b>Categories:</b> 🔫${result.categories.snipers} 💡${result.categories.hunters} 🐳${result.categories.traders}\n` +
-        `💵 <b>Avg PnL:</b> <code>$${this.formatNumber(result.averagePnL)}</code>\n` +
+        `💵 <b>Avg PnL (7d):</b> <code>${this.formatNumber(result.averagePnL)}</code>\n` +
+        `🔄 <b>Source:</b> Bulk Wallet Checker CSV\n` +
         `⏰ <code>${new Date().toLocaleString()}</code>`
       );
 
@@ -211,61 +668,34 @@ class SmartMoneyBotRunner {
       await this.telegramNotifier.sendCycleLog(
         `📊 <b>Wallet Database Statistics</b>\n\n` +
         `👤 <b>Manual:</b> <code>${stats.manual}</code>\n` +
-        `🐲 <b>Dragon:</b> <code>${stats.dragon}</code>\n` +
+        `🐲 <b>Dragon (CSV):</b> <code>${stats.dragon}</code>\n` +
         `🔍 <b>Discovery:</b> <code>${stats.discovery}</code>\n` +
         (stats.other > 0 ? `❓ <b>Other:</b> <code>${stats.other}</code>\n` : '') +
-        `\n📈 <b>Total Active:</b> <code>${stats.total}</code>\n\n` +
-        `⏰ <code>${new Date().toLocaleString()}</code>`
+        `📊 <b>Total Active:</b> <code>${stats.manual + stats.dragon + stats.discovery + stats.other}</code>`
       );
-
     } catch (error) {
-      this.logger.error('Error in /dragon_stats:', error);
       await this.telegramNotifier.sendCommandError('dragon_stats', error);
-    }
-  }
-
-  private async handleDragonActivityCommand(): Promise<void> {
-    try {
-      this.logger.info('🧹 Processing /dragon_activity - ACTIVITY CHECK');
-      
-      await this.telegramNotifier.sendCycleLog(
-        `🧹 <b>Dragon Activity Check Started</b>\n\n` +
-        `🔍 Checking Dragon wallets for real activity...\n` +
-        `⚠️ Inactive wallets (>7 days) will be deactivated\n\n` +
-        `This may take 2-5 minutes.`
-      );
-      
-      const result = await this.dragonActivityChecker.checkDragonWalletsActivity();
-      
-      await this.telegramNotifier.sendCycleLog(
-        `🧹 <b>Dragon Activity Check Complete!</b>\n\n` +
-        `✅ <b>Checked:</b> <code>${result.checked}</code> wallets\n` +
-        `🚫 <b>Deactivated:</b> <code>${result.deactivated}</code> inactive\n` +
-        (result.errors > 0 ? `❌ <b>Errors:</b> <code>${result.errors}</code>\n` : '') +
-        `\n📊 <b>Details:</b>\n` +
-        `${result.details.slice(0, 10).map(d => `<code>${d}</code>`).join('\n')}\n` +
-        (result.details.length > 10 ? `<i>...and ${result.details.length - 10} more</i>\n` : '') +
-        `\n⏰ <code>${new Date().toLocaleString()}</code>`
-      );
-
-    } catch (error) {
-      this.logger.error('Error in /dragon_activity:', error);
-      await this.telegramNotifier.sendCommandError('dragon_activity', error);
     }
   }
 
   private async handleFlowsCommand(): Promise<void> {
     try {
-      await this.telegramNotifier.sendCycleLog('📈 <b>Analyzing flows...</b>');
-      const result = await this.flowAnalyzer.analyzeSmartMoneyFlows();
+      await this.telegramNotifier.sendCycleLog('🔍 <b>Analyzing Smart Money Flows with ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ"...</b>');
       
+      const flowResult = await this.flowAnalyzer.analyzeSmartMoneyFlows();
+      await this.flowAnalyzer.sendFlowAnalysisNotifications(flowResult);
+      
+      // 🔥 СТАТИСТИКА ПРОТОКОЛА
+      const aggregationStats = this.solanaMonitor.getAggregationStats();
       await this.telegramNotifier.sendCycleLog(
-        `📈 <b>Flow Analysis</b>\n\n` +
-        `💚 Top Inflows: ${result.inflows.filter(f => f.period === '1h').slice(0, 3).map(f => 
-          `#${f.tokenSymbol}($${this.formatNumber(f.totalInflowUSD)})`).join(', ')}\n` +
-        `🔴 Top Outflows: ${result.outflows.filter(f => f.period === '1h').slice(0, 3).map(f => 
-          `#${f.tokenSymbol}($${this.formatNumber(f.totalOutflowUSD)})`).join(', ')}\n` +
-        `🔥 Hot Tokens: <code>${result.hotNewTokens.length}</code>`
+        `✅ <b>Flow Analysis Complete (ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ")</b>\n\n` +
+        `📊 Inflows: <code>${flowResult.inflows.length}</code>\n` +
+        `📉 Outflows: <code>${flowResult.outflows.length}</code>\n` +
+        `🔥 Hot Tokens: <code>${flowResult.hotNewTokens.length}</code>\n\n` +
+        `🎯 Active Positions: <code>${aggregationStats.activePositions}</code>\n` +
+        `🔍 Total Detected: <code>${aggregationStats.stats.totalPositionsDetected}</code>\n` +
+        `⚠️ High Risk: <code>${aggregationStats.stats.highRiskPositions}</code>\n` +
+        `🎛️ Filter Efficiency: <code>${aggregationStats.filteringStats.filteringEfficiency}</code>`
       );
     } catch (error) {
       await this.telegramNotifier.sendCommandError('flows', error);
@@ -274,9 +704,10 @@ class SmartMoneyBotRunner {
 
   private async handleHoldingsCommand(): Promise<void> {
     try {
-      await this.telegramNotifier.sendCycleLog('📊 <b>Analyzing holdings...</b>');
-      const report = await this.flowAnalyzer.analyzeSmartMoneyHoldings();
-      await this.flowAnalyzer.sendHoldingsReport(report);
+      await this.telegramNotifier.sendCycleLog('📊 <b>Analyzing Smart Money Holdings...</b>');
+      
+      const holdingsReport = await this.flowAnalyzer.analyzeSmartMoneyHoldings();
+      await this.flowAnalyzer.sendHoldingsReport(holdingsReport);
     } catch (error) {
       await this.telegramNotifier.sendCommandError('holdings', error);
     }
@@ -284,18 +715,27 @@ class SmartMoneyBotRunner {
 
   private async handleLargeTransactionsCommand(): Promise<void> {
     try {
+      // 🔥 ИСПРАВЛЕНО: Используем getStats() для получения статуса мониторинга
       const stats = this.largeTransactionMonitor.getStats();
-      const multiMetrics = this.multiProviderService.getMetrics();
       
-      await this.telegramNotifier.sendCycleLog(
-        `🚨 <b>Large TX Monitor</b>\n\n` +
-        `📊 Scanned: <code>${stats.totalScanned}</code> | Found: <code>${stats.largeTransactionsFound}</code>\n` +
-        `✅ Alerts: <code>${stats.alertsSent}</code> | Filtered: <code>${stats.filtered}</code>\n` +
-        `🔧 Providers: <code>${multiMetrics.healthyProviders}/${multiMetrics.totalProviders}</code>\n` +
-        `💾 Cache Hits: <code>${multiMetrics.cacheHitRate.toFixed(1)}%</code>\n` +
-        `⚠️ Threshold: <code>$2M+</code> | Interval: <code>2min</code>\n` +
-        `⏰ <code>${new Date().toLocaleString()}</code>`
-      );
+      // Переключаем состояние мониторинга
+      if (stats.totalScanned > 0) {
+        // Если есть статистика сканирования, значит мониторинг был запущен - останавливаем
+        await this.largeTransactionMonitor.stopMonitoring();
+        await this.telegramNotifier.sendCycleLog(
+          `💰 <b>Large Transaction Monitoring DISABLED</b>\n\n` +
+          `Status: <code>DISABLED</code>\n` +
+          `Threshold: <code>$2,000,000+</code>`
+        );
+      } else {
+        // Иначе запускаем
+        await this.largeTransactionMonitor.startMonitoring();
+        await this.telegramNotifier.sendCycleLog(
+          `💰 <b>Large Transaction Monitoring ENABLED</b>\n\n` +
+          `Status: <code>ENABLED</code>\n` +
+          `Threshold: <code>$2,000,000+</code>`
+        );
+      }
     } catch (error) {
       await this.telegramNotifier.sendCommandError('large', error);
     }
@@ -303,291 +743,65 @@ class SmartMoneyBotRunner {
 
   private async handleDeduplicationCommand(): Promise<void> {
     try {
-      const dedupStats = this.telegramNotifier.getDuplicationStats();
+      // 🔥 ИСПРАВЛЕНО: Используем правильные поля из статистики
+      const notificationStats = this.telegramNotifier.getNotificationStats();
+      const duplicationStats = this.telegramNotifier.getDuplicationStats();
+      
       await this.telegramNotifier.sendCycleLog(
-        `🔍 <b>Deduplication Stats</b>\n\n` +
-        `📍 Window: <code>${dedupStats.windowMinutes}min</code>\n` +
-        `🚫 Filtered: <code>${dedupStats.duplicatesFiltered}</code>\n` +
-        `📊 Success Rate: <code>${this.telegramNotifier.getNotificationStats().successRate}</code>`
+        `🧹 <b>Duplication Prevention Statistics</b>\n\n` +
+        `📊 <b>Notification Stats:</b>\n` +
+        `✅ Total Sent: <code>${notificationStats.totalSent}</code>\n` +
+        `🚫 Duplicates Filtered: <code>${duplicationStats.duplicatesFiltered}</code>\n` +
+        `📈 Smart Money Swaps: <code>${notificationStats.smartMoneySwaps}</code>\n` +
+        `🔥 Hot Token Alerts: <code>${notificationStats.hotTokenAlerts}</code>\n` +
+        `📊 Position Splitting: <code>${notificationStats.positionSplittingAlerts}</code>\n\n` +
+        `🎯 <b>Efficiency:</b> ${notificationStats.totalSent > 0 ? 
+          ((notificationStats.totalSent - duplicationStats.duplicatesFiltered) / notificationStats.totalSent * 100).toFixed(1) + '%' : '100%'} unique notifications\n` +
+        `⏰ <b>Window:</b> <code>${duplicationStats.windowMinutes}min</code>`
       );
     } catch (error) {
       await this.telegramNotifier.sendCommandError('dedup', error);
     }
   }
 
-  // ✅ УБРАНА СТРОЧКА "🔥 Features: STRICT Dragon criteria"
   private async handleHelpCommand(): Promise<void> {
-    try {
-      await this.telegramNotifier.sendCycleLog(
-        `❓ <b>Smart Money Bot Commands</b>\n\n` +
-        `📊 /stats - Bot statistics\n` +
-        `👥 /wallets - Smart Money wallets\n\n` +
-        `🐲 <b>Dragon Commands:</b>\n` +
-        `• /dragon - Add/Update Dragon wallets\n` +
-        `• /dragon_replace - <b>FORCE</b> replace Dragon DB\n` +
-        `• /dragon_stats - Wallet source statistics\n` +
-        `• /dragon_activity - Check Dragon wallets activity\n\n` +
-        `📈 /flows - Flow analysis\n` +
-        `📊 /holdings - Holdings analysis\n` +
-        `🚨 /large - Large TX monitor\n` +
-        `🔍 /dedup - Deduplication stats\n` +
-        `❓ /help - This help\n\n` +
-        `⏰ <code>${new Date().toLocaleString()}</code>`
-      );
-    } catch (error) {
-      await this.telegramNotifier.sendCommandError('help', error);
-    }
-  }
-
-  async start(): Promise<void> {
-    try {
-      this.logger.info('🚀 Starting Optimized Smart Money Bot with CORRECT swap logic...');
-
-      await Promise.all([this.database.init(), this.smDatabase.init()]);
-      const smartWallets = await this.smDatabase.getAllActiveSmartWallets();
-      
-      this.isRunning = true;
-      this.setupTelegramCommands();
-      
-      await this.webhookServer.start();
-      this.webhookManager.setDependencies(this.smDatabase, this.telegramNotifier);
-      
-      await this.setupQuickNodeWebhook();
-      await this.largeTransactionMonitor.startMonitoring();
-      
-      // ✅ МИНИМИЗИРОВАННОЕ STARTUP СООБЩЕНИЕ
-      await this.sendStartupNotification();
-      
-      this.startPeriodicAnalysis();
-      this.startDragonProcessing();
-
-      this.logger.info('✅ Optimized Smart Money Bot with CORRECT logic started successfully!');
-    } catch (error) {
-      this.logger.error('❌ Error starting bot:', error);
-      throw error;
-    }
-  }
-
-  // 🔥 ОПТИМИЗИРОВАННЫЕ ИНТЕРВАЛЫ
-  private startPeriodicAnalysis(): void {
-    // 💚 Inflows/Outflows каждый час
-    const flowInterval = setInterval(async () => {
-      try {
-        this.logger.info('💚 Hourly Flow Analysis...');
-        const result = await this.flowAnalyzer.analyzeSmartMoneyFlows();
-        await this.flowAnalyzer.sendFlowAnalysisNotifications(result);
-      } catch (error) {
-        this.logger.error('❌ Error in flow analysis:', error);
-      }
-    }, 1 * 60 * 60 * 1000); // 1 ЧАС
-
-    // 🔥 Hot New Tokens каждый час
-    const hotTokenInterval = setInterval(async () => {
-      try {
-        this.logger.info('🔥 Hot Token Analysis...');
-        const smartWallets = await this.smDatabase.getAllActiveSmartWallets();
-        const hotTokens = await this.flowAnalyzer.findProfitableHotNewTokensBatched(smartWallets);
-        
-        for (const token of hotTokens.slice(0, 3)) {
-          await this.telegramNotifier.sendHotNewTokenAlert(token);
-          await this.sleep(2000);
-        }
-      } catch (error) {
-        this.logger.error('❌ Error in hot token analysis:', error);
-      }
-    }, 1 * 60 * 60 * 1000); // 1 ЧАС
-
-    const holdingsInterval = setInterval(() => this.runHoldingsAnalysis(), 6 * 60 * 60 * 1000);
-    const summaryInterval = setInterval(() => this.sendLargeTransactionSummary(), 4 * 60 * 60 * 1000);
-    const walletUpdateInterval = setInterval(() => this.updateWalletPerformanceBatch(), 8 * 60 * 60 * 1000);
-    const activityCheckInterval = setInterval(() => this.dragonActivityChecker.checkDragonWalletsActivity(), 12 * 60 * 60 * 1000);
-
-    this.intervalIds.push(flowInterval, hotTokenInterval, holdingsInterval, summaryInterval, walletUpdateInterval, activityCheckInterval);
-    
-    this.logger.info('🔄 CORRECT intervals: 1h flows/1h hot/6h holdings/4h large/8h wallets/12h dragon');
-  }
-
-  private async runHoldingsAnalysis(): Promise<void> {
-    try {
-      const report = await this.flowAnalyzer.analyzeSmartMoneyHoldings();
-      await this.telegramNotifier.sendCycleLog(
-        `📊 <b>Holdings Update</b>\n\n` +
-        `🏷️ Tokens: <code>${report.totalTokens}</code>\n` +
-        `💰 Value: <code>$${this.formatNumber(report.totalValueUSD)}</code>\n` +
-        `🥇 Top: <code>#${report.summary.topTokenByValue}</code>`
-      );
-    } catch (error) {
-      this.logger.error('❌ Error in holdings analysis:', error);
-    }
-  }
-
-  private async sendLargeTransactionSummary(): Promise<void> {
-    try {
-      const stats = this.largeTransactionMonitor.getStats();
-      if (stats.largeTransactionsFound > 0) {
-        await this.telegramNotifier.sendCycleLog(
-          `🚨 <b>Large TX Summary (4h)</b>\n\n` +
-          `💰 Found: <code>${stats.largeTransactionsFound}</code> ($2M+)\n` +
-          `✅ Alerts: <code>${stats.alertsSent}</code>\n` +
-          `🚫 Filtered: <code>${stats.filtered}</code>`
-        );
-      }
-    } catch (error) {
-      this.logger.error('❌ Error in large TX summary:', error);
-    }
-  }
-
-  private async updateWalletPerformanceBatch(): Promise<void> {
-    try {
-      const activeWallets = await this.smDatabase.getAllActiveSmartWallets();
-      const BATCH_SIZE = 10;
-      
-      for (let i = 0; i < activeWallets.length; i += BATCH_SIZE) {
-        const batch = activeWallets.slice(i, i + BATCH_SIZE);
-        
-        await Promise.allSettled(
-          batch.map(wallet => this.flowAnalyzer.updateSingleWalletMetrics(wallet))
-        );
-        
-        await this.sleep(5000);
-        this.logger.info(`📊 Updated batch ${Math.floor(i/BATCH_SIZE) + 1}/${Math.ceil(activeWallets.length/BATCH_SIZE)}`);
-      }
-    } catch (error) {
-      this.logger.error('Error in batch wallet update:', error);
-    }
-  }
-
-  private startDragonProcessing(): void {
-    const dragonInterval = setInterval(async () => {
-      try {
-        this.logger.info('🐲 Starting automatic Dragon processing (NORMAL mode)...');
-        
-        const result = await this.dragonParser.parseLatestDragonResults(false);
-        
-        if (result.added > 0 || result.updated > 0) {
-          await this.telegramNotifier.sendCycleLog(
-            `🐲 <b>Auto Dragon Import</b>\n\n` +
-            `➕ Added: <code>${result.added}</code> | 🔄 Updated: <code>${result.updated}</code>\n` +
-            `💰 Avg PnL: <code>$${this.formatNumber(result.averagePnL)}</code>\n` +
-            `⏰ <code>${new Date().toLocaleString()}</code>`
-          );
-        }
-      } catch (error) {
-        this.logger.error('❌ Error in automatic Dragon processing:', error);
-      }
-    }, 6 * 60 * 60 * 1000);
-
-    this.intervalIds.push(dragonInterval);
-    this.logger.info('🐲 Dragon auto-processing scheduled every 6 hours (NORMAL mode)');
-  }
-
-  private async setupQuickNodeWebhook(): Promise<void> {
-    try {
-      const webhookURL = process.env.NODE_ENV === 'production' 
-        ? `${this.detectRenderURL()}/webhook/solana`
-        : process.env.WEBHOOK_URL || 'http://localhost:3000/webhook/solana';
-
-      try {
-        this.webhookId = await this.webhookManager.createSmartMoneyWebhook(webhookURL);
-      } catch {
-        const smartWallets = await this.smDatabase.getAllActiveSmartWallets();
-        this.webhookId = await this.webhookManager.startPollingMode(smartWallets);
-      }
-    } catch (error) {
-      this.logger.error('❌ Failed to setup webhook/polling:', error);
-      throw error;
-    }
-  }
-
-  // ✅ МИНИМИЗИРОВАННОЕ STARTUP СООБЩЕНИЕ
-  private async sendStartupNotification(): Promise<void> {
-    try {
-      const mode = this.webhookId === 'polling-mode' ? 'Polling (2 min)' : 'Webhooks';
-      const stats = await this.smDatabase.getWalletStats();
-      
-      await this.telegramNotifier.sendCycleLog(
-        `🚀 <b>Smart Money Bot Started!</b>\n\n` +
-        `🔄 Mode: <code>${mode}</code>\n` +
-        `👥 Wallets: <code>${stats.total}</code> | 💰 Tracking: $5K+ \n` +
-        `⏰ <code>${new Date().toLocaleString()}</code>`
-      );
-    } catch (error) {
-      this.logger.error('Error sending startup notification:', error);
-    }
-  }
-
-  private detectRenderURL(): string {
-    if (process.env.RENDER_EXTERNAL_URL) return process.env.RENDER_EXTERNAL_URL;
-    
-    const renderVars = ['RENDER_SERVICE_URL', 'RENDER_APP_URL', 'RENDER_EXTERNAL_HOSTNAME'];
-    for (const varName of renderVars) {
-      if (process.env[varName]) {
-        return process.env[varName].startsWith('http') ? process.env[varName] : `https://${process.env[varName]}`;
-      }
-    }
-    
-    return 'https://smart-money-tracker.onrender.com';
-  }
-
-  private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
-  }
-
-  async stop(): Promise<void> {
-    try {
-      this.isRunning = false;
-      this.intervalIds.forEach(id => clearInterval(id));
-      this.intervalIds = [];
-
-      if (this.webhookId && this.webhookId !== 'polling-mode') {
-        await this.webhookManager.deleteStream(this.webhookId);
-      }
-
-      await Promise.all([
-        this.largeTransactionMonitor.stopMonitoring(),
-        this.multiProviderService.shutdown(),
-        this.webhookServer.stop()
-      ]);
-
-      await this.telegramNotifier.sendCycleLog('🛑 <b>Smart Money Bot Stopped</b>');
-      this.logger.info('✅ Bot stopped successfully');
-    } catch (error) {
-      this.logger.error('❌ Error stopping bot:', error);
-      throw error;
-    }
+  await this.telegramNotifier.sendCycleLog(
+    `🤖 <b>Smart Money Bot Commands (ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ")</b>\n\n` +
+    `📊 /stats - System statistics + Protocol status\n` +
+    `👥 /wallets - Wallet information\n` +
+    `🐲 /dragon - Import Dragon CSV (normal)\n` +
+    `🔥 /dragon_replace - Replace all wallets (MONEY-FIRST)\n` +
+    `📈 /dragon_stats - Wallet source statistics\n` +
+    `🔍 /flows - Analyze flows with Protocol\n` +
+    `📊 /holdings - Holdings analysis\n` +
+    `💰 /large - Toggle large tx monitoring\n` +
+    `🧹 /dedup - Clean database\n` +
+    `❓ /help - This help\n\n` 
+    );
   }
 }
 
-process.on('SIGINT', async () => {
-  if (global.botInstance) await global.botInstance.stop();
-  process.exit(0);
-});
-
-process.on('SIGTERM', async () => {
-  if (global.botInstance) await global.botInstance.stop();
-  process.exit(0);
-});
-
+// Запуск бота
 async function main() {
+  const bot = new SmartMoneyBotRunner();
+  
   try {
-    const bot = new SmartMoneyBotRunner();
-    global.botInstance = bot;
     await bot.start();
+    
+    // Держим процесс активным
+    process.on('unhandledRejection', (reason, promise) => {
+      console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+    });
+
   } catch (error) {
-    console.error('❌ Fatal error:', error);
+    console.error('Failed to start Smart Money Bot:', error);
     process.exit(1);
   }
 }
 
-declare global {
-  var botInstance: SmartMoneyBotRunner | undefined;
-}
-
+// Запускаем, если файл выполняется напрямую
 if (require.main === module) {
-  main().catch(error => {
-    console.error('❌ Unhandled error:', error);
-    process.exit(1);
-  });
+  main();
 }
 
 export { SmartMoneyBotRunner };

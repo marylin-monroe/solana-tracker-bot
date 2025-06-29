@@ -1,4 +1,4 @@
-// src/services/SolanaMonitor.ts - 🔥 ДОБАВЛЕНА ФИЛЬТРАЦИЯ PAYMENT→PAYMENT ДЛЯ ОБЫЧНЫХ КОШЕЛЬКОВ
+// src/services/SolanaMonitor.ts - 🔥 ПОЛНОСТЬЮ ИСПРАВЛЕННЫЙ С ПРАВИЛЬНОЙ ЛОГИКОЙ ИЗВЛЕЧЕНИЯ БАЛАНСОВ
 import { Database } from './Database';
 import { TelegramNotifier } from './TelegramNotifier';
 import { TokenMetadataService } from './TokenMetadataService';
@@ -84,30 +84,6 @@ export class SolanaMonitor {
   private walletAnalysisCache = new Map<string, WalletAnalysis>();
   private tokenAnalysisCache = new Map<string, TokenAnalysis>();
   
-  // 🔥 ДОБАВЛЕН PAYMENT_ASSETS ДЛЯ ФИЛЬТРАЦИИ (КОНСИСТЕНТНО С WebhookServer)
-  private readonly PAYMENT_ASSETS = new Set([
-    // Базовые стейблы и SOL
-    'So11111111111111111111111111111111111111112', // SOL
-    'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
-    'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
-    
-    // LST токены (Liquid Staking Tokens)
-    'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So', // mSOL (Marinade)
-    'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn', // JitoSOL (Jito)
-    '7Q2afV64in6N6SeZsAAB81TJzwDoD6zpqmHkzi9Dcavn', // stSOL (Lido)
-    'bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1', // bSOL (Blaze)
-    'he1iusmfkpAdwvxLNGV8Y1iSbj4rUy6yMhEA3fotn9A', // hSOL (Helius)
-    
-    // Популярные ликвидные токены
-    'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263', // BONK
-    'WENWENvqqNya429ubCdR81ZmD69brwQaaBYY6p3LCpk', // WEN
-    'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN', // JUP (Jupiter)
-    
-    // Дополнительные стейблкоины
-    'A9mUU4qviSctJVPJdBJWkb28deg915LYJKrzQ19ji3FM', // UXD
-    'USDH1SM1ojwWUga67PGrgFWUHibbjqMvuMaDkRJTgkX' // USDH
-  ]);
-  
   // 🔧 НАСТРОЙКИ ДЕТЕКЦИИ
   private readonly config = {
     // Временное окно для агрегации
@@ -172,10 +148,10 @@ export class SolanaMonitor {
     // 🆕 ЗАПУСКАЕМ ОЧИСТКУ КЕШЕЙ
     this.startCacheCleanup();
     
-    this.logger.info('🚨 SolanaMonitor ENHANCED: Position aggregation + PAYMENT→PAYMENT filtering for regular wallets');
+    this.logger.info('🚨 SolanaMonitor ENHANCED: 🔥 ПРОТОКОЛ "ЖЕЛЕЗНЫЙ ДОЛЛАР" - ПОЛНОСТЬЮ ИСПРАВЛЕН + Position aggregation');
   }
 
-  // 🔥 ГЛАВНЫЙ МЕТОД С ДОБАВЛЕННОЙ ФИЛЬТРАЦИЕЙ PAYMENT→PAYMENT
+  // 🔥🔥🔥 ГЛАВНЫЙ МЕТОД - ПОЛНОСТЬЮ ПЕРЕПИСАН С ПРАВИЛЬНОЙ ЛОГИКОЙ БАЛАНСОВ 🔥🔥🔥
   async processTransaction(txData: any): Promise<void> {
     this.stats.filteringStats.totalTransactionsProcessed++;
     
@@ -189,8 +165,8 @@ export class SolanaMonitor {
         return;
       }
 
-      // 🔥 НОВАЯ ЛОГИКА: Извлекаем информацию о свапе С ФИЛЬТРАЦИЕЙ
-      const swapInfo = this.extractSwapInfoWithFiltering(txData);
+      // 🔥🔥🔥 ПРОТОКОЛ "ЖЕЛЕЗНЫЙ ДОЛЛАР": ИЗВЛЕКАЕМ ИНФОРМАЦИЮ О СВАПЕ С ПРАВИЛЬНОЙ ЛОГИКОЙ БАЛАНСОВ 🔥🔥🔥
+      const swapInfo = await this.extractSwapInfoWithFiltering(txData);
       if (!swapInfo) return; // Уже отфильтровано в extractSwapInfoWithFiltering
 
       // 🎯 ДОБАВЛЯЕМ В АГРЕГАЦИЮ ПОЗИЦИЙ (только для покупок)
@@ -217,8 +193,8 @@ export class SolanaMonitor {
     }
   }
 
-  // 🔥 НОВЫЙ МЕТОД: Извлечение свапа С ФИЛЬТРАЦИЕЙ PAYMENT→PAYMENT
-  private extractSwapInfoWithFiltering(txData: any): TokenSwap | null {
+  // 🔥🔥🔥 УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ИЗВЛЕЧЕНИЯ СВАПОВ - ФИНАЛЬНАЯ ВЕРСИЯ 🔥🔥🔥
+  private async extractSwapInfoWithFiltering(txData: any): Promise<TokenSwap | null> {
     try {
       // Проверяем базовую структуру
       if (!txData || !txData.signature || !txData.timestamp) {
@@ -226,99 +202,153 @@ export class SolanaMonitor {
         return null;
       }
 
-      // 🔥 СИМУЛЯЦИЯ ИЗВЛЕЧЕНИЯ ДАННЫХ О СВАПЕ
-      // В реальной реализации здесь должна быть логика парсинга transaction.meta.tokenBalances
-      // Для демонстрации используем простую структуру
+      // В SolanaMonitor txData - это уже объект транзакции
+      const transaction = txData;
       
-      // Предполагается, что из txData можно извлечь информацию о входном и выходном токенах
-      const inputMint = this.extractInputMint(txData);
-      const outputMint = this.extractOutputMint(txData);
-      const walletAddress = this.extractWalletAddress(txData);
+      if (!transaction?.meta) return null;
+
+      const preTokenBalances = transaction.meta.preTokenBalances || [];
+      const postTokenBalances = transaction.meta.postTokenBalances || [];
       
-      if (!inputMint || !outputMint || !walletAddress) {
-        this.logger.debug(`[SolanaMonitor] Missing required swap data`);
+      // 🔥 ИСПРАВЛЕНИЕ №1: Правильный путь к accountKeys
+      const accountKeys = transaction.transaction?.message?.accountKeys || [];
+      const walletAddress = this.extractWalletAddressFromTransaction(transaction);
+
+      if (!walletAddress || walletAddress === 'UnknownWallet') {
+        this.logger.debug(`[SolanaMonitor] Cannot determine wallet address`);
         return null;
       }
 
-      // 🔥 ГЛАВНАЯ ФИЛЬТРАЦИЯ PAYMENT→PAYMENT (КОНСИСТЕНТНО С WebhookServer)
-      const inputIsPayment = this.PAYMENT_ASSETS.has(inputMint);
-      const outputIsPayment = this.PAYMENT_ASSETS.has(outputMint);
+      const tokenChanges = new Map<string, { change: number, mint: string, decimals: number }>();
+
+      // Анализ существующих токен-аккаунтов
+      for (const pre of preTokenBalances) {
+        if (pre.owner !== walletAddress) continue;
+        const post = postTokenBalances.find(p => p.accountIndex === pre.accountIndex);
+        const change = (post ? parseFloat(post.uiTokenAmount.amount) : 0) - parseFloat(pre.uiTokenAmount.amount);
+        if (Math.abs(change) > 1e-9) {
+          tokenChanges.set(pre.mint, { change, mint: pre.mint, decimals: pre.uiTokenAmount.decimals });
+        }
+      }
+
+      // 🔥 ИСПРАВЛЕНИЕ №2: Анализ НОВЫХ токен-аккаунтов
+      for (const post of postTokenBalances) {
+        if (post.owner !== walletAddress || tokenChanges.has(post.mint)) continue;
+        const isNewAccount = !preTokenBalances.find(p => p.accountIndex === post.accountIndex);
+        if (isNewAccount) {
+          const change = parseFloat(post.uiTokenAmount.amount);
+          if (change > 1e-9) {
+            tokenChanges.set(post.mint, { change, mint: post.mint, decimals: post.uiTokenAmount.decimals });
+          }
+        }
+      }
+
+      // 🔥🔥🔥 АНАЛИЗИРУЕМ ИЗМЕНЕНИЯ НАТИВНОГО SOL 🔥🔥🔥
+      const walletIndex = accountKeys.findIndex((key: any) => {
+        const keyString = typeof key === 'string' ? key : key?.pubkey || key?.toString?.() || '';
+        return keyString === walletAddress;
+      });
       
-      // Получаем символы для логирования
-      const inputSymbol = this.getTokenSymbol(inputMint);
-      const outputSymbol = this.getTokenSymbol(outputMint);
-      
-      this.logger.debug(`[SolanaMonitor] Swap analysis: ${inputSymbol} (Payment: ${inputIsPayment}) → ${outputSymbol} (Payment: ${outputIsPayment}) | TX: ${txData.signature.slice(0,8)}...`);
-
-      // 🔥 ФИЛЬТРАЦИЯ (ТОЧНО КАК В WebhookServer)
-      if (inputMint === outputMint) {
-        this.logger.debug(`[SolanaMonitor] ⏭️ IGNORED (Same Token): ${inputSymbol} → ${outputSymbol}`);
-        return null;
+      if (walletIndex !== -1 && transaction.meta?.preBalances && transaction.meta?.postBalances) {
+        const preSolBalance = transaction.meta.preBalances[walletIndex] || 0;
+        const postSolBalance = transaction.meta.postBalances[walletIndex] || 0;
+        const solChangeRaw = postSolBalance - preSolBalance;
+        const solChange = solChangeRaw / 1e9; // SOL имеет 9 decimals
+        
+        if (Math.abs(solChange) > 1e-9) {
+          this.logger.debug(`[SolanaMonitor] NATIVE SOL CHANGE: ${solChange} SOL`);
+          tokenChanges.set('So11111111111111111111111111111111111111112', {
+            change: solChange,
+            mint: 'So11111111111111111111111111111111111111112',
+            decimals: 9
+          });
+        }
       }
 
-      if (inputIsPayment && outputIsPayment) {
-        this.stats.filteringStats.paymentToPaymentFiltered++;
-        this.logger.warn(`[SolanaMonitor] ❌ FILTERED (Payment → Payment): ${inputSymbol} → ${outputSymbol} | TX: ${txData.signature.slice(0,8)}...`);
-        this.logger.warn(`[SolanaMonitor] 🚫 Blocked PAYMENT→PAYMENT swap for regular wallet: ${walletAddress.slice(0,8)}...`);
-        return null;
-      }
+      // Ищем пары "ушло/пришло", которые формируют свап
+      const spentTokens = Array.from(tokenChanges.values()).filter(c => c.change < 0);
+      const receivedTokens = Array.from(tokenChanges.values()).filter(c => c.change > 0);
 
-      if (!inputIsPayment && !outputIsPayment) {
-        this.stats.filteringStats.altToAltFiltered++;
-        this.logger.debug(`[SolanaMonitor] ⏭️ IGNORED (Alt → Alt): ${inputSymbol} → ${outputSymbol}`);
-        return null;
-      }
+      // Простой случай: один токен ушел, один пришел
+      if (spentTokens.length === 1 && receivedTokens.length === 1) {
+        const inputMint = spentTokens[0].mint;
+        const outputMint = receivedTokens[0].mint;
+        
+        // Конвертируем UI amounts обратно в raw amounts
+        const inputAmountRaw = Math.abs(spentTokens[0].change) * Math.pow(10, spentTokens[0].decimals);
+        const outputAmountRaw = receivedTokens[0].change * Math.pow(10, receivedTokens[0].decimals);
 
-      // Если дошли сюда - это валидный свап PAYMENT ↔ ALT
-      let swapType: 'buy' | 'sell' = 'buy';
-      let targetToken = '';
-      let paymentToken = '';
+        // 🔥🔥🔥 ВЫЗЫВАЕМ ЕДИНЫЙ РАСЧЕТНЫЙ ЦЕНТР 🔥🔥🔥
+        const valueCalculation = await this.tokenMetadataService.calculateSwapUSDValue(
+          inputMint, inputAmountRaw, outputMint, outputAmountRaw
+        );
+        
+        if (!valueCalculation) {
+          // Расчет не удался или это нецелевой свап - игнорируем
+          this.logger.debug(`[SolanaMonitor] Value calculation failed or filtered swap`);
+          return null;
+        }
+        
+        // 🔥 ПОЛУЧАЕМ ВСЕ ГОТОВЫЕ ДАННЫЕ ИЗ ЕДИНОГО РАСЧЕТНОГО ЦЕНТРА
+        const { amountUSD, swapType, tokenAddress, paymentToken, paymentTokenAmount, paymentTokenPrice } = valueCalculation;
 
-      if (inputIsPayment && !outputIsPayment) {
-        // ПОКУПКА: PAYMENT → ALT
-        swapType = 'buy';
-        targetToken = outputMint;
-        paymentToken = inputMint;
-        this.logger.debug(`[SolanaMonitor] ✅ VALID BUY: ${inputSymbol} → ${outputSymbol}`);
+        // Проверяем минимальный порог
+        if (amountUSD < 100) { // Минимум $100 для обработки
+          this.logger.debug(`[SolanaMonitor] Below minimum threshold: ${amountUSD}`);
+          return null;
+        }
+
+        // 🔥 ПОЛУЧАЕМ МЕТАДАННЫЕ ДЛЯ ТОКЕНА
+        const tokenMetadata = await this.tokenMetadataService.getTokenMetadata(tokenAddress);
+        const tokenSymbol = tokenMetadata?.symbol || this.tokenMetadataService.getTokenSymbol(tokenAddress);
+        const tokenName = tokenMetadata?.name || `Token ${tokenAddress.slice(0, 8)}...`;
+        const tokenDecimals = tokenMetadata?.decimals ?? 9;
+
+        // 🔥 ИСПРАВЛЕНО: Получаем данные о кошельке для обязательных полей
+        const walletInfo = await this.getWalletAnalysis(walletAddress);
+        
+        // Рассчитываем количество токенов на основе типа свапа (используем UI amounts)
+        const tokenAmount = swapType === 'buy' ? 
+          receivedTokens[0].change :
+          Math.abs(spentTokens[0].change);
+
+        // Получаем символ платежного токена
+        const paymentTokenInfo = await this.tokenMetadataService.getTokenMetadata(paymentToken);
+
+        // 🔥🔥🔥 ФОРМИРУЕМ ПОЛНОЦЕННЫЙ ОБЪЕКТ TokenSwap С ПРОТОКОЛОМ "ЖЕЛЕЗНЫЙ ДОЛЛАР" 🔥🔥🔥
+        const tokenSwap: TokenSwap = {
+          transactionId: txData.signature,
+          walletAddress: walletAddress,
+          tokenAddress: tokenAddress,
+          tokenSymbol: tokenSymbol,
+          tokenName: tokenName,
+          amount: tokenAmount,
+          amountUSD: amountUSD,
+          timestamp: new Date(txData.timestamp * 1000),
+          dex: 'SolanaMonitor',
+          swapType: swapType,
+          price: amountUSD / tokenAmount,
+          
+          // 🔥 ИСПРАВЛЕНО: Добавлены все обязательные поля
+          isNewWallet: walletInfo.ageDays < 1,
+          isReactivatedWallet: walletInfo.ageDays > 30 && walletInfo.totalTransactions < 5, // Простая логика
+          daysSinceLastActivity: Math.floor(walletInfo.ageDays),
+          
+          // 🔥🔥🔥 ПРОТОКОЛ "ЖЕЛЕЗНЫЙ ДОЛЛАР" - НОВЫЕ ПОЛЯ ДЛЯ TokenSwap 🔥🔥🔥
+          paymentTokenSymbol: paymentTokenInfo?.symbol || this.tokenMetadataService.getTokenSymbol(paymentToken),
+          paymentTokenAmount: paymentTokenAmount,
+          paymentTokenPrice: paymentTokenPrice,
+          decimals: tokenDecimals,
+          actualTokenAmount: tokenAmount,
+          rawTokenAmount: swapType === 'buy' ? outputAmountRaw : inputAmountRaw,
+        };
+
+        this.logger.info(`🔥 [SolanaMonitor] ✅ Valid ${swapType.toUpperCase()}: ${tokenSwap.tokenSymbol} - ${amountUSD.toFixed(0)}`);
+        return tokenSwap;
       } else {
-        // ПРОДАЖА: ALT → PAYMENT
-        swapType = 'sell';
-        targetToken = inputMint;
-        paymentToken = outputMint;
-        this.logger.debug(`[SolanaMonitor] ✅ VALID SELL: ${inputSymbol} → ${outputSymbol}`);
-      }
-
-      // 🔥 РАСЧЕТ СУММ (упрощенная логика для демонстрации)
-      const tokenAmount = this.calculateTokenAmount(txData, targetToken);
-      const amountUSD = this.estimateUSDValue(txData, paymentToken, tokenAmount);
-
-      // Проверяем минимальный порог
-      if (amountUSD < 100) { // Минимум $100 для обработки
-        this.logger.debug(`[SolanaMonitor] Below minimum threshold: $${amountUSD}`);
+        this.logger.debug(`[SolanaMonitor] Complex swap detected (${spentTokens.length} spent, ${receivedTokens.length} received) - skipping for now`);
         return null;
       }
-
-      // Создаем объект TokenSwap
-      const tokenSwap: TokenSwap = {
-        transactionId: txData.signature,
-        walletAddress: walletAddress,
-        tokenAddress: targetToken,
-        tokenSymbol: this.getTokenSymbol(targetToken),
-        tokenName: `Token ${targetToken.slice(0, 8)}...`,
-        amount: tokenAmount,
-        amountUSD: amountUSD,
-        timestamp: new Date(txData.timestamp * 1000),
-        dex: 'SolanaMonitor',
-        isNewWallet: false,
-        isReactivatedWallet: false,
-        walletAge: 0,
-        daysSinceLastActivity: 0,
-        swapType: swapType,
-        price: amountUSD / tokenAmount
-      };
-
-      this.logger.info(`[SolanaMonitor] ✅ Valid ${swapType.toUpperCase()}: ${tokenSwap.tokenSymbol} - $${amountUSD.toFixed(0)} | Wallet: ${walletAddress.slice(0,8)}...`);
-      return tokenSwap;
 
     } catch (error) {
       this.logger.error('[SolanaMonitor] Error extracting swap info:', error);
@@ -326,51 +356,46 @@ export class SolanaMonitor {
     }
   }
 
-  // 🔥 ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ДЛЯ ИЗВЛЕЧЕНИЯ ДАННЫХ
-  private extractInputMint(txData: any): string | null {
-    // В реальной реализации здесь должен быть парсинг transaction.meta.preTokenBalances/postTokenBalances
-    // Для демонстрации возвращаем тестовые данные
-    if (txData.signature?.includes('USDC')) return 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'; // USDC
-    if (txData.signature?.includes('SOL')) return 'So11111111111111111111111111111111111111112'; // SOL
-    return 'So11111111111111111111111111111111111111112'; // Фоллбэк на SOL
-  }
-
-  private extractOutputMint(txData: any): string | null {
-    // В реальной реализации здесь должен быть парсинг transaction.meta.preTokenBalances/postTokenBalances
-    // Для демонстрации возвращаем случайный альткоин
-    return 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263'; // BONK как пример
-  }
-
-  private extractWalletAddress(txData: any): string | null {
-    // В реальной реализации здесь должен быть анализ signers или account changes
-    return txData.feePayer || 'DefaultWalletAddress123456789';
-  }
-
-  private calculateTokenAmount(txData: any, tokenMint: string): number {
-    // В реальной реализации здесь должен быть расчет разности балансов
-    return Math.random() * 1000 + 100; // Случайное количество для демонстрации
-  }
-
-  private estimateUSDValue(txData: any, paymentToken: string, tokenAmount: number): number {
-    // В реальной реализации здесь должен быть реальный расчет через цены
-    const basePrice = this.PAYMENT_ASSETS.has(paymentToken) ? 140 : 1; // SOL ~$140, stablecoins $1
-    return tokenAmount * basePrice * (Math.random() * 0.5 + 0.75); // Случайная вариация для демонстрации
-  }
-
-  private getTokenSymbol(tokenMint: string): string {
-    const symbolMap: Record<string, string> = {
-      'So11111111111111111111111111111111111111112': 'SOL',
-      'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': 'USDC',
-      'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB': 'USDT',
-      'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So': 'mSOL',
-      'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn': 'JitoSOL',
-      '7Q2afV64in6N6SeZsAAB81TJzwDoD6zpqmHkzi9Dcavn': 'stSOL',
-      'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263': 'BONK',
-      'WENWENvqqNya429ubCdR81ZmD69brwQaaBYY6p3LCpk': 'WEN',
-      'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN': 'JUP'
-    };
+  // 🔥🔥🔥 ИСПРАВЛЕНО: Правильное извлечение адреса кошелька с правильным приоритетом
+  private extractWalletAddressFromTransaction(txData: any): string | null {
+    // 🔥 ПРАВИЛЬНЫЙ ПОРЯДОК ПРИОРИТЕТОВ:
+    // 1. feePayer (наиболее надежный - это всегда кошелек пользователя)
+    if (txData.feePayer) return txData.feePayer;
     
-    return symbolMap[tokenMint] || tokenMint.slice(0, 6).toUpperCase();
+    // 2. Из балансов - берем первого owner (это реальный кошелек пользователя)
+    if (txData.meta?.preTokenBalances?.[0]?.owner) return txData.meta.preTokenBalances[0].owner;
+    if (txData.meta?.postTokenBalances?.[0]?.owner) return txData.meta.postTokenBalances[0].owner;
+    
+    // 3. ТОЛЬКО В КРАЙНЕМ СЛУЧАЕ: первый accountKey (может быть программой!)
+    if (txData.transaction?.message?.accountKeys?.[0]) {
+      const key = txData.transaction.message.accountKeys[0];
+      return typeof key === 'string' ? key : key?.pubkey || key?.toString?.() || null;
+    }
+    
+    return null;
+  }
+
+  // 🔥 ПРОТОКОЛ "ЖЕЛЕЗНЫЙ ДОЛЛАР" - НОВЫЙ ПУБЛИЧНЫЙ МЕТОД 🔥
+  public getAggregatedPositionsForWallets(walletAddresses: string[]): Map<string, AggregatedPosition[]> {
+    const result = new Map<string, AggregatedPosition[]>();
+    
+    for (const walletAddress of walletAddresses) {
+      const walletPositions: AggregatedPosition[] = [];
+      
+      // Ищем все позиции для данного кошелька
+      for (const [positionKey, position] of this.activePositions) {
+        if (position.walletAddress === walletAddress) {
+          walletPositions.push(position);
+        }
+      }
+      
+      if (walletPositions.length > 0) {
+        result.set(walletAddress, walletPositions);
+      }
+    }
+    
+    this.logger.info(`🔥 [getAggregatedPositionsForWallets] Found ${result.size} wallets with ${Array.from(result.values()).reduce((sum, positions) => sum + positions.length, 0)} total positions`);
+    return result;
   }
 
   // 🎯 ОСНОВНОЙ МЕТОД АГРЕГАЦИИ ПОЗИЦИЙ
