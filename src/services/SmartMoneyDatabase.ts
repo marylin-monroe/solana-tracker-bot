@@ -46,9 +46,21 @@ export class SmartMoneyDatabase {
 
   async init(): Promise<void> {
     try {
-      // 🔥 НОВАЯ СХЕМА БД ПОД CSV СТРУКТУРУ - НИКАКИХ СТАРЫХ ПОЛЕЙ!
+      // 🔥🔥🔥 ПРИНУДИТЕЛЬНО ПЕРЕСОЗДАЕМ ВСЕ ТАБЛИЦЫ ПОД НОВУЮ CSV СТРУКТУРУ 🔥🔥🔥
+      this.logger.info('🗑️ Dropping old tables to prevent schema conflicts...');
+      
       this.db.exec(`
-        CREATE TABLE IF NOT EXISTS smart_money_wallets (
+        DROP TABLE IF EXISTS wallet_performance_history;
+        DROP TABLE IF EXISTS wallet_performance_metrics;
+        DROP TABLE IF EXISTS smart_money_transactions;
+        DROP TABLE IF EXISTS smart_money_wallets;
+      `);
+
+      this.logger.info('🆕 Creating new tables with CSV structure...');
+
+      // 🔥 СОЗДАЕМ ТАБЛИЦЫ С НОВОЙ СХЕМОЙ (БЕЗ IF NOT EXISTS!)
+      this.db.exec(`
+        CREATE TABLE smart_money_wallets (
           address TEXT PRIMARY KEY,
           category TEXT CHECK (category IN ('sniper', 'hunter', 'trader')) NOT NULL,
           nickname TEXT,
@@ -87,7 +99,7 @@ export class SmartMoneyDatabase {
           updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
 
-        CREATE TABLE IF NOT EXISTS smart_money_transactions (
+        CREATE TABLE smart_money_transactions (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           transaction_id TEXT NOT NULL,
           wallet_address TEXT NOT NULL,
@@ -110,7 +122,7 @@ export class SmartMoneyDatabase {
           UNIQUE(transaction_id, wallet_address, token_address)
         );
 
-        CREATE TABLE IF NOT EXISTS wallet_performance_metrics (
+        CREATE TABLE wallet_performance_metrics (
           address TEXT PRIMARY KEY,
           current_pnl REAL NOT NULL DEFAULT 0,
           last_30days_pnl REAL NOT NULL DEFAULT 0,
@@ -132,7 +144,7 @@ export class SmartMoneyDatabase {
           FOREIGN KEY (address) REFERENCES smart_money_wallets (address) ON DELETE CASCADE
         );
 
-        CREATE TABLE IF NOT EXISTS wallet_performance_history (
+        CREATE TABLE wallet_performance_history (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           address TEXT NOT NULL,
           date DATE NOT NULL,
@@ -145,31 +157,24 @@ export class SmartMoneyDatabase {
           UNIQUE(address, date)
         );
       `);
-        // 🔥 ТИХАЯ МИГРАЦИЯ: Добавляем новые колонки если их нет (для Render)
-        try { this.db.exec(`ALTER TABLE smart_money_wallets ADD COLUMN usd_profit_7d REAL NOT NULL DEFAULT 0;`); } catch (e) {}
-        try { this.db.exec(`ALTER TABLE smart_money_wallets ADD COLUMN winrate_7d REAL NOT NULL DEFAULT 0;`); } catch (e) {}
-        try { this.db.exec(`ALTER TABLE smart_money_wallets ADD COLUMN buy_7d INTEGER NOT NULL DEFAULT 0;`); } catch (e) {}
-        try { this.db.exec(`ALTER TABLE smart_money_wallets ADD COLUMN usd_profit_30d REAL NOT NULL DEFAULT 0;`); } catch (e) {}
-        try { this.db.exec(`ALTER TABLE smart_money_wallets ADD COLUMN avg_holding_mins REAL NOT NULL DEFAULT 0;`); } catch (e) {}
-        try { this.db.exec(`ALTER TABLE smart_money_wallets ADD COLUMN total_profit_percent REAL NOT NULL DEFAULT 0;`); } catch (e) {}
-        try { this.db.exec(`ALTER TABLE smart_money_wallets ADD COLUMN sol_balance REAL NOT NULL DEFAULT 0;`); } catch (e) {}
 
-      // 🔥 НОВЫЕ ИНДЕКСЫ ПОД НОВЫЕ ПОЛЯ
+      // 🔥 СОЗДАЕМ ИНДЕКСЫ (БЕЗ IF NOT EXISTS - таблицы новые!)
       this.db.exec(`
-        CREATE INDEX IF NOT EXISTS idx_sm_wallets_category ON smart_money_wallets(category);
-        CREATE INDEX IF NOT EXISTS idx_sm_wallets_active ON smart_money_wallets(is_active);
-        CREATE INDEX IF NOT EXISTS idx_sm_wallets_performance ON smart_money_wallets(performance_score);
-        CREATE INDEX IF NOT EXISTS idx_sm_wallets_usd_profit_7d ON smart_money_wallets(usd_profit_7d);
-        CREATE INDEX IF NOT EXISTS idx_sm_wallets_winrate_7d ON smart_money_wallets(winrate_7d);
-        CREATE INDEX IF NOT EXISTS idx_sm_wallets_enabled ON smart_money_wallets(enabled);
-        CREATE INDEX IF NOT EXISTS idx_sm_wallets_priority ON smart_money_wallets(priority);
-        CREATE INDEX IF NOT EXISTS idx_sm_wallets_added_by ON smart_money_wallets(added_by);
-        CREATE INDEX IF NOT EXISTS idx_sm_transactions_wallet ON smart_money_transactions(wallet_address);
-        CREATE INDEX IF NOT EXISTS idx_performance_score ON wallet_performance_metrics(real_time_score);
-        CREATE INDEX IF NOT EXISTS idx_performance_tier ON wallet_performance_metrics(tier);
+        CREATE INDEX idx_sm_wallets_category ON smart_money_wallets(category);
+        CREATE INDEX idx_sm_wallets_active ON smart_money_wallets(is_active);
+        CREATE INDEX idx_sm_wallets_performance ON smart_money_wallets(performance_score);
+        CREATE INDEX idx_sm_wallets_usd_profit_7d ON smart_money_wallets(usd_profit_7d);
+        CREATE INDEX idx_sm_wallets_winrate_7d ON smart_money_wallets(winrate_7d);
+        CREATE INDEX idx_sm_wallets_enabled ON smart_money_wallets(enabled);
+        CREATE INDEX idx_sm_wallets_priority ON smart_money_wallets(priority);
+        CREATE INDEX idx_sm_wallets_added_by ON smart_money_wallets(added_by);
+        CREATE INDEX idx_sm_transactions_wallet ON smart_money_transactions(wallet_address);
+        CREATE INDEX idx_performance_score ON wallet_performance_metrics(real_time_score);
+        CREATE INDEX idx_performance_tier ON wallet_performance_metrics(tier);
       `);
 
-      this.logger.info('✅ Smart Money Database initialized with NEW CSV STRUCTURE (usd_profit_7d, winrate_7d, buy_7d)');
+      this.logger.info('✅ Smart Money Database RECREATED with NEW CSV STRUCTURE (usd_profit_7d, winrate_7d, buy_7d)');
+      this.logger.info('🔥 All old data cleared - ready for fresh wallet data!');
     } catch (error) {
       this.logger.error('❌ Error initializing Smart Money database:', error);
       throw error;
