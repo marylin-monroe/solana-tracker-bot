@@ -46,35 +46,17 @@ export class SmartMoneyDatabase {
 
   async init(): Promise<void> {
     try {
-      // 🔥🔥🔥 ПРИНУДИТЕЛЬНО ПЕРЕСОЗДАЕМ ВСЕ ТАБЛИЦЫ ПОД НОВУЮ CSV СТРУКТУРУ 🔥🔥🔥
-      this.logger.info('🗑️ Dropping old tables to prevent schema conflicts...');
+      // 🔥🔥🔥 УМНАЯ МИГРАЦИЯ: ПРОВЕРЯЕМ СХЕМУ И ДОБАВЛЯЕМ НЕДОСТАЮЩИЕ КОЛОНКИ 🔥🔥🔥
+      this.logger.info('🔍 Checking existing database schema...');
       
+      // 🔥 СОЗДАЕМ ТАБЛИЦЫ ЕСЛИ ИХ НЕТ (СОХРАНЯЕМ СУЩЕСТВУЮЩИЕ!)
       this.db.exec(`
-        DROP TABLE IF EXISTS wallet_performance_history;
-        DROP TABLE IF EXISTS wallet_performance_metrics;
-        DROP TABLE IF EXISTS smart_money_transactions;
-        DROP TABLE IF EXISTS smart_money_wallets;
-      `);
-
-      this.logger.info('🆕 Creating new tables with CSV structure...');
-
-      // 🔥 СОЗДАЕМ ТАБЛИЦЫ С НОВОЙ СХЕМОЙ (БЕЗ IF NOT EXISTS!)
-      this.db.exec(`
-        CREATE TABLE smart_money_wallets (
+        CREATE TABLE IF NOT EXISTS smart_money_wallets (
           address TEXT PRIMARY KEY,
           category TEXT CHECK (category IN ('sniper', 'hunter', 'trader')) NOT NULL,
           nickname TEXT,
           
-          -- Ключевые метрики из CSV
-          usd_profit_7d REAL NOT NULL DEFAULT 0,
-          usd_profit_30d REAL NOT NULL DEFAULT 0,
-          winrate_7d REAL NOT NULL DEFAULT 0,
-          buy_7d INTEGER NOT NULL DEFAULT 0,
-          avg_holding_mins REAL NOT NULL DEFAULT 0,
-          total_profit_percent REAL NOT NULL DEFAULT 0,
-          sol_balance REAL NOT NULL DEFAULT 0,
-          
-          -- Системные поля
+          -- Системные поля (всегда должны быть)
           performance_score REAL NOT NULL DEFAULT 50,
           is_active BOOLEAN DEFAULT 1,
           last_active_at DATETIME NOT NULL,
@@ -99,7 +81,7 @@ export class SmartMoneyDatabase {
           updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
 
-        CREATE TABLE smart_money_transactions (
+        CREATE TABLE IF NOT EXISTS smart_money_transactions (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           transaction_id TEXT NOT NULL,
           wallet_address TEXT NOT NULL,
@@ -114,15 +96,11 @@ export class SmartMoneyDatabase {
           wallet_category TEXT,
           is_family_member BOOLEAN DEFAULT 0,
           family_id TEXT,
-          -- 🔥 ИСПРАВЛЕНО: используем новые метрики 7 дней
-          wallet_usd_profit_7d REAL,
-          wallet_winrate_7d REAL,
-          wallet_buy_7d INTEGER,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
           UNIQUE(transaction_id, wallet_address, token_address)
         );
 
-        CREATE TABLE wallet_performance_metrics (
+        CREATE TABLE IF NOT EXISTS wallet_performance_metrics (
           address TEXT PRIMARY KEY,
           current_pnl REAL NOT NULL DEFAULT 0,
           last_30days_pnl REAL NOT NULL DEFAULT 0,
@@ -144,7 +122,7 @@ export class SmartMoneyDatabase {
           FOREIGN KEY (address) REFERENCES smart_money_wallets (address) ON DELETE CASCADE
         );
 
-        CREATE TABLE wallet_performance_history (
+        CREATE TABLE IF NOT EXISTS wallet_performance_history (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           address TEXT NOT NULL,
           date DATE NOT NULL,
@@ -158,23 +136,75 @@ export class SmartMoneyDatabase {
         );
       `);
 
-      // 🔥 СОЗДАЕМ ИНДЕКСЫ (БЕЗ IF NOT EXISTS - таблицы новые!)
+      // 🔥🔥🔥 МИГРАЦИЯ: ДОБАВЛЯЕМ НОВЫЕ CSV КОЛОНКИ ЕСЛИ ИХ НЕТ 🔥🔥🔥
+      this.logger.info('🔄 Migrating database schema: adding CSV columns...');
+      
+      try {
+        // Проверяем и добавляем новые CSV колонки в smart_money_wallets
+        const addColumnQueries = [
+          `ALTER TABLE smart_money_wallets ADD COLUMN usd_profit_7d REAL NOT NULL DEFAULT 0`,
+          `ALTER TABLE smart_money_wallets ADD COLUMN usd_profit_30d REAL NOT NULL DEFAULT 0`,
+          `ALTER TABLE smart_money_wallets ADD COLUMN winrate_7d REAL NOT NULL DEFAULT 0`,
+          `ALTER TABLE smart_money_wallets ADD COLUMN buy_7d INTEGER NOT NULL DEFAULT 0`,
+          `ALTER TABLE smart_money_wallets ADD COLUMN avg_holding_mins REAL NOT NULL DEFAULT 0`,
+          `ALTER TABLE smart_money_wallets ADD COLUMN total_profit_percent REAL NOT NULL DEFAULT 0`,
+          `ALTER TABLE smart_money_wallets ADD COLUMN sol_balance REAL NOT NULL DEFAULT 0`,
+          `ALTER TABLE smart_money_transactions ADD COLUMN wallet_usd_profit_7d REAL`,
+          `ALTER TABLE smart_money_transactions ADD COLUMN wallet_winrate_7d REAL`,
+          `ALTER TABLE smart_money_transactions ADD COLUMN wallet_buy_7d INTEGER`
+        ];
+
+        for (const query of addColumnQueries) {
+          try {
+            this.db.exec(query);
+            this.logger.debug(`✅ Added column: ${query.split(' ')[4]}`);
+          } catch (error) {
+            // Колонка уже существует - это нормально
+            if (!error.message.includes('duplicate column name')) {
+              this.logger.warn(`⚠️ Migration warning: ${error.message}`);
+            }
+          }
+        }
+        
+        this.logger.info('✅ Database migration completed successfully');
+      } catch (error) {
+        this.logger.error('❌ Error during database migration:', error);
+        // Не падаем - продолжаем работу
+      }
+
+      // 🔥 СОЗДАЕМ ИНДЕКСЫ (С IF NOT EXISTS ЧТОБЫ НЕ БЫЛО ОШИБОК!)
       this.db.exec(`
-        CREATE INDEX idx_sm_wallets_category ON smart_money_wallets(category);
-        CREATE INDEX idx_sm_wallets_active ON smart_money_wallets(is_active);
-        CREATE INDEX idx_sm_wallets_performance ON smart_money_wallets(performance_score);
-        CREATE INDEX idx_sm_wallets_usd_profit_7d ON smart_money_wallets(usd_profit_7d);
-        CREATE INDEX idx_sm_wallets_winrate_7d ON smart_money_wallets(winrate_7d);
-        CREATE INDEX idx_sm_wallets_enabled ON smart_money_wallets(enabled);
-        CREATE INDEX idx_sm_wallets_priority ON smart_money_wallets(priority);
-        CREATE INDEX idx_sm_wallets_added_by ON smart_money_wallets(added_by);
-        CREATE INDEX idx_sm_transactions_wallet ON smart_money_transactions(wallet_address);
-        CREATE INDEX idx_performance_score ON wallet_performance_metrics(real_time_score);
-        CREATE INDEX idx_performance_tier ON wallet_performance_metrics(tier);
+        CREATE INDEX IF NOT EXISTS idx_sm_wallets_category ON smart_money_wallets(category);
+        CREATE INDEX IF NOT EXISTS idx_sm_wallets_active ON smart_money_wallets(is_active);
+        CREATE INDEX IF NOT EXISTS idx_sm_wallets_performance ON smart_money_wallets(performance_score);
+        CREATE INDEX IF NOT EXISTS idx_sm_wallets_usd_profit_7d ON smart_money_wallets(usd_profit_7d);
+        CREATE INDEX IF NOT EXISTS idx_sm_wallets_winrate_7d ON smart_money_wallets(winrate_7d);
+        CREATE INDEX IF NOT EXISTS idx_sm_wallets_enabled ON smart_money_wallets(enabled);
+        CREATE INDEX IF NOT EXISTS idx_sm_wallets_priority ON smart_money_wallets(priority);
+        CREATE INDEX IF NOT EXISTS idx_sm_wallets_added_by ON smart_money_wallets(added_by);
+        CREATE INDEX IF NOT EXISTS idx_sm_transactions_wallet ON smart_money_transactions(wallet_address);
+        CREATE INDEX IF NOT EXISTS idx_performance_score ON wallet_performance_metrics(real_time_score);
+        CREATE INDEX IF NOT EXISTS idx_performance_tier ON wallet_performance_metrics(tier);
       `);
 
-      this.logger.info('✅ Smart Money Database RECREATED with NEW CSV STRUCTURE (usd_profit_7d, winrate_7d, buy_7d)');
-      this.logger.info('🔥 All old data cleared - ready for fresh wallet data!');
+      // Проверяем статистику существующих кошельков
+      const existingWalletCount = this.db.prepare('SELECT COUNT(*) as count FROM smart_money_wallets').get() as any;
+      
+      this.logger.info(`✅ Smart Money Database initialized with CSV migration support`);
+      this.logger.info(`📊 Found ${existingWalletCount?.count || 0} existing wallets in database`);
+      
+      if (existingWalletCount?.count > 0) {
+        const sourceStats = this.db.prepare(`
+          SELECT added_by, COUNT(*) as count 
+          FROM smart_money_wallets 
+          WHERE is_active = 1 AND enabled = 1 
+          GROUP BY added_by
+        `).all() as Array<{ added_by: string; count: number }>;
+        
+        const statsStr = sourceStats.map(s => `${s.added_by}: ${s.count}`).join(', ');
+        this.logger.info(`📈 Active wallet sources: ${statsStr}`);
+      }
+      
     } catch (error) {
       this.logger.error('❌ Error initializing Smart Money database:', error);
       throw error;
