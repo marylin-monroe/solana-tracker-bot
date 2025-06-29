@@ -145,6 +145,14 @@ export class SmartMoneyDatabase {
           UNIQUE(address, date)
         );
       `);
+        // 🔥 ТИХАЯ МИГРАЦИЯ: Добавляем новые колонки если их нет (для Render)
+        try { this.db.exec(`ALTER TABLE smart_money_wallets ADD COLUMN usd_profit_7d REAL NOT NULL DEFAULT 0;`); } catch (e) {}
+        try { this.db.exec(`ALTER TABLE smart_money_wallets ADD COLUMN winrate_7d REAL NOT NULL DEFAULT 0;`); } catch (e) {}
+        try { this.db.exec(`ALTER TABLE smart_money_wallets ADD COLUMN buy_7d INTEGER NOT NULL DEFAULT 0;`); } catch (e) {}
+        try { this.db.exec(`ALTER TABLE smart_money_wallets ADD COLUMN usd_profit_30d REAL NOT NULL DEFAULT 0;`); } catch (e) {}
+        try { this.db.exec(`ALTER TABLE smart_money_wallets ADD COLUMN avg_holding_mins REAL NOT NULL DEFAULT 0;`); } catch (e) {}
+        try { this.db.exec(`ALTER TABLE smart_money_wallets ADD COLUMN total_profit_percent REAL NOT NULL DEFAULT 0;`); } catch (e) {}
+        try { this.db.exec(`ALTER TABLE smart_money_wallets ADD COLUMN sol_balance REAL NOT NULL DEFAULT 0;`); } catch (e) {}
 
       // 🔥 НОВЫЕ ИНДЕКСЫ ПОД НОВЫЕ ПОЛЯ
       this.db.exec(`
