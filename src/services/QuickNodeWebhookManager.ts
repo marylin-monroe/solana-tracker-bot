@@ -1,4 +1,4 @@
-// src/services/QuickNodeWebhookManager.ts - 🔥 ПОЛНОСТЬЮ ИСПРАВЛЕННЫЙ С ЕДИНОЙ ФУНКЦИЕЙ СОЗДАНИЯ SWAPS
+// src/services/QuickNodeWebhookManager.ts - 🔥 ПОЛНОСТЬЮ ИСПРАВЛЕННЫЙ С ПРАВИЛЬНОЙ ЛОГИКОЙ ИЗВЛЕЧЕНИЯ БАЛАНСОВ
 import { Logger } from '../utils/Logger';
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
 import { TelegramNotifier } from './TelegramNotifier';
@@ -114,7 +114,7 @@ export class QuickNodeWebhookManager {
     this.initializeProviders();
     this.startLimitResetTimer();
     this.startCacheCleanup();
-    this.logger.info(`🔥 QuickNodeWebhookManager: ПОЛНОСТЬЮ ИСПРАВЛЕН - ЕДИНАЯ ФУНКЦИЯ СОЗДАНИЯ SWAPS`);
+    this.logger.info(`🔥 QuickNodeWebhookManager: ПОЛНОСТЬЮ ИСПРАВЛЕН - ПРОТОКОЛ "ЖЕЛЕЗНЫЙ ДОЛЛАР" + ПРАВИЛЬНОЕ ИЗВЛЕЧЕНИЕ БАЛАНСОВ`);
   }
 
   setTelegramNotifier(telegramNotifier: TelegramNotifier): void {
@@ -615,29 +615,56 @@ export class QuickNodeWebhookManager {
 
       console.log(`🎯 Perfect swap detected: ${swapInfo.inputMint.slice(0,8)}... → ${swapInfo.outputMint.slice(0,8)}...`);
 
-      // 🔥🔥🔥 ИСПОЛЬЗУЕМ ЕДИНУЮ ФУНКЦИЮ СОЗДАНИЯ SWAPS - РЕШЕНИЕ ПРОБЛЕМЫ! 🔥🔥🔥
-      const smartMoneySwap = await this.tokenMetadataService.createConsistentSmartMoneySwap({
-        transactionId: signature,
-        walletAddress: wallet.address,
-        walletInfo: {
+      // Вызываем единый расчетный центр
+      const valueCalculation = await this.tokenMetadataService.calculateSwapUSDValue(
+        swapInfo.inputMint, swapInfo.inputAmountRaw, swapInfo.outputMint, swapInfo.outputAmountRaw
+      );
+
+      if (!valueCalculation) {
+        console.log(`❌ Value calculation FAILED - swap filtered out by unified calculator`);
+        return;
+      }
+
+      const { amountUSD, swapType, tokenAddress, paymentToken, paymentTokenAmount, paymentTokenPrice } = valueCalculation;
+
+      console.log(`✅ Value calculation SUCCESS: $${amountUSD.toFixed(2)} ${swapType}`);
+
+      if (amountUSD >= 2000) {
+        const tokenInfo = await this.getTokenInfoCached(tokenAddress);
+        const paymentTokenInfo = await this.getTokenInfoCached(paymentToken);
+
+        // Получаем правильное количество основного токена
+        const actualTokenAmount = swapType === 'buy' ? 
+          swapInfo.outputAmountRaw / Math.pow(10, tokenInfo.decimals) :
+          swapInfo.inputAmountRaw / Math.pow(10, tokenInfo.decimals);
+
+        // Формируем объект SmartMoneySwap
+        const smartMoneySwap: SmartMoneySwap = {
+          transactionId: signature,
+          walletAddress: wallet.address,
+          tokenAddress,
+          tokenSymbol: tokenInfo.symbol,
+          tokenName: tokenInfo.name,
+          tokenAmount: actualTokenAmount,
+          amountUSD,
+          swapType,
+          timestamp: new Date(transaction.blockTime * 1000),
           category: wallet.category,
           usdProfit7d: wallet.usdProfit7d,
           winrate7d: wallet.winrate7d,
-          buy7d: wallet.buy7d
-        },
-        inputMint: swapInfo.inputMint,
-        outputMint: swapInfo.outputMint,
-        inputAmountRaw: swapInfo.inputAmountRaw,
-        outputAmountRaw: swapInfo.outputAmountRaw,
-        timestamp: new Date(transaction.blockTime * 1000)
-      });
+          buy7d: wallet.buy7d,
+          tokenPrice: actualTokenAmount > 0 ? amountUSD / actualTokenAmount : 0,
+          paymentTokenSymbol: paymentTokenInfo.symbol,
+          paymentTokenAmount: paymentTokenAmount,
+          paymentTokenPrice: paymentTokenPrice,
+          isFamilyMember: false,
+        };
 
-      if (smartMoneySwap && smartMoneySwap.amountUSD >= 2000) {
-        console.log(`🎉 SWAP CREATED: ${smartMoneySwap.tokenSymbol} - $${smartMoneySwap.amountUSD.toFixed(2)} - ${smartMoneySwap.swapType}`);
+        console.log(`🎉 SWAP CREATED: ${tokenInfo.symbol} - $${amountUSD.toFixed(2)} - ${swapType}`);
         await this.saveAndNotifySwap(smartMoneySwap);
         console.log(`🚀 SWAP NOTIFICATION SENT: ${smartMoneySwap.tokenSymbol} - $${smartMoneySwap.amountUSD.toFixed(0)}`);
-      } else if (smartMoneySwap) {
-        console.log(`💸 Swap below $2000 threshold: $${smartMoneySwap.amountUSD.toFixed(2)}`);
+      } else {
+        console.log(`💸 Swap below $2000 threshold: $${amountUSD.toFixed(2)}`);
       }
 
     } catch (error) {
@@ -857,6 +884,41 @@ export class QuickNodeWebhookManager {
     if (txData.transaction?.message?.accountKeys?.[0]) return txData.transaction.message.accountKeys[0];
     
     return null;
+  }
+
+  private getDefaultDecimals(tokenMint: string): number {
+    // 🔥 УСТРАНЯЕМ ДУБЛИРОВАНИЕ - используем TokenMetadataService
+    return this.tokenMetadataService.getTokenSymbol(tokenMint) === 'USDC' || 
+           this.tokenMetadataService.getTokenSymbol(tokenMint) === 'USDT' ? 6 : 9;
+  }
+
+  private async getTokenInfoCached(tokenMint: string): Promise<{ symbol: string; name: string; decimals: number }> {
+    const cached = this.tokenInfoCache.get(tokenMint);
+    if (cached && Date.now() - cached.timestamp < 60 * 60 * 1000) {
+      return { symbol: cached.symbol, name: cached.name, decimals: cached.decimals };
+    }
+
+    try {
+      const metadata = await this.tokenMetadataService.getTokenMetadata(tokenMint);
+      
+      const tokenInfo = {
+        symbol: metadata?.symbol || this.tokenMetadataService.getTokenSymbol(tokenMint),
+        name: metadata?.name || 'Unknown Token',
+        decimals: metadata?.decimals || this.getDefaultDecimals(tokenMint),
+        timestamp: Date.now()
+      };
+      
+      this.tokenInfoCache.set(tokenMint, tokenInfo);
+      return { symbol: tokenInfo.symbol, name: tokenInfo.name, decimals: tokenInfo.decimals };
+
+    } catch (error) {
+      this.logger.error(`Error getting token info for ${tokenMint}:`, error);
+      return { 
+        symbol: this.tokenMetadataService.getTokenSymbol(tokenMint), 
+        name: 'Unknown Token',
+        decimals: this.getDefaultDecimals(tokenMint)
+      };
+    }
   }
 
   private async saveAndNotifySwap(swap: SmartMoneySwap): Promise<void> {

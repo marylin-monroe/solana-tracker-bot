@@ -1,6 +1,5 @@
-// src/services/TokenMetadataService.ts - 🔥 COINGECKO DEMO API + 8 MIN CACHE + ЕДИНАЯ ФУНКЦИЯ СОЗДАНИЯ SWAPS
+// src/services/TokenMetadataService.ts - 🔥 COINGECKO DEMO API + 8 MIN CACHE
 import { Logger } from '../utils/Logger';
-import { SmartMoneySwap } from '../types';
 
 interface TokenMetadata {
   symbol: string;
@@ -35,18 +34,6 @@ interface RPCResponse {
   id: number;
   result?: any;
   error?: { code: number; message: string; };
-}
-
-// 🔥🔥🔥 ЕДИНАЯ СТРУКТУРА ДАННЫХ ДЛЯ СОЗДАНИЯ SWAPS 🔥🔥🔥
-interface SwapCreationData {
-  transactionId: string;
-  walletAddress: string;
-  walletInfo: { category: 'sniper' | 'hunter' | 'trader'; usdProfit7d: number; winrate7d: number; buy7d: number };
-  inputMint: string;
-  outputMint: string;
-  inputAmountRaw: number;
-  outputAmountRaw: number;
-  timestamp: Date;
 }
 
 export class TokenMetadataService {
@@ -141,91 +128,11 @@ export class TokenMetadataService {
     ['J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn', 'jito-staked-sol']
   ]);
 
-  // 📈 ПОПУЛЯРНЫЕ CEX ТОКЕНЫ - РАСШИРЕННЫЙ СПИСОК
-  private readonly CEX_TOKENS = new Set([
-    'So11111111111111111111111111111111111111112', // SOL
-    'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
-    'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
-    'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So', // mSOL
-    'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn', // JitoSOL
-    'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263', // Bonk
-    'WENWENvqqNya429ubCdR81ZmD69brwQaaBYY6p3LCpk', // WEN
-    'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN', // JUP
-    '4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R', // RAY
-    'SRMuApVNdxXokk5GT7XD5cUUgXMBCoAz2LHeuAoKWRt', // SRM
-    'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm', // WIF
-    '2qEHjDLDLbuBgRYvsxhc5D6uDWAivNFZGan56P1tpump', // PNUT
-    'CzLSujWBLFsSjncfkh59rUFqvafWcY5tzedWJSuypump', // GOAT
-    'ukHH6c7mMyiWCf1b9pnWe25TSpkDDt3H5pQZgZ74J82', // BOME
-    'hntyVP6YFm1Hg25TN9WGLqM12b8TQmcknKrdu1oxWux', // HNT
-    'kinXdEcpDQeHPEuQnqmUgtYykqKGVFq6CeVX5iAHJq6', // KIN
-    '7Q2afV64in6N6SeZsAAB81TJzwDoD6zpqmHkzi9Dcavn', // stSOL
-    'bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1', // bSOL
-    'he1iusmfkpAdwvxLNGV8Y1iSbj4rUy6yMhEA3fotn9A', // hSOL
-    'A9mUU4qviSctJVPJdBJWkb28deg915LYJKrzQ19ji3FM', // UXD
-    'USDH1SM1ojwWUga67PGrgFWUHibbjqMvuMaDkRJTgkX' // USDH
-  ]);
-
   constructor() {
     this.logger = Logger.getInstance();
     this.logger.info('🏷️ TokenMetadataService ENHANCED: 🔥 CoinGecko Demo API (8min cache) + основные токены');
     this.logger.info(`💰 Loaded ${this.WELL_KNOWN_TOKENS.size} payment tokens for calculation`);
     this.logger.info(`🔑 Using CoinGecko Demo API (30 req/min, 10k/month) - Key from ENV: ${this.COINGECKO_API_KEY ? 'LOADED' : 'MISSING'}`);
-  }
-
-  // 🔥🔥🔥 ЕДИНАЯ ФУНКЦИЯ СОЗДАНИЯ SMARTMONEYSWAP - РЕШЕНИЕ ПРОБЛЕМЫ INCONSISTENCY 🔥🔥🔥
-  public async createConsistentSmartMoneySwap(data: SwapCreationData): Promise<SmartMoneySwap | null> {
-    try {
-      // 1. ЕДИНЫЙ РАСЧЕТНЫЙ ЦЕНТР (гарантированно правильный swapType)
-      const valueCalculation = await this.calculateSwapUSDValue(
-        data.inputMint, data.inputAmountRaw, data.outputMint, data.outputAmountRaw
-      );
-      
-      if (!valueCalculation) return null;
-      
-      const { amountUSD, swapType, tokenAddress, paymentToken, paymentTokenAmount, paymentTokenPrice } = valueCalculation;
-      
-      // 2. ПОЛУЧАЕМ МЕТАДАННЫЕ (консистентно)
-      const tokenInfo = await this.getTokenInfoCached(tokenAddress);
-      const paymentTokenInfo = await this.getTokenInfoCached(paymentToken);
-      
-      // 3. РАССЧИТЫВАЕМ КОЛИЧЕСТВО ОСНОВНОГО ТОКЕНА (консистентно)
-      const actualTokenAmount = swapType === 'buy' ? 
-        data.outputAmountRaw / Math.pow(10, tokenInfo.decimals) :
-        data.inputAmountRaw / Math.pow(10, tokenInfo.decimals);
-      
-      // 4. ФОРМИРУЕМ ОБЪЕКТ С ГАРАНТИРОВАННОЙ КОНСИСТЕНТНОСТЬЮ
-      const smartMoneySwap: SmartMoneySwap = {
-        transactionId: data.transactionId,
-        walletAddress: data.walletAddress,
-        tokenAddress: tokenAddress,  // ✅ Из единого расчетного центра
-        tokenSymbol: tokenInfo.symbol,
-        tokenName: tokenInfo.name,
-        tokenAmount: actualTokenAmount,
-        amountUSD: amountUSD,
-        swapType: swapType,  // ✅ Из единого расчетного центра
-        timestamp: data.timestamp,
-        category: data.walletInfo.category,
-        usdProfit7d: data.walletInfo.usdProfit7d,
-        winrate7d: data.walletInfo.winrate7d,
-        buy7d: data.walletInfo.buy7d,
-        tokenPrice: actualTokenAmount > 0 ? amountUSD / actualTokenAmount : 0,
-        
-        // 🔥🔥🔥 КРИТИЧЕСКИ ВАЖНО: paymentTokenSymbol ВСЕГДА соответствует paymentToken из единого расчетного центра
-        paymentTokenSymbol: paymentTokenInfo.symbol,  // ✅ Консистентно с swapType
-        paymentTokenAmount: paymentTokenAmount,
-        paymentTokenPrice: paymentTokenPrice,
-        
-        isCexListed: this.CEX_TOKENS.has(tokenAddress),
-        isFamilyMember: false,
-      };
-      
-      return smartMoneySwap;
-      
-    } catch (error) {
-      this.logger.error(`Error creating consistent SmartMoneySwap:`, error);
-      return null;
-    }
   }
 
   // 🔥🔥🔥 ЕДИНЫЙ РАСЧЕТНЫЙ ЦЕНТР - БЕЗ ИЗМЕНЕНИЙ 🔥🔥🔥
@@ -426,34 +333,6 @@ export class TokenMetadataService {
     
     // SOL и большинство токенов - 9 decimals
     return 9;
-  }
-
-  // 🔥 УПРОЩЕННЫЙ МЕТОД ПОЛУЧЕНИЯ ИНФОРМАЦИИ О ТОКЕНЕ (ДЛЯ ЕДИНОЙ ФУНКЦИИ)
-  private async getTokenInfoCached(tokenMint: string): Promise<{ symbol: string; name: string; decimals: number }> {
-    const cached = this.cache.get(tokenMint);
-    if (cached && Date.now() - cached.timestamp < 60 * 60 * 1000) {
-      return { symbol: cached.metadata.symbol, name: cached.metadata.name, decimals: cached.metadata.decimals };
-    }
-
-    try {
-      const metadata = await this.getTokenMetadata(tokenMint);
-      
-      const tokenInfo = {
-        symbol: metadata?.symbol || this.getTokenSymbol(tokenMint),
-        name: metadata?.name || 'Unknown Token',
-        decimals: metadata?.decimals || this.getFallbackDecimals(tokenMint)
-      };
-      
-      return tokenInfo;
-
-    } catch (error) {
-      this.logger.error(`Error getting token info for ${tokenMint}:`, error);
-      return { 
-        symbol: this.getTokenSymbol(tokenMint), 
-        name: 'Unknown Token',
-        decimals: this.getFallbackDecimals(tokenMint)
-      };
-    }
   }
 
   // 🎯 ПОЛУЧЕНИЕ МЕТАДАННЫХ
