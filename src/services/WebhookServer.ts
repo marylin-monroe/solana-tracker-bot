@@ -511,6 +511,16 @@ export class WebhookServer {
       console.log(`🔍 EXPECTED: ${inputSymbol} is payment? ${['SOL','USDC','USDT','WSOL'].includes(inputSymbol)}`);
       console.log(`🔍 EXPECTED: ${outputSymbol} is payment? ${['SOL','USDC','USDT','WSOL'].includes(outputSymbol)}`);
 
+      // 🔥🔥🔥 ФИЛЬТРАЦИЯ ТЕХНИЧЕСКИХ ОПЕРАЦИЙ (деньги в деньги) 🔥🔥🔥
+      const isBoringSwap = 
+        (['SOL','WSOL','USDC','USDT'].includes(inputSymbol) && 
+         ['SOL','WSOL','USDC','USDT'].includes(outputSymbol));
+
+      if (isBoringSwap) {
+        console.log(`🚫 [WebhookServer] FILTERED: Technical operation ${inputSymbol} → ${outputSymbol} (money to money)`);
+        return null;
+      }
+
       return { walletAddress, inputMint, outputMint, inputAmountRaw, outputAmountRaw };
 
     } catch (error) {
