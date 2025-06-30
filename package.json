@@ -4,7 +4,7 @@
   "description": "Advanced Telegram bot with real-time QuickNode and Alchemy APIs for tracking smart money and monitoring large transactions on Solana. Features Dragon project integration, multi-provider failover, and comprehensive scam filtering.",
   "main": "dist/main.js",
   "scripts": {
-    "build": "npm rebuild better-sqlite3 && tsc",
+    "build": "rm -rf node_modules/better-sqlite3 && npm install better-sqlite3 && npm rebuild better-sqlite3 && tsc",
     "start": "node --max-old-space-size=768 --expose-gc dist/main.js",
     "dev": "ts-node-dev --respawn --transpile-only src/main.ts",
     "clean": "rm -rf dist",

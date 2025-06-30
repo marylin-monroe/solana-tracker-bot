@@ -1,10 +1,10 @@
-# render.yaml - ОБНОВЛЕНО: добавлены переменные для Dragon Git интеграции
+# render.yaml - ИСПРАВЛЕНИЕ ПРОБЛЕМЫ better-sqlite3
 services:
   - type: background-worker
     name: smart-money-tracker
     runtime: node
     plan: starter
-    buildCommand: npm install && npm run build
+    buildCommand: npm ci --only=production && npm rebuild better-sqlite3 && npm run build
     startCommand: npm start
     envVars:
       - key: NODE_ENV
@@ -26,11 +26,13 @@ services:
       - key: TELEGRAM_USER_ID
         fromSecret: TELEGRAM_USER_ID
       
-      # 💾 БАЗА ДАННЫХ
+      # 💾 БАЗЫ ДАННЫХ
       - key: DATABASE_PATH
-        value: ./data/tracker.db
+        value: /opt/render/project/src/data/tracker.db
+      - key: SM_DATABASE_PATH
+        value: /opt/render/project/src/data/smart_money.db
       
-      # 🐲 DRAGON INTEGRATION - НОВЫЕ ПЕРЕМЕННЫЕ
+      # 🐲 DRAGON INTEGRATION
       - key: DRAGON_OUTPUT_PATH
         value: /opt/render/project/src/data/dragon-output
       - key: DRAGON_REPO_URL
