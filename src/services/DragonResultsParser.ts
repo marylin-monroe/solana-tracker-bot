@@ -514,8 +514,8 @@ if (forceReplace) {
     let loggedRejections = 0;
 
     const filtered = wallets.filter(wallet => {
-      // 🔥🔥🔥 ФИЛЬТР БОТОВ - исключаем кошельки с >1000 сделками за 7 дней
-      if (wallet.buy7d > 1000) {
+      // 🔥🔥🔥 ФИЛЬТР БОТОВ - исключаем кошельки с >1600 сделками за 7 дней
+      if (wallet.buy7d > 1600) {
         if (loggedRejections < 5) {
           loggedRejections++;
         }
