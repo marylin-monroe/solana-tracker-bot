@@ -548,6 +548,12 @@ export class QuickNodeWebhookManager {
 
       const { amountUSD, swapType, tokenAddress, paymentToken, paymentTokenAmount, paymentTokenPrice } = valueCalculation;
 
+      // 🔥🔥🔥 ОТЛАДКА РЕЗУЛЬТАТА ЕДИНОГО РАСЧЕТНОГО ЦЕНТРА 🔥🔥🔥
+      console.log(`🔥 [QuickNode] ЕДИНЫЙ ЦЕНТР RESULT: ${swapType.toUpperCase()} ${amountUSD.toFixed(2)}`);
+      console.log(`💳 Payment: ${this.tokenMetadataService.getTokenSymbol(paymentToken)} (${paymentToken.slice(0,8)}...)`);
+      console.log(`🎯 Target: ${this.tokenMetadataService.getTokenSymbol(tokenAddress)} (${tokenAddress.slice(0,8)}...)`);
+      console.log(`📊 Payment Amount: ${paymentTokenAmount} @ ${paymentTokenPrice}\n`);
+
       if (amountUSD >= 2000) {
         const tokenInfo = await this.getTokenInfoCached(tokenAddress);
         const paymentTokenInfo = await this.getTokenInfoCached(paymentToken);
@@ -686,6 +692,19 @@ export class QuickNodeWebhookManager {
         // 🔥 УНИФИЦИРОВАНО: используем changeRaw напрямую, как в WebhookServer
         const inputAmountRaw = Math.abs(spentToken.changeRaw);
         const outputAmountRaw = receivedToken.changeRaw;
+
+        // 🔥🔥🔥 ДЕТАЛЬНАЯ ОТЛАДКА ДЛЯ АНАЛИЗА ПРОБЛЕМЫ BUY/SELL 🔥🔥🔥
+        console.log(`\n🔍 [QuickNode] SWAP ANALYSIS FOR: ${transaction.signature?.slice(0,12)}...`);
+        console.log(`💸 SPENT: ${this.tokenMetadataService.getTokenSymbol(spentToken.mint)} (${spentToken.mint.slice(0,8)}...) = ${spentToken.changeUI} (raw: ${spentToken.changeRaw})`);
+        console.log(`💰 RECEIVED: ${this.tokenMetadataService.getTokenSymbol(receivedToken.mint)} (${receivedToken.mint.slice(0,8)}...) = ${receivedToken.changeUI} (raw: ${receivedToken.changeRaw})`);
+        console.log(`📋 DIRECTION: ${this.tokenMetadataService.getTokenSymbol(inputMint)} → ${this.tokenMetadataService.getTokenSymbol(outputMint)}`);
+        console.log(`📊 AMOUNTS: input=${inputAmountRaw}, output=${outputAmountRaw}`);
+        
+        // Предварительная проверка - какой токен считается платежным
+        const inputSymbol = this.tokenMetadataService.getTokenSymbol(inputMint);
+        const outputSymbol = this.tokenMetadataService.getTokenSymbol(outputMint);
+        console.log(`🔍 EXPECTED: ${inputSymbol} is payment? ${['SOL','USDC','USDT','WSOL'].includes(inputSymbol)}`);
+        console.log(`🔍 EXPECTED: ${outputSymbol} is payment? ${['SOL','USDC','USDT','WSOL'].includes(outputSymbol)}`);
 
         return { walletAddress, inputMint, outputMint, inputAmountRaw, outputAmountRaw };
       }
