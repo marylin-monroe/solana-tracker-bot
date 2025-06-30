@@ -1,4 +1,4 @@
-// src/services/QuickNodeWebhookManager.ts - 🔥 ПОЛНОСТЬЮ ИСПРАВЛЕННЫЙ С ПРАВИЛЬНОЙ ЛОГИКОЙ ИЗВЛЕЧЕНИЯ БАЛАНСОВ
+// src/services/QuickNodeWebhookManager.ts - 🔥 ИСПРАВЛЕНО: ВЫБОР САМЫХ БОЛЬШИХ ОПЕРАЦИЙ ПО USD
 import { Logger } from '../utils/Logger';
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
 import { TelegramNotifier } from './TelegramNotifier';
@@ -535,7 +535,7 @@ export class QuickNodeWebhookManager {
         return;
       }
 
-      // 🔥🔥🔥 ИСПОЛЬЗУЕМ УНИФИЦИРОВАННУЮ ФУНКЦИЮ ИЗВЛЕЧЕНИЯ СВАПОВ 🔥🔥🔥
+      // 🔥🔥🔥 ИСПОЛЬЗУЕМ ИСПРАВЛЕННУЮ ФУНКЦИЮ ИЗВЛЕЧЕНИЯ СВАПОВ 🔥🔥🔥
       const swapInfo = await this.extractSwapInfoFromBalances(transaction);
       if (!swapInfo) return;
 
@@ -594,7 +594,7 @@ export class QuickNodeWebhookManager {
     }
   }
 
-  // 🔥🔥🔥 УНИФИЦИРОВАННАЯ ФУНКЦИЯ ИЗВЛЕЧЕНИЯ СВАПОВ - ИДЕНТИЧНА WebhookServer 🔥🔥🔥
+  // 🔥🔥🔥 ИСПРАВЛЕНО: ВЫБОР САМЫХ БОЛЬШИХ ОПЕРАЦИЙ ПО USD ВМЕСТО ФИЛЬТРАЦИИ 🔥🔥🔥
   private async extractSwapInfoFromBalances(txData: any): Promise<{
     walletAddress: string; inputMint: string; outputMint: string;
     inputAmountRaw: number; outputAmountRaw: number;
@@ -683,48 +683,72 @@ export class QuickNodeWebhookManager {
       const spentTokens = Array.from(tokenChanges.values()).filter(c => c.changeUI < 0);
       const receivedTokens = Array.from(tokenChanges.values()).filter(c => c.changeUI > 0);
 
-      // 🔥🔥🔥 ИСПРАВЛЕНИЕ: Игнорируем SOL<->WSOL технические операции! 🔥🔥🔥
-      const solTokens = ['So11111111111111111111111111111111111111112', 'So11111111111111111111111111111111111111111'];
-      const spentTokensFiltered = spentTokens.filter(t => !solTokens.includes(t.mint));
-      const receivedTokensFiltered = receivedTokens.filter(t => !solTokens.includes(t.mint));
-
-      // Если есть реальные токены - используем их, иначе все токены (для чистых SOL/WSOL свапов)
-      const finalSpentTokens = spentTokensFiltered.length > 0 ? spentTokensFiltered : spentTokens;
-      const finalReceivedTokens = receivedTokensFiltered.length > 0 ? receivedTokensFiltered : receivedTokens;
-
-      console.log(`🔧 [QuickNode] FILTERING: spent ${spentTokens.length}→${finalSpentTokens.length}, received ${receivedTokens.length}→${finalReceivedTokens.length}`);
-
-      if (finalSpentTokens.length === 1 && finalReceivedTokens.length === 1) {
-        const spentToken = finalSpentTokens[0];
-        const receivedToken = finalReceivedTokens[0];
-        
-        const inputMint = spentToken.mint;
-        const outputMint = receivedToken.mint;
-        // 🔥 УНИФИЦИРОВАНО: используем changeRaw напрямую, как в WebhookServer
-        const inputAmountRaw = Math.abs(spentToken.changeRaw);
-        const outputAmountRaw = receivedToken.changeRaw;
-
-        // 🔥🔥🔥 ДЕТАЛЬНАЯ ОТЛАДКА ДЛЯ АНАЛИЗА ПРОБЛЕМЫ BUY/SELL 🔥🔥🔥
-        console.log(`\n🔍 [QuickNode] SWAP ANALYSIS FOR: ${transaction.signature?.slice(0,12)}...`);
-        console.log(`💸 SPENT: ${this.tokenMetadataService.getTokenSymbol(spentToken.mint)} (${spentToken.mint.slice(0,8)}...) = ${spentToken.changeUI} (raw: ${spentToken.changeRaw})`);
-        console.log(`💰 RECEIVED: ${this.tokenMetadataService.getTokenSymbol(receivedToken.mint)} (${receivedToken.mint.slice(0,8)}...) = ${receivedToken.changeUI} (raw: ${receivedToken.changeRaw})`);
-        console.log(`📋 DIRECTION: ${this.tokenMetadataService.getTokenSymbol(inputMint)} → ${this.tokenMetadataService.getTokenSymbol(outputMint)}`);
-        console.log(`📊 AMOUNTS: input=${inputAmountRaw}, output=${outputAmountRaw}`);
-        
-        // Предварительная проверка - какой токен считается платежным
-        const inputSymbol = this.tokenMetadataService.getTokenSymbol(inputMint);
-        const outputSymbol = this.tokenMetadataService.getTokenSymbol(outputMint);
-        console.log(`🔍 EXPECTED: ${inputSymbol} is payment? ${['SOL','USDC','USDT','WSOL'].includes(inputSymbol)}`);
-        console.log(`🔍 EXPECTED: ${outputSymbol} is payment? ${['SOL','USDC','USDT','WSOL'].includes(outputSymbol)}`);
-
-        return { walletAddress, inputMint, outputMint, inputAmountRaw, outputAmountRaw };
+      // 🔥🔥🔥 НОВАЯ ЛОГИКА: ВЫБИРАЕМ САМЫЕ БОЛЬШИЕ ОПЕРАЦИИ ПО USD СТОИМОСТИ 🔥🔥🔥
+      if (spentTokens.length === 0 || receivedTokens.length === 0) {
+        console.log(`⚠️ [QuickNode] No valid operations: spent=${spentTokens.length}, received=${receivedTokens.length}`);
+        return null;
       }
 
-      console.log(`⚠️ [QuickNode] Complex swap: ${finalSpentTokens.length} spent, ${finalReceivedTokens.length} received`);
-      return null;
+      // Рассчитываем USD для всех операций
+      const spentWithUSD = await Promise.all(spentTokens.map(async t => ({
+        ...t,
+        usdValue: await this.calculateTokenUSDValue(t.mint, Math.abs(t.changeRaw))
+      })));
+
+      const receivedWithUSD = await Promise.all(receivedTokens.map(async t => ({
+        ...t,
+        usdValue: await this.calculateTokenUSDValue(t.mint, t.changeRaw)
+      })));
+
+      // Выбираем САМЫЕ БОЛЬШИЕ операции (не фильтруем!)
+      const primarySpent = spentWithUSD.reduce((max, curr) => 
+        curr.usdValue > max.usdValue ? curr : max
+      );
+
+      const primaryReceived = receivedWithUSD.reduce((max, curr) => 
+        curr.usdValue > max.usdValue ? curr : max
+      );
+
+      console.log(`🔧 [QuickNode] USD SELECTION: spent ${spentTokens.length} → PRIMARY: ${this.tokenMetadataService.getTokenSymbol(primarySpent.mint)} ($${primarySpent.usdValue.toFixed(2)})`);
+      console.log(`🔧 [QuickNode] USD SELECTION: received ${receivedTokens.length} → PRIMARY: ${this.tokenMetadataService.getTokenSymbol(primaryReceived.mint)} ($${primaryReceived.usdValue.toFixed(2)})`);
+
+      const inputMint = primarySpent.mint;
+      const outputMint = primaryReceived.mint;
+      const inputAmountRaw = Math.abs(primarySpent.changeRaw);
+      const outputAmountRaw = primaryReceived.changeRaw;
+
+      // 🔥🔥🔥 ДЕТАЛЬНАЯ ОТЛАДКА ДЛЯ АНАЛИЗА РЕЗУЛЬТАТА 🔥🔥🔥
+      console.log(`\n🔍 [QuickNode] SWAP ANALYSIS FOR: ${transaction.signature?.slice(0,12)}...`);
+      console.log(`💸 SPENT: ${this.tokenMetadataService.getTokenSymbol(primarySpent.mint)} (${primarySpent.mint.slice(0,8)}...) = ${primarySpent.changeUI} (raw: ${primarySpent.changeRaw}) [$${primarySpent.usdValue.toFixed(2)}]`);
+      console.log(`💰 RECEIVED: ${this.tokenMetadataService.getTokenSymbol(primaryReceived.mint)} (${primaryReceived.mint.slice(0,8)}...) = ${primaryReceived.changeUI} (raw: ${primaryReceived.changeRaw}) [$${primaryReceived.usdValue.toFixed(2)}]`);
+      console.log(`📋 DIRECTION: ${this.tokenMetadataService.getTokenSymbol(inputMint)} → ${this.tokenMetadataService.getTokenSymbol(outputMint)}`);
+      console.log(`📊 AMOUNTS: input=${inputAmountRaw}, output=${outputAmountRaw}`);
+      
+      // Предварительная проверка - какой токен считается платежным
+      const inputSymbol = this.tokenMetadataService.getTokenSymbol(inputMint);
+      const outputSymbol = this.tokenMetadataService.getTokenSymbol(outputMint);
+      console.log(`🔍 EXPECTED: ${inputSymbol} is payment? ${['SOL','USDC','USDT','WSOL'].includes(inputSymbol)}`);
+      console.log(`🔍 EXPECTED: ${outputSymbol} is payment? ${['SOL','USDC','USDT','WSOL'].includes(outputSymbol)}`);
+
+      return { walletAddress, inputMint, outputMint, inputAmountRaw, outputAmountRaw };
 
     } catch (error) {
       return null;
+    }
+  }
+
+  // 🔥🔥🔥 НОВЫЙ МЕТОД: РАСЧЕТ USD СТОИМОСТИ ДЛЯ ОДНОГО ТОКЕНА 🔥🔥🔥
+  private async calculateTokenUSDValue(tokenMint: string, amountRaw: number): Promise<number> {
+    try {
+      const decimals = await this.tokenMetadataService.getDecimals(tokenMint);
+      const price = await this.tokenMetadataService.getTokenPrice(tokenMint);
+      
+      if (decimals === null || price === null) return 0;
+      
+      const tokenAmount = amountRaw / Math.pow(10, decimals);
+      return tokenAmount * price;
+    } catch (error) {
+      return 0;
     }
   }
 
