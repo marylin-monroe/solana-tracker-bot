@@ -35,14 +35,33 @@ export class SmartMoneyDatabase {
   }
 
   constructor() {
-    this.logger = Logger.getInstance();
-    const dbPath = process.env.SM_DATABASE_PATH || './data/smart_money.db';
-    const dir = path.dirname(dbPath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    this.db = new BetterSqlite3(dbPath);
+  this.logger = Logger.getInstance();
+  const dbPath = process.env.SM_DATABASE_PATH || './data/smart_money.db';
+  
+  const dir = path.dirname(dbPath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
   }
+
+  // 🔥 ЗАЩИТА ОТ ПОВРЕЖДЕННЫХ ФАЙЛОВ
+  if (fs.existsSync(dbPath)) {
+    try {
+      // Пытаемся открыть файл для проверки
+      const testDb = new BetterSqlite3(dbPath, { readonly: true });
+      testDb.prepare("SELECT name FROM sqlite_master LIMIT 1").all();
+      testDb.close();
+      this.logger.info(`✅ Existing SmartMoney database is valid`);
+    } catch (error) {
+      this.logger.warn(`⚠️ Corrupted SmartMoney database detected, recreating...`);
+      // Создаем бэкап поврежденного файла
+      const backupPath = `${dbPath}.corrupted.${Date.now()}`;
+      fs.renameSync(dbPath, backupPath);
+      this.logger.info(`📁 Corrupted file backed up to: ${path.basename(backupPath)}`);
+    }
+  }
+
+  this.db = new BetterSqlite3(dbPath);
+}
 
   async init(): Promise<void> {
     try {
