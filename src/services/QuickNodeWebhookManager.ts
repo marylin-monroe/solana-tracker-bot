@@ -683,9 +683,20 @@ export class QuickNodeWebhookManager {
       const spentTokens = Array.from(tokenChanges.values()).filter(c => c.changeUI < 0);
       const receivedTokens = Array.from(tokenChanges.values()).filter(c => c.changeUI > 0);
 
-      if (spentTokens.length === 1 && receivedTokens.length === 1) {
-        const spentToken = spentTokens[0];
-        const receivedToken = receivedTokens[0];
+      // 🔥🔥🔥 ИСПРАВЛЕНИЕ: Игнорируем SOL<->WSOL технические операции! 🔥🔥🔥
+      const solTokens = ['So11111111111111111111111111111111111111112', 'So11111111111111111111111111111111111111111'];
+      const spentTokensFiltered = spentTokens.filter(t => !solTokens.includes(t.mint));
+      const receivedTokensFiltered = receivedTokens.filter(t => !solTokens.includes(t.mint));
+
+      // Если есть реальные токены - используем их, иначе все токены (для чистых SOL/WSOL свапов)
+      const finalSpentTokens = spentTokensFiltered.length > 0 ? spentTokensFiltered : spentTokens;
+      const finalReceivedTokens = receivedTokensFiltered.length > 0 ? receivedTokensFiltered : receivedTokens;
+
+      console.log(`🔧 [QuickNode] FILTERING: spent ${spentTokens.length}→${finalSpentTokens.length}, received ${receivedTokens.length}→${finalReceivedTokens.length}`);
+
+      if (finalSpentTokens.length === 1 && finalReceivedTokens.length === 1) {
+        const spentToken = finalSpentTokens[0];
+        const receivedToken = finalReceivedTokens[0];
         
         const inputMint = spentToken.mint;
         const outputMint = receivedToken.mint;
@@ -709,6 +720,7 @@ export class QuickNodeWebhookManager {
         return { walletAddress, inputMint, outputMint, inputAmountRaw, outputAmountRaw };
       }
 
+      console.log(`⚠️ [QuickNode] Complex swap: ${finalSpentTokens.length} spent, ${finalReceivedTokens.length} received`);
       return null;
 
     } catch (error) {
