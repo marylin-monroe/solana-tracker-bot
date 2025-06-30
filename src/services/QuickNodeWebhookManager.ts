@@ -683,44 +683,25 @@ export class QuickNodeWebhookManager {
       const spentTokens = Array.from(tokenChanges.values()).filter(c => c.changeUI < 0);
       const receivedTokens = Array.from(tokenChanges.values()).filter(c => c.changeUI > 0);
 
-      // 🔥🔥🔥 НОВАЯ ЛОГИКА: ВЫБИРАЕМ САМЫЕ БОЛЬШИЕ ОПЕРАЦИИ ПО USD СТОИМОСТИ 🔥🔥🔥
+      // 🔥🔥🔥 ПРОСТАЯ ЛОГИКА: БЕРЕМ ЛЮБЫЕ ОПЕРАЦИИ, calculateSwapUSDValue() ОПРЕДЕЛИТ BUY/SELL 🔥🔥🔥
       if (spentTokens.length === 0 || receivedTokens.length === 0) {
         console.log(`⚠️ [QuickNode] No valid operations: spent=${spentTokens.length}, received=${receivedTokens.length}`);
         return null;
       }
 
-      // Рассчитываем USD для всех операций
-      const spentWithUSD = await Promise.all(spentTokens.map(async t => ({
-        ...t,
-        usdValue: await this.calculateTokenUSDValue(t.mint, Math.abs(t.changeRaw))
-      })));
+      // Берем первые операции (calculateSwapUSDValue определит buy/sell по payment токенам)
+      const spentToken = spentTokens[0];
+      const receivedToken = receivedTokens[0];
 
-      const receivedWithUSD = await Promise.all(receivedTokens.map(async t => ({
-        ...t,
-        usdValue: await this.calculateTokenUSDValue(t.mint, t.changeRaw)
-      })));
-
-      // Выбираем САМЫЕ БОЛЬШИЕ операции (не фильтруем!)
-      const primarySpent = spentWithUSD.reduce((max, curr) => 
-        curr.usdValue > max.usdValue ? curr : max
-      );
-
-      const primaryReceived = receivedWithUSD.reduce((max, curr) => 
-        curr.usdValue > max.usdValue ? curr : max
-      );
-
-      console.log(`🔧 [QuickNode] USD SELECTION: spent ${spentTokens.length} → PRIMARY: ${this.tokenMetadataService.getTokenSymbol(primarySpent.mint)} ($${primarySpent.usdValue.toFixed(2)})`);
-      console.log(`🔧 [QuickNode] USD SELECTION: received ${receivedTokens.length} → PRIMARY: ${this.tokenMetadataService.getTokenSymbol(primaryReceived.mint)} ($${primaryReceived.usdValue.toFixed(2)})`);
-
-      const inputMint = primarySpent.mint;
-      const outputMint = primaryReceived.mint;
-      const inputAmountRaw = Math.abs(primarySpent.changeRaw);
-      const outputAmountRaw = primaryReceived.changeRaw;
+      const inputMint = spentToken.mint;
+      const outputMint = receivedToken.mint;
+      const inputAmountRaw = Math.abs(spentToken.changeRaw);
+      const outputAmountRaw = receivedToken.changeRaw;
 
       // 🔥🔥🔥 ДЕТАЛЬНАЯ ОТЛАДКА ДЛЯ АНАЛИЗА РЕЗУЛЬТАТА 🔥🔥🔥
       console.log(`\n🔍 [QuickNode] SWAP ANALYSIS FOR: ${transaction.signature?.slice(0,12)}...`);
-      console.log(`💸 SPENT: ${this.tokenMetadataService.getTokenSymbol(primarySpent.mint)} (${primarySpent.mint.slice(0,8)}...) = ${primarySpent.changeUI} (raw: ${primarySpent.changeRaw}) [$${primarySpent.usdValue.toFixed(2)}]`);
-      console.log(`💰 RECEIVED: ${this.tokenMetadataService.getTokenSymbol(primaryReceived.mint)} (${primaryReceived.mint.slice(0,8)}...) = ${primaryReceived.changeUI} (raw: ${primaryReceived.changeRaw}) [$${primaryReceived.usdValue.toFixed(2)}]`);
+      console.log(`💸 SPENT: ${this.tokenMetadataService.getTokenSymbol(spentToken.mint)} (${spentToken.mint.slice(0,8)}...) = ${spentToken.changeUI} (raw: ${spentToken.changeRaw})`);
+      console.log(`💰 RECEIVED: ${this.tokenMetadataService.getTokenSymbol(receivedToken.mint)} (${receivedToken.mint.slice(0,8)}...) = ${receivedToken.changeUI} (raw: ${receivedToken.changeRaw})`);
       console.log(`📋 DIRECTION: ${this.tokenMetadataService.getTokenSymbol(inputMint)} → ${this.tokenMetadataService.getTokenSymbol(outputMint)}`);
       console.log(`📊 AMOUNTS: input=${inputAmountRaw}, output=${outputAmountRaw}`);
       
@@ -734,21 +715,6 @@ export class QuickNodeWebhookManager {
 
     } catch (error) {
       return null;
-    }
-  }
-
-  // 🔥🔥🔥 НОВЫЙ МЕТОД: РАСЧЕТ USD СТОИМОСТИ ДЛЯ ОДНОГО ТОКЕНА 🔥🔥🔥
-  private async calculateTokenUSDValue(tokenMint: string, amountRaw: number): Promise<number> {
-    try {
-      const decimals = await this.tokenMetadataService.getDecimals(tokenMint);
-      const price = await this.tokenMetadataService.getTokenPrice(tokenMint);
-      
-      if (decimals === null || price === null) return 0;
-      
-      const tokenAmount = amountRaw / Math.pow(10, decimals);
-      return tokenAmount * price;
-    } catch (error) {
-      return 0;
     }
   }
 
