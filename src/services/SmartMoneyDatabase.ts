@@ -93,7 +93,7 @@ export class SmartMoneyDatabase {
           priority TEXT DEFAULT "medium",
           added_by TEXT DEFAULT "discovery",
           verified BOOLEAN DEFAULT 0,
-          min_trade_alert REAL DEFAULT 5000,
+          min_trade_alert REAL DEFAULT 2000,
           description TEXT,
           
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP,

@@ -612,7 +612,7 @@ export class WebhookServer {
   // 🔥🔥🔥 ДЕМОНТАЖ ИЗБЫТОЧНЫХ ФИЛЬТРОВ - ДОВЕРЯЕМ ОТОБРАННЫМ КОШЕЛЬКАМ! 🔥🔥🔥
   private shouldProcessSmartMoneySwap(swapInfo: SmartMoneySwap, smartWallet: SmartMoneyWallet): boolean {
     // 🔥 ЕДИНСТВЕННЫЙ ФИЛЬТР: Мы доверяем кошельку, поэтому проверяем только минимальную сумму сделки.
-    return swapInfo.amountUSD >= 700;
+    return swapInfo.amountUSD >= 2000;
   }
 
   private async validateSmartMoneyTransaction(

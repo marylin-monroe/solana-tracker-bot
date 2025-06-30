@@ -138,9 +138,6 @@ class SmartMoneyBotRunner {
       await this.database.init();
       await this.smDatabase.init();
 
-      // 🔥 ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ" - ДЕМОНСТРАЦИЯ ЕДИНОГО РАСЧЕТНОГО ЦЕНТРА
-      await this.demonstrateProtocol();
-
       // Инициализация провайдеров
       await this.multiProviderService.init();
 
@@ -210,64 +207,6 @@ class SmartMoneyBotRunner {
     }
   }
 
-  // 🔥🔥🔥 ДЕМОНСТРАЦИЯ ПРОТОКОЛА "ПОЛНЫЙ КОНТРОЛЬ" 🔥🔥🔥
-  private async demonstrateProtocol(): Promise<void> {
-    this.logger.info('🔥 Demonstrating ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ" capabilities...');
-
-    try {
-      // 🔥 ТЕСТ 1: ЕДИНЫЙ РАСЧЕТНЫЙ ЦЕНТР
-      this.logger.info('🔥 Testing Единый Расчетный Центр...');
-      
-      // Симуляция валидного свапа SOL → BONK (покупка)
-      const testSwap1 = await this.tokenMetadataService.calculateSwapUSDValue(
-        'So11111111111111111111111111111111111111112', // SOL
-        1000000000, // 1 SOL (raw)
-        'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263', // BONK
-        1000000000000 // BONK amount (raw)
-      );
-
-      if (testSwap1) {
-        this.logger.info(`✅ Единый Расчетный Центр Test 1: ${testSwap1.swapType.toUpperCase()} - $${testSwap1.amountUSD.toFixed(2)}`);
-      }
-
-      // Симуляция нецелевого свапа USDC → USDT (должен быть отфильтрован)
-      const testSwap2 = await this.tokenMetadataService.calculateSwapUSDValue(
-        'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
-        1000000, // $1 USDC (raw)
-        'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
-        1000000 // $1 USDT (raw)
-      );
-
-      if (!testSwap2) {
-        this.logger.info(`✅ Единый Расчетный Центр Test 2: Payment→Payment swap correctly filtered`);
-      }
-
-      // 🔥 ТЕСТ 2: СТАТИСТИКА SolanaMonitor
-      const aggregationStats = this.solanaMonitor.getAggregationStats();
-      this.logger.info(`✅ SolanaMonitor Integration: ${aggregationStats.activePositions} active positions, filtering efficiency: ${aggregationStats.filteringStats.filteringEfficiency}`);
-
-      // 🔥 ТЕСТ 3: ИНТЕГРАЦИЯ С SmartMoneyFlowAnalyzer
-      this.logger.info('✅ SmartMoneyFlowAnalyzer ready with SolanaMonitor integration');
-
-      await this.telegramNotifier.sendCycleLog(
-        `🔥 <b>ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ" Demonstration</b>\n\n` +
-        `✅ <b>Единый Расчетный Центр:</b> WORKING\n` +
-        `${testSwap1 ? `💰 Test Swap: ${testSwap1.swapType.toUpperCase()} $${testSwap1.amountUSD.toFixed(2)}` : ''}\n` +
-        `🚫 Payment→Payment: FILTERED\n\n` +
-        `✅ <b>Position Aggregation:</b> ACTIVE\n` +
-        `📊 Active Positions: <code>${aggregationStats.activePositions}</code>\n` +
-        `🎯 Filter Efficiency: <code>${aggregationStats.filteringStats.filteringEfficiency}</code>\n\n` +
-        `✅ <b>Integration:</b> COMPLETE\n` +
-        `🔗 SolanaMonitor ↔ SmartMoneyFlowAnalyzer: CONNECTED\n` +
-        `🔗 QuickNodeWebhookManager dependencies: FIXED\n` +
-        `🔗 Wallet loading synchronization: FIXED`
-      );
-
-    } catch (error) {
-      this.logger.error('Error demonstrating ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ":', error);
-    }
-  }
-
   private setupPeriodicTasks(): void {
     this.logger.info('⏰ Setting up periodic tasks for ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ"...');
 
@@ -329,16 +268,6 @@ class SmartMoneyBotRunner {
       }
     }, 4 * 60 * 60 * 1000); // 4 часа
     this.intervalIds.push(walletUpdateInterval);
-
-    // Статистика и состояние системы (каждые 5 минут)
-    const statsInterval = setInterval(async () => {
-      try {
-        await this.sendSystemStats();
-      } catch (error) {
-        this.logger.error('Error sending system stats:', error);
-      }
-    }, 5 * 60 * 1000); // 5 минут
-    this.intervalIds.push(statsInterval);
 
     this.logger.info('✅ Periodic tasks configured for ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ"');
   }
@@ -422,26 +351,14 @@ class SmartMoneyBotRunner {
 
   private async sendStartupNotification(): Promise<void> {
     try {
-      const mode = this.webhookId === 'polling-mode' ? 'Polling (2 min)' : 'Webhooks';
+      const mode = this.webhookId === 'polling-mode' ? 'Polling' : 'Webhooks';
       const stats = await this.smDatabase.getWalletStats();
       
       await this.telegramNotifier.sendCycleLog(
-        `🚀 <b>Smart Money Bot Started (СИНХРОНИЗАЦИЯ ИСПРАВЛЕНА)!</b>\n\n` +
-        `🔥 <b>ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ" ACTIVE</b>\n` +
-        `✅ Единый Расчетный Центр: <code>ONLINE</code>\n` +
-        `✅ Position Aggregation: <code>ACTIVE</code>\n` +
-        `✅ Payment→Payment Filtering: <code>ENABLED</code>\n` +
-        `✅ SolanaMonitor Integration: <code>CONNECTED</code>\n` +
-        `✅ QuickNode Dependencies: <code>FIXED</code>\n` +
-        `✅ Wallet Loading Sync: <code>FIXED</code>\n\n` +
-        `🔄 Mode: <code>${mode}</code>\n` +
-        `👥 Wallets: <code>${stats.total}</code> | 💰 Tracking: $5K+ \n` +
-        `📊 <b>Entry Criteria:</b> Profit7d≥$20K, WR7d≥51%, SOL≥30, Activity≥1\n` +
-        `🔄 <b>Source:</b> Bulk Wallet Checker CSV\n\n` +
-        `💎 Ready to detect split positions and accurate USD values!\n` +
-        `🎯 No more false "billion dollar" transactions!\n` +
-        `🔄 Dragon CSV loaded BEFORE monitoring started!\n` +
-        `🔄 Polling auto-refreshes wallet list every cycle!\n` +
+        `KORSOL & DRAGON\n\n` +
+        `📊 Wallets: <code>${stats.total}</code> active\n` +
+        `🎯 Mode: <code>${mode}</code>\n` +
+        `⚡ System: <code>Online</code>\n` +
         `⏰ <code>${new Date().toLocaleString()}</code>`
       );
     } catch (error) {
@@ -464,45 +381,6 @@ class SmartMoneyBotRunner {
 
   private sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
-  }
-
-  private async sendSystemStats(): Promise<void> {
-    try {
-      // 🔥 ДЕТАЛЬНАЯ СТАТИСТИКА ПРОТОКОЛА "ПОЛНЫЙ КОНТРОЛЬ"
-      const aggregationStats = this.solanaMonitor.getAggregationStats();
-      const detectionStats = this.solanaMonitor.getDetectionStats();
-      const flowCacheStats = this.flowAnalyzer.getCacheStats();
-      const tokenCacheStats = this.tokenMetadataService.getCacheStats();
-
-      const message = 
-        `📊 <b>ПРОТОКОЛ "ПОЛНЫЙ КОНТРОЛЬ" Statistics</b>\n\n` +
-        
-        `🔥 <b>Единый Расчетный Центр:</b>\n` +
-        `💰 Token Cache: <code>${tokenCacheStats.totalCached}</code>\n` +
-        `💲 Price Cache: <code>${tokenCacheStats.priceCacheSize}</code>\n` +
-        `🏷️ Jupiter Tokens: <code>${tokenCacheStats.jupiterTokens}</code>\n\n` +
-        
-        `🎯 <b>Position Aggregation:</b>\n` +
-        `📊 Active: <code>${aggregationStats.activePositions}</code>\n` +
-        `🚨 Detected: <code>${detectionStats.totalDetected}</code>\n` +
-        `⚠️ High Risk: <code>${detectionStats.highRiskDetected}</code>\n` +
-        `📨 Alerts: <code>${detectionStats.alertsSent}</code>\n\n` +
-        
-        `🎛️ <b>Filtering Efficiency:</b>\n` +
-        `📊 Processed: <code>${aggregationStats.filteringStats.totalTransactionsProcessed}</code>\n` +
-        `🚫 Payment→Payment: <code>${aggregationStats.filteringStats.paymentToPaymentFiltered}</code>\n` +
-        `✅ Valid Swaps: <code>${aggregationStats.filteringStats.validSwapsProcessed}</code>\n` +
-        `🎯 Efficiency: <code>${aggregationStats.filteringStats.filteringEfficiency}</code>\n\n` +
-        
-        `💾 <b>Cache Performance:</b>\n` +
-        `🎯 Hit Rate: <code>${aggregationStats.cacheStats.cacheHitRate}</code>\n` +
-        `🔍 Wallet Cache: <code>${aggregationStats.cacheStats.walletAnalysisCache}</code>\n` +
-        `🪙 Token Cache: <code>${aggregationStats.cacheStats.tokenAnalysisCache}</code>`;
-
-      await this.telegramNotifier.sendCycleLog(message);
-    } catch (error) {
-      this.logger.error('Error sending system stats:', error);
-    }
   }
 
   private setupSignalHandlers(): void {

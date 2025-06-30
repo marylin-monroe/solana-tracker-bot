@@ -47,7 +47,7 @@ export class TokenMetadataService {
 
   private readonly CACHE_TTL = {
     TOKEN_METADATA: 60 * 60 * 1000,      // 1 час
-    PRICE_DATA: 8 * 60 * 1000,           // 🔥 8 минут (вместо 5)
+    PRICE_DATA: 60 * 60 * 1000,           // 🔥 60 минут (вместо 5)
     FDV_DATA: 15 * 60 * 1000,            // 15 минут
     SUPPLY_DATA: 60 * 60 * 1000,         // 1 час
     JUPITER_UPDATE: 60 * 60 * 1000       // 1 час

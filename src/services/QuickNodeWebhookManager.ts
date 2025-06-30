@@ -629,7 +629,7 @@ export class QuickNodeWebhookManager {
 
       console.log(`✅ Value calculation SUCCESS: $${amountUSD.toFixed(2)} ${swapType}`);
 
-      if (amountUSD >= 700) {
+      if (amountUSD >= 2000) {
         const tokenInfo = await this.getTokenInfoCached(tokenAddress);
         const paymentTokenInfo = await this.getTokenInfoCached(paymentToken);
 
@@ -664,7 +664,7 @@ export class QuickNodeWebhookManager {
         await this.saveAndNotifySwap(smartMoneySwap);
         console.log(`🚀 SWAP NOTIFICATION SENT: ${smartMoneySwap.tokenSymbol} - $${smartMoneySwap.amountUSD.toFixed(0)}`);
       } else {
-        console.log(`💸 Swap below $700 threshold: $${amountUSD.toFixed(2)}`);
+        console.log(`💸 Swap below $2000 threshold: $${amountUSD.toFixed(2)}`);
       }
 
     } catch (error) {
