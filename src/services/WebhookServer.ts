@@ -217,7 +217,6 @@ export class WebhookServer {
     this.setupMiddleware();
     this.setupRoutes();
     this.startCacheCleanup();
-    this.logger.info('🚀 WebhookServer ENHANCED: 🔥 ПРОТОКОЛ "ЖЕЛЕЗНЫЙ ДОЛЛАР" + ПРАВИЛЬНОЕ ИЗВЛЕЧЕНИЕ БАЛАНСОВ');
   }
 
   private setupMiddleware(): void {
@@ -341,13 +340,11 @@ export class WebhookServer {
     const transactionAge = Math.abs(now - transactionTime);
 
     if (transactionAge > maxAge) {
-        this.logger.debug(`🚫 Transaction too old: ${Math.floor(transactionAge / (60 * 1000))} minutes`);
         return false;
     }
     
     // Также проверяем, есть ли ошибка в метаданных
     if (txData.meta?.err) {
-        this.logger.debug(`🚫 Invalid transaction: Has errors in meta`);
         return false;
     }
 
@@ -372,7 +369,7 @@ export class WebhookServer {
 
       this.processingStats.balancesExtracted++;
       
-      // 🔥🔥🔥 ИСПОЛЬЗУЕМ УНИВЕРСАЛЬНУЮ ФУНКЦИЮ ИЗВЛЕЧЕНИЯ СВАПОВ 🔥🔥🔥
+      // 🔥🔥🔥 ИСПОЛЬЗУЕМ УНИФИЦИРОВАННУЮ ФУНКЦИЮ ИЗВЛЕЧЕНИЯ СВАПОВ 🔥🔥🔥
       const swapInfo = await this.extractSwapInfoFromBalances(txData);
       if (!swapInfo) return;
 
@@ -396,7 +393,7 @@ export class WebhookServer {
     }
   }
 
-  // 🔥🔥🔥 УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ИЗВЛЕЧЕНИЯ СВАПОВ - ФИНАЛЬНАЯ ВЕРСИЯ 🔥🔥🔥
+  // 🔥🔥🔥 УНИФИЦИРОВАННАЯ ФУНКЦИЯ ИЗВЛЕЧЕНИЯ СВАПОВ - ИДЕНТИЧНА QuickNodeWebhookManager 🔥🔥🔥
  private async extractSwapInfoFromBalances(txData: SolanaWebhookPayload): Promise<{
     walletAddress: string; inputMint: string; outputMint: string;
     inputAmountRaw: number; outputAmountRaw: number;
@@ -410,13 +407,9 @@ export class WebhookServer {
       const postTokenBalances = transaction.meta.postTokenBalances || [];
       const walletAddress = this.extractWalletAddressFromTransaction(transaction);
 
-      if (!walletAddress) {
-        this.logger.debug(`[extractSwapInfoFromBalances] Cannot determine wallet address`);
-        return null;
-      }
+      if (!walletAddress) return null;
 
-      console.log(`🔍 DEBUG TX: ${transaction.signature?.slice(0,12)}...`);
-
+      // 🔥 УНИФИЦИРОВАННАЯ СТРУКТУРА: используем changeRaw как в QuickNodeWebhookManager
       const tokenChanges = new Map<string, { changeUI: number, changeRaw: number, mint: string, decimals: number }>();
 
       // Анализ существующих токен-аккаунтов
@@ -434,7 +427,6 @@ export class WebhookServer {
         const changeRaw = postAmountRaw - preAmountRaw;
         
         if (Math.abs(changeUI) > 1e-9) {
-          console.log(`📊 Token: ${this.tokenMetadataService.getTokenSymbol(pre.mint)} = ${changeUI > 0 ? '+' : ''}${changeUI.toFixed(6)}`);
           tokenChanges.set(pre.mint, { 
             changeUI, 
             changeRaw,
@@ -454,7 +446,6 @@ export class WebhookServer {
           const changeRaw = parseInt(post.uiTokenAmount.amount || '0');
           
           if (changeUI > 1e-9) {
-            console.log(`🆕 New: ${this.tokenMetadataService.getTokenSymbol(post.mint)} = +${changeUI.toFixed(6)}`);
             tokenChanges.set(post.mint, { 
               changeUI, 
               changeRaw,
@@ -479,7 +470,6 @@ export class WebhookServer {
         const solChangeUI = solChangeRaw / 1e9;
         
         if (Math.abs(solChangeUI) > 0.01) {
-          console.log(`💰 SOL: ${solChangeUI > 0 ? '+' : ''}${solChangeUI.toFixed(6)}`);
           tokenChanges.set('So11111111111111111111111111111111111111112', {
             changeUI: solChangeUI,
             changeRaw: solChangeRaw,
@@ -489,14 +479,9 @@ export class WebhookServer {
         }
       }
 
+      // 🔥 УНИФИЦИРОВАННАЯ ЛОГИКА: используем changeUI для фильтрации, changeRaw для расчетов
       const spentTokens = Array.from(tokenChanges.values()).filter(c => c.changeUI < 0);
       const receivedTokens = Array.from(tokenChanges.values()).filter(c => c.changeUI > 0);
-
-      console.log(`💸 SPENT (${spentTokens.length}):`);
-      spentTokens.forEach(t => console.log(`   - ${this.tokenMetadataService.getTokenSymbol(t.mint)}: ${t.changeUI.toFixed(6)}`));
-      
-      console.log(`💰 RECEIVED (${receivedTokens.length}):`);
-      receivedTokens.forEach(t => console.log(`   + ${this.tokenMetadataService.getTokenSymbol(t.mint)}: ${t.changeUI.toFixed(6)}`));
 
       if (spentTokens.length === 1 && receivedTokens.length === 1) {
         const spentToken = spentTokens[0];
@@ -504,16 +489,14 @@ export class WebhookServer {
         
         const inputMint = spentToken.mint;
         const outputMint = receivedToken.mint;
+        // 🔥 УНИФИЦИРОВАНО: используем changeRaw напрямую, как в QuickNodeWebhookManager
         const inputAmountRaw = Math.abs(spentToken.changeRaw);
         const outputAmountRaw = receivedToken.changeRaw;
 
-        console.log(`🎯 SWAP DIRECTION: ${this.tokenMetadataService.getTokenSymbol(inputMint)} → ${this.tokenMetadataService.getTokenSymbol(outputMint)}`);
-
         return { walletAddress, inputMint, outputMint, inputAmountRaw, outputAmountRaw };
-      } else {
-        console.log(`⚠️ Complex: ${spentTokens.length} spent, ${receivedTokens.length} received`);
-        return null;
       }
+
+      return null;
 
     } catch (error) {
       this.logger.error('[extractSwapInfoFromBalances] Error:', error);
@@ -834,7 +817,6 @@ export class WebhookServer {
     return new Promise((resolve, reject) => {
       try {
         this.server = this.app.listen(this.port, () => {
-          this.logger.info(`🚀 Webhook server started on port ${this.port} with 🔥 ПРОТОКОЛ "ЖЕЛЕЗНЫЙ ДОЛЛАР" + ПРАВИЛЬНОЕ ИЗВЛЕЧЕНИЕ БАЛАНСОВ`);
           resolve();
         });
 
@@ -854,7 +836,6 @@ export class WebhookServer {
     return new Promise((resolve) => {
       if (this.server) {
         this.server.close(() => {
-          this.logger.info('⏹️ Webhook server stopped');
           resolve();
         });
       } else {

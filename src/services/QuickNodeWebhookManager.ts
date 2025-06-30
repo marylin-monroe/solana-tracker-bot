@@ -114,12 +114,10 @@ export class QuickNodeWebhookManager {
     this.initializeProviders();
     this.startLimitResetTimer();
     this.startCacheCleanup();
-    this.logger.info(`🔥 QuickNodeWebhookManager: ПОЛНОСТЬЮ ИСПРАВЛЕН - ПРОТОКОЛ "ЖЕЛЕЗНЫЙ ДОЛЛАР" + ПРАВИЛЬНОЕ ИЗВЛЕЧЕНИЕ БАЛАНСОВ`);
   }
 
   setTelegramNotifier(telegramNotifier: TelegramNotifier): void {
     this.telegramNotifier = telegramNotifier;
-    this.logger.info('TelegramNotifier set for QuickNode');
   }
 
   private initializeProviders(): void {
@@ -147,13 +145,11 @@ export class QuickNodeWebhookManager {
     }
 
     this.providers = providers.sort((a, b) => b.priority - a.priority);
-    this.logger.info(`Initialized ${this.providers.length} RPC providers`);
   }
 
   setDependencies(smDatabase: SmartMoneyDatabase, telegramNotifier: TelegramNotifier): void {
     this.smDatabase = smDatabase;
     this.telegramNotifier = telegramNotifier;
-    this.logger.info('QuickNode dependencies set');
   }
 
   private startLimitResetTimer(): void {
@@ -188,7 +184,6 @@ export class QuickNodeWebhookManager {
       if (this.recentSignatures.size > 1000 && now - this.lastCleanupTime > 10 * 60 * 1000) {
         this.recentSignatures.clear();
         this.lastCleanupTime = now;
-        this.logger.debug('Simple signature cleanup performed');
       }
     }, 5 * 60 * 1000);
   }
@@ -298,18 +293,13 @@ export class QuickNodeWebhookManager {
     
     const syncEfficiency = this.syncStats.totalPollingCycles > 0 ? 
       ((this.syncStats.totalPollingCycles - this.syncStats.emptyListCycles) / this.syncStats.totalPollingCycles * 100).toFixed(1) : '100';
-    
-    this.logger.info(`API: ${minuteUsage}%/min, ${dayUsage}%/day | Provider: ${currentProvider?.name || 'None'} | Healthy: ${healthyProviders}/${this.providers.length} | Errors: ${this.errorStats.walletProcessingErrors} wallet, ${this.errorStats.apiErrors} API | Sync: ${syncEfficiency}% efficiency`);
   }
 
   async createSmartMoneyWebhook(webhookUrl: string): Promise<string> {
     try {
-      this.logger.info('Creating Smart Money webhook...');
-
       if (!this.canMakeRequest()) {
         this.logger.warn('API limit reached, switching to polling mode');
         const smartWallets = await this.smDatabase.getAllActiveSmartWallets();
-        this.logger.info(`FALLBACK: Fetched ${smartWallets.length} wallets from database for polling mode`);
         return await this.startPollingMode(smartWallets);
       }
 
@@ -342,14 +332,12 @@ export class QuickNodeWebhookManager {
 
       const responseData = await response.json();
       const streamResponse: QuickNodeStreamResponse = responseData as QuickNodeStreamResponse;
-      this.logger.info(`Smart Money webhook created: ${streamResponse.id}`);
       
       return streamResponse.id;
 
     } catch (error) {
       this.logger.warn('Webhook creation failed, falling back to polling:', error);
       const smartWallets = await this.smDatabase.getAllActiveSmartWallets();
-      this.logger.info(`FALLBACK: Fetched ${smartWallets.length} wallets from database for polling mode after webhook failure`);
       return await this.startPollingMode(smartWallets);
     }
   }
@@ -368,8 +356,6 @@ export class QuickNodeWebhookManager {
         this.stopPollingMode();
         return;
       }
-
-      this.logger.info(`Deleting QuickNode stream: ${streamId}`);
 
       if (!this.canMakeRequest()) {
         this.logger.warn('Cannot delete stream - API limit reached');
@@ -391,8 +377,6 @@ export class QuickNodeWebhookManager {
         throw new Error(`HTTP error! status: ${response.status}, body: ${errorText}`);
       }
 
-      this.logger.info(`Stream deleted successfully: ${streamId}`);
-
     } catch (error) {
       this.logger.error('Error deleting stream:', error);
       throw error;
@@ -401,9 +385,6 @@ export class QuickNodeWebhookManager {
 
   async startPollingMode(smartWallets: SmartMoneyWallet[]): Promise<string> {
     try {
-      console.log('=== POLLING MODE START ===');
-      console.log(`Starting polling mode with ${smartWallets.length} wallets`);
-      
       this.monitoredWallets = smartWallets;
       this.isPollingActive = true;
       
@@ -415,7 +396,6 @@ export class QuickNodeWebhookManager {
       
       await this.pollWalletsForTransactions();
       
-      this.logger.info(`Polling mode activated for ${smartWallets.length} wallets`);
       return 'polling-mode';
       
     } catch (error) {
@@ -430,28 +410,14 @@ export class QuickNodeWebhookManager {
       this.pollingInterval = null;
     }
     this.isPollingActive = false;
-    this.logger.info('Polling mode stopped');
   }
 
   private async pollWalletsForTransactions(): Promise<void> {
-    console.log('=== POLLING CYCLE START ===');
-    console.log(`Time: ${new Date().toISOString()}`);
-    console.log(`Polling active: ${this.isPollingActive}`);
-    console.log(`Database connection: ${this.smDatabase ? 'OK' : 'NULL'}`);
-    
-    if (!this.isPollingActive || !this.smDatabase) {
-      console.log('POLLING STOPPED: inactive or no database');
-      return;
-    }
+    if (!this.isPollingActive || !this.smDatabase) return;
 
     try {
       const previousCount = this.monitoredWallets.length;
       this.monitoredWallets = await this.smDatabase.getAllActiveSmartWallets();
-      
-      console.log(`Wallets loaded from database: ${this.monitoredWallets.length}`);
-      if (this.monitoredWallets.length > 0) {
-        console.log(`First 3 wallets: ${this.monitoredWallets.slice(0,3).map(w => w.address.slice(0,8)).join(', ')}`);
-      }
       
       this.syncStats.totalPollingCycles++;
       this.syncStats.walletListUpdates++;
@@ -459,8 +425,6 @@ export class QuickNodeWebhookManager {
       this.syncStats.lastWalletListUpdate = new Date();
       
       if (this.monitoredWallets.length !== previousCount) {
-        console.log(`WALLET LIST UPDATED: ${previousCount} -> ${this.monitoredWallets.length}`);
-        
         if (this.telegramNotifier && Math.abs(this.monitoredWallets.length - previousCount) >= 5) {
           await this.telegramNotifier.sendCycleLog(
             `Wallet List Auto-Update\n\n` +
@@ -473,19 +437,15 @@ export class QuickNodeWebhookManager {
       }
       
     } catch (error) {
-      console.log('CRITICAL: Failed to update wallet list from database:', error);
       this.errorStats.walletProcessingErrors++;
       return;
     }
     
     if (this.monitoredWallets.length === 0) {
-      console.log('NO WALLETS TO MONITOR - waiting for next cycle');
       this.syncStats.emptyListCycles++;
       return;
     }
 
-    console.log(`Starting wallet processing: ${this.monitoredWallets.length} wallets, ${this.CONCURRENT_WALLET_PROCESSING} concurrent`);
-    
     const activeWallets = this.monitoredWallets;
     let totalProcessed = 0;
     let totalErrors = 0;
@@ -494,8 +454,6 @@ export class QuickNodeWebhookManager {
       if (!this.isPollingActive) break;
 
       const walletSubBatch = activeWallets.slice(i, i + this.CONCURRENT_WALLET_PROCESSING);
-      console.log(`Processing wallet batch ${Math.floor(i/this.CONCURRENT_WALLET_PROCESSING) + 1}: [${walletSubBatch.map(w => w.address.slice(0,6)).join(', ')}]`);
-
       const batchPromises = walletSubBatch.map(wallet => this.processWalletBatchSafely(wallet));
       const results = await Promise.allSettled(batchPromises);
       
@@ -506,27 +464,20 @@ export class QuickNodeWebhookManager {
         } else {
           totalErrors++;
           this.errorStats.walletProcessingErrors++;
-          console.log(`CRITICAL: Wallet batch promise rejected: ${result.reason}`);
         }
       }
 
       if (i + this.CONCURRENT_WALLET_PROCESSING < activeWallets.length) {
-        console.log(`Pausing ${this.DELAY_BETWEEN_WALLETS}ms between wallet batches...`);
         await this.sleep(this.DELAY_BETWEEN_WALLETS);
       }
     }
     
-    console.log(`POLLING CYCLE COMPLETE: ${totalProcessed} processed, ${totalErrors} errors, ${activeWallets.length} total wallets`);
     this.logApiUsageWithProviderStats();
   }
 
   private async processWalletBatchSafely(wallet: SmartMoneyWallet): Promise<'success' | 'error'> {
-    console.log(`--- Processing wallet: ${wallet.address.slice(0,8)} ---`);
-    console.log(`Can make request: ${this.canMakeRequest()}`);
-    
     try {
       if (!this.canMakeRequest()) {
-        console.log(`API limit reached for wallet ${wallet.address.slice(0,8)}`);
         await this.sleep(10000);
         return 'error';
       }
@@ -535,11 +486,8 @@ export class QuickNodeWebhookManager {
       try {
         signatures = await this.getWalletSignatures(wallet.address);
       } catch (error) {
-        console.log(`Error getting signatures for ${wallet.address.slice(0, 8)}: ${error}`);
         return 'error';
       }
-      
-      console.log(`Wallet ${wallet.address.slice(0,8)}: found ${signatures.length} recent signatures`);
       
       if (signatures.length > 0) {
         let transactionErrors = 0;
@@ -550,12 +498,7 @@ export class QuickNodeWebhookManager {
           } catch (error) {
             transactionErrors++;
             this.errorStats.transactionProcessingErrors++;
-            console.log(`Error processing transaction ${sig.signature.slice(0, 12)} for ${wallet.address.slice(0, 8)}: ${error}`);
           }
-        }
-        
-        if (transactionErrors > 0) {
-          console.log(`Wallet ${wallet.address.slice(0, 8)}: ${transactionErrors}/${signatures.length} transactions failed`);
         }
       }
       
@@ -565,20 +508,14 @@ export class QuickNodeWebhookManager {
     } catch (error) {
       this.errorStats.walletProcessingErrors++;
       this.errorStats.lastErrorTime = new Date();
-      console.log(`CRITICAL ERROR processing wallet ${wallet.address.slice(0, 8)}: ${error}`);
       await this.sleep(500);
       return 'error';
     }
   }
 
   private async processWalletTransactionSafely(signature: string, wallet: SmartMoneyWallet): Promise<void> {
-    console.log(`Processing transaction: ${signature.slice(0,12)} for wallet: ${wallet.address.slice(0,8)}`);
-    
     try {
-      if (this.recentSignatures.has(signature)) {
-        console.log(`Skipping duplicate transaction: ${signature.slice(0,12)}`);
-        return;
-      }
+      if (this.recentSignatures.has(signature)) return;
       this.recentSignatures.add(signature);
 
       if (!this.canMakeRequest()) return;
@@ -589,45 +526,27 @@ export class QuickNodeWebhookManager {
       try {
         transaction = await this.getTransactionDetails(signature);
       } catch (error) {
-        console.log(`Error getting transaction details for ${signature.slice(0, 12)}: ${error}`);
         return;
       }
       
-      if (!transaction) {
-        console.log(`No transaction details for ${signature.slice(0,12)}`);
-        return;
-      }
+      if (!transaction) return;
       
-      console.log(`Transaction details received for ${signature.slice(0,12)}, processing swaps...`);
-
       if (!this.isTransactionRecentAndValid(transaction)) {
-        const transactionAge = this.getTransactionAge(transaction);
-        console.log(`Skipping old/invalid transaction: ${signature.slice(0, 12)} (age: ${transactionAge})`);
         return;
       }
 
-      // 🔥🔥🔥 ИСПОЛЬЗУЕМ УНИВЕРСАЛЬНУЮ ФУНКЦИЮ ИЗВЛЕЧЕНИЯ СВАПОВ 🔥🔥🔥
+      // 🔥🔥🔥 ИСПОЛЬЗУЕМ УНИФИЦИРОВАННУЮ ФУНКЦИЮ ИЗВЛЕЧЕНИЯ СВАПОВ 🔥🔥🔥
       const swapInfo = await this.extractSwapInfoFromBalances(transaction);
-      if (!swapInfo) {
-        console.log(`No valid swap found in transaction ${signature.slice(0,12)}`);
-        return;
-      }
-
-      console.log(`🎯 Perfect swap detected: ${swapInfo.inputMint.slice(0,8)}... → ${swapInfo.outputMint.slice(0,8)}...`);
+      if (!swapInfo) return;
 
       // Вызываем единый расчетный центр
       const valueCalculation = await this.tokenMetadataService.calculateSwapUSDValue(
         swapInfo.inputMint, swapInfo.inputAmountRaw, swapInfo.outputMint, swapInfo.outputAmountRaw
       );
 
-      if (!valueCalculation) {
-        console.log(`❌ Value calculation FAILED - swap filtered out by unified calculator`);
-        return;
-      }
+      if (!valueCalculation) return;
 
       const { amountUSD, swapType, tokenAddress, paymentToken, paymentTokenAmount, paymentTokenPrice } = valueCalculation;
-
-      console.log(`✅ Value calculation SUCCESS: $${amountUSD.toFixed(2)} ${swapType}`);
 
       if (amountUSD >= 2000) {
         const tokenInfo = await this.getTokenInfoCached(tokenAddress);
@@ -660,116 +579,125 @@ export class QuickNodeWebhookManager {
           isFamilyMember: false,
         };
 
-        console.log(`🎉 SWAP CREATED: ${tokenInfo.symbol} - $${amountUSD.toFixed(2)} - ${swapType}`);
         await this.saveAndNotifySwap(smartMoneySwap);
-        console.log(`🚀 SWAP NOTIFICATION SENT: ${smartMoneySwap.tokenSymbol} - $${smartMoneySwap.amountUSD.toFixed(0)}`);
-      } else {
-        console.log(`💸 Swap below $2000 threshold: $${amountUSD.toFixed(2)}`);
       }
 
     } catch (error) {
       this.errorStats.transactionProcessingErrors++;
-      console.log(`CRITICAL ERROR processing transaction ${signature.slice(0, 12)}: ${error}`);
       throw error;
     }
   }
 
-  // 🔥🔥🔥 УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ИЗВЛЕЧЕНИЯ СВАПОВ - ФИНАЛЬНАЯ ВЕРСИЯ 🔥🔥🔥
+  // 🔥🔥🔥 УНИФИЦИРОВАННАЯ ФУНКЦИЯ ИЗВЛЕЧЕНИЯ СВАПОВ - ИДЕНТИЧНА WebhookServer 🔥🔥🔥
   private async extractSwapInfoFromBalances(txData: any): Promise<{
     walletAddress: string; inputMint: string; outputMint: string;
     inputAmountRaw: number; outputAmountRaw: number;
   } | null> {
     try {
-      // В QuickNodeWebhookManager txData - это уже объект транзакции
       const transaction = txData;
-      
       if (!transaction?.meta) return null;
 
       const preTokenBalances = transaction.meta.preTokenBalances || [];
       const postTokenBalances = transaction.meta.postTokenBalances || [];
-      
-      // 🔥 ИСПРАВЛЕНИЕ №1: Правильный путь к accountKeys
-      const accountKeys = transaction.transaction?.message?.accountKeys || [];
       const walletAddress = this.extractWalletAddressFromTransaction(transaction);
 
       if (!walletAddress) return null;
 
-      const tokenChanges = new Map<string, { change: number, mint: string, decimals: number }>();
+      // 🔥 УНИФИЦИРОВАННАЯ СТРУКТУРА: используем changeRaw как в WebhookServer
+      const tokenChanges = new Map<string, { changeUI: number, changeRaw: number, mint: string, decimals: number }>();
 
       // Анализ существующих токен-аккаунтов
       for (const pre of preTokenBalances) {
-      if (pre.owner !== walletAddress) continue;
-      const post = postTokenBalances.find(p => p.accountIndex === pre.accountIndex);
-  
-      // 🔥 ИСПРАВЛЕНИЕ: Правильное извлечение UI amount vs raw amount
-      const preAmount = parseFloat(pre.uiTokenAmount.uiAmountString || pre.uiTokenAmount.uiAmount?.toString() || '0');
-      const postAmount = post ? parseFloat(post.uiTokenAmount.uiAmountString || post.uiTokenAmount.uiAmount?.toString() || '0') : 0;
-      const change = postAmount - preAmount;
-  
-      console.log(`🔍 TOKEN DEBUG: ${pre.mint.slice(0,8)}, pre=${preAmount}, post=${postAmount}, change=${change}, decimals=${pre.uiTokenAmount.decimals}`);
-  
-      if (Math.abs(change) > 1e-9) {
-        console.log(`📊 Existing token change: ${pre.mint.slice(0,8)}... = ${change}`);
-        tokenChanges.set(pre.mint, { change, mint: pre.mint, decimals: pre.uiTokenAmount.decimals });
-      }
-    }
-
-      // 🔥 ИСПРАВЛЕНИЕ №2: Анализ НОВЫХ токен-аккаунтов
-      for (const post of postTokenBalances) {
-        if (post.owner !== walletAddress || tokenChanges.has(post.mint)) continue;
-      const isNewAccount = !preTokenBalances.find(p => p.accountIndex === post.accountIndex);
-        if (isNewAccount) {
-        // 🔥 ИСПРАВЛЕНО: используем UI amount вместо raw amount
-      const change = parseFloat(post.uiTokenAmount.uiAmountString || post.uiTokenAmount.uiAmount?.toString() || '0');
-      console.log(`🔍 NEW TOKEN DEBUG: ${post.mint.slice(0,8)}, change=${change}, decimals=${post.uiTokenAmount.decimals}`);
-        if (change > 1e-9) {
-      console.log(`🆕 New token account: ${post.mint.slice(0,8)}... = ${change}`);
-      tokenChanges.set(post.mint, { change, mint: post.mint, decimals: post.uiTokenAmount.decimals });
+        if (pre.owner !== walletAddress) continue;
+        
+        const post = postTokenBalances.find(p => p.accountIndex === pre.accountIndex);
+        
+        const preAmountUI = parseFloat(pre.uiTokenAmount.uiAmountString || pre.uiTokenAmount.uiAmount?.toString() || '0');
+        const postAmountUI = post ? parseFloat(post.uiTokenAmount.uiAmountString || post.uiTokenAmount.uiAmount?.toString() || '0') : 0;
+        const changeUI = postAmountUI - preAmountUI;
+        
+        const preAmountRaw = parseInt(pre.uiTokenAmount.amount || '0');
+        const postAmountRaw = post ? parseInt(post.uiTokenAmount.amount || '0') : 0;
+        const changeRaw = postAmountRaw - preAmountRaw;
+        
+        if (Math.abs(changeUI) > 1e-9) {
+          tokenChanges.set(pre.mint, { 
+            changeUI, 
+            changeRaw,
+            mint: pre.mint, 
+            decimals: pre.uiTokenAmount.decimals 
+          });
         }
       }
-    }
 
-      // Анализ нативного SOL
-      const walletIndex = accountKeys.findIndex((key: any) => (key.pubkey || key) === walletAddress);
-      if (walletIndex !== -1 && transaction.meta.preBalances && transaction.meta.postBalances) {
-        const solChange = (transaction.meta.postBalances[walletIndex] - transaction.meta.preBalances[walletIndex]) / 1e9;
-        if (Math.abs(solChange) > 1e-9) {
-          console.log(`💰 NATIVE SOL CHANGE: ${solChange} SOL`);
+      // Анализ НОВЫХ токен-аккаунтов
+      for (const post of postTokenBalances) {
+        if (post.owner !== walletAddress || tokenChanges.has(post.mint)) continue;
+        
+        const isNewAccount = !preTokenBalances.find(p => p.accountIndex === post.accountIndex);
+        if (isNewAccount) {
+          const changeUI = parseFloat(post.uiTokenAmount.uiAmountString || post.uiTokenAmount.uiAmount?.toString() || '0');
+          const changeRaw = parseInt(post.uiTokenAmount.amount || '0');
+          
+          if (changeUI > 1e-9) {
+            tokenChanges.set(post.mint, { 
+              changeUI, 
+              changeRaw,
+              mint: post.mint, 
+              decimals: post.uiTokenAmount.decimals 
+            });
+          }
+        }
+      }
+
+      // Анализ изменений нативного SOL
+      const accountKeys = transaction.transaction?.message?.accountKeys || [];
+      const walletIndex = accountKeys.findIndex((key: any) => {
+        const keyString = typeof key === 'string' ? key : key?.pubkey || key?.toString?.() || '';
+        return keyString === walletAddress;
+      });
+      
+      if (walletIndex !== -1 && transaction.meta?.preBalances && transaction.meta?.postBalances) {
+        const preSolBalance = transaction.meta.preBalances[walletIndex] || 0;
+        const postSolBalance = transaction.meta.postBalances[walletIndex] || 0;
+        const solChangeRaw = postSolBalance - preSolBalance;
+        const solChangeUI = solChangeRaw / 1e9;
+        
+        if (Math.abs(solChangeUI) > 0.01) {
           tokenChanges.set('So11111111111111111111111111111111111111112', {
-            change: solChange,
+            changeUI: solChangeUI,
+            changeRaw: solChangeRaw,
             mint: 'So11111111111111111111111111111111111111112',
             decimals: 9
           });
         }
       }
 
-      const spentTokens = Array.from(tokenChanges.values()).filter(c => c.change < 0);
-      const receivedTokens = Array.from(tokenChanges.values()).filter(c => c.change > 0);
-
-      console.log(`🔄 Balance changes: ${tokenChanges.size} total, ${spentTokens.length} spent, ${receivedTokens.length} received`);
+      // 🔥 УНИФИЦИРОВАННАЯ ЛОГИКА: используем changeUI для фильтрации, changeRaw для расчетов
+      const spentTokens = Array.from(tokenChanges.values()).filter(c => c.changeUI < 0);
+      const receivedTokens = Array.from(tokenChanges.values()).filter(c => c.changeUI > 0);
 
       if (spentTokens.length === 1 && receivedTokens.length === 1) {
-        const inputMint = spentTokens[0].mint;
-        const outputMint = receivedTokens[0].mint;
-        const inputAmountRaw = Math.abs(spentTokens[0].change) * Math.pow(10, spentTokens[0].decimals);
-        const outputAmountRaw = receivedTokens[0].change * Math.pow(10, receivedTokens[0].decimals);
+        const spentToken = spentTokens[0];
+        const receivedToken = receivedTokens[0];
+        
+        const inputMint = spentToken.mint;
+        const outputMint = receivedToken.mint;
+        // 🔥 УНИФИЦИРОВАНО: используем changeRaw напрямую, как в WebhookServer
+        const inputAmountRaw = Math.abs(spentToken.changeRaw);
+        const outputAmountRaw = receivedToken.changeRaw;
 
-        console.log(`🎯 Perfect swap: ${inputMint.slice(0,8)}... → ${outputMint.slice(0,8)}...`);
         return { walletAddress, inputMint, outputMint, inputAmountRaw, outputAmountRaw };
       }
 
-      console.log(`⚠️ Complex or invalid swap: ${spentTokens.length} spent, ${receivedTokens.length} received`);
       return null;
 
     } catch (error) {
-      console.log(`❌ Error extracting swap from balances: ${error}`);
       return null;
     }
   }
 
   private async getWalletSignatures(walletAddress: string): Promise<Array<{signature: string; blockTime: number}>> {
-    console.log(`Getting signatures for wallet: ${walletAddress.slice(0,8)}`);
-    
     try {
       const params: any = [
         walletAddress,
@@ -782,26 +710,13 @@ export class QuickNodeWebhookManager {
       const data = await this.makeRpcRequest('getSignaturesForAddress', params);
       const signatures = data.result || [];
       
-      console.log(`Raw signatures received: ${signatures.length}`);
-      
       // 🔥 ИСПРАВЛЕНО: Увеличен временной фильтр до 24 часов
       const twentyFourHoursAgo = Math.floor(Date.now() / 1000) - (24 * 60 * 60);
       const recentSignatures = signatures.filter((sig: any) => sig.blockTime > twentyFourHoursAgo);
       
-      console.log(`After time filter (24h): ${recentSignatures.length}`);
-      console.log(`Filter timestamp: ${twentyFourHoursAgo}, current: ${Math.floor(Date.now() / 1000)}`);
-      
-      if (signatures.length > 0) {
-        const latestTime = signatures[0].blockTime;
-        const currentTime = Math.floor(Date.now() / 1000);
-        const timeDiff = currentTime - latestTime;
-        console.log(`Latest signature time: ${latestTime}, current: ${currentTime}, diff: ${timeDiff} seconds ago`);
-      }
-      
       return recentSignatures;
 
     } catch (error) {
-      console.log(`Error getting signatures for ${walletAddress}: ${error}`);
       return [];
     }
   }
@@ -832,42 +747,14 @@ export class QuickNodeWebhookManager {
     const absoluteTimeDifference = Math.abs(timeDifference);
     
     if (absoluteTimeDifference > maxAge) {
-      this.logger.debug(`Transaction too old (${this.formatTimeDiff(timeDifference)} ago)`);
       return false;
     }
     
     if (!transaction.meta || transaction.meta.err) {
-      this.logger.debug(`Invalid transaction: Has errors or missing meta`);
       return false;
     }
     
     return true;
-  }
-
-  private formatTimeDiff(ms: number): string {
-    const minutes = Math.floor(ms / (1000 * 60));
-    const hours = Math.floor(minutes / 60);
-    const days = Math.floor(hours / 24);
-    
-    if (days > 0) return `${days}d ${hours % 24}h`;
-    if (hours > 0) return `${hours}h ${minutes % 60}m`;
-    return `${minutes}m`;
-  }
-
-  private getTransactionAge(transaction: any): string {
-    if (!transaction || !transaction.blockTime) return 'unknown';
-    
-    const transactionTime = transaction.blockTime * 1000;
-    const now = Date.now();
-    const ageMs = now - transactionTime;
-    
-    const ageMinutes = Math.floor(ageMs / (1000 * 60));
-    const ageHours = Math.floor(ageMinutes / 60);
-    const ageDays = Math.floor(ageHours / 24);
-    
-    if (ageDays > 0) return `${ageDays}d`;
-    if (ageHours > 0) return `${ageHours}h`;
-    return `${ageMinutes}m`;
   }
 
   // 🔥🔥🔥 ИСПРАВЛЕНО: Правильное извлечение адреса кошелька с правильным приоритетом
@@ -887,7 +774,6 @@ export class QuickNodeWebhookManager {
   }
 
   private getDefaultDecimals(tokenMint: string): number {
-    // 🔥 УСТРАНЯЕМ ДУБЛИРОВАНИЕ - используем TokenMetadataService
     return this.tokenMetadataService.getTokenSymbol(tokenMint) === 'USDC' || 
            this.tokenMetadataService.getTokenSymbol(tokenMint) === 'USDT' ? 6 : 9;
   }
@@ -922,13 +808,8 @@ export class QuickNodeWebhookManager {
   }
 
   private async saveAndNotifySwap(swap: SmartMoneySwap): Promise<void> {
-    console.log(`Saving and notifying swap: ${swap.tokenSymbol} - $${swap.amountUSD.toFixed(2)}`);
-    
     try {
-      if (!this.telegramNotifier) {
-        console.log(`No telegram notifier available for swap notification`);
-        return;
-      }
+      if (!this.telegramNotifier) return;
 
       await this.smDatabase.saveSmartMoneyTransaction({
         transactionId: swap.transactionId,
@@ -949,14 +830,12 @@ export class QuickNodeWebhookManager {
         dex: 'Multi-Provider'
       });
 
-      console.log(`Swap saved to database, sending Telegram notification...`);
       await this.telegramNotifier.sendSmartMoneySwapAlert(swap);
-      console.log(`Telegram notification sent successfully`);
       
       this.errorStats.recoveredFromErrors++;
 
     } catch (error) {
-      console.log(`Error saving and notifying swap: ${error}`);
+      // Ignore errors in notifications
     }
   }
 

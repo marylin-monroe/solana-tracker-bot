@@ -228,12 +228,28 @@ export class DragonResultsParser {
     return isNaN(number) ? 0 : number;
   }
 
+  // 🔥🔥🔥 ИСПРАВЛЕНО: parseHoldingTimeString теперь различает часы и минуты
   private parseHoldingTimeString(holdingString: string): number {
     if (!holdingString || typeof holdingString !== 'string') return 0;
-    // Удаляет 'h' и умножает на 60, чтобы получить минуты
-    const cleaned = holdingString.replace(/[h]/g, '');
-    const hours = parseFloat(cleaned);
-    return isNaN(hours) ? 0 : hours * 60;
+    
+    const trimmed = holdingString.trim();
+    
+    // Проверяем суффикс
+    if (trimmed.endsWith('h')) {
+      // Часы - умножаем на 60 для получения минут
+      const cleaned = trimmed.replace(/h$/g, '');
+      const hours = parseFloat(cleaned);
+      return isNaN(hours) ? 0 : hours * 60;
+    } else if (trimmed.endsWith('m')) {
+      // Минуты - оставляем как есть
+      const cleaned = trimmed.replace(/m$/g, '');
+      const minutes = parseFloat(cleaned);
+      return isNaN(minutes) ? 0 : minutes;
+    } else {
+      // Если нет суффикса, предполагаем что это часы (для обратной совместимости)
+      const hours = parseFloat(trimmed);
+      return isNaN(hours) ? 0 : hours * 60;
+    }
   }
 
   // 🔥 УЛУЧШЕННЫЙ parseWinrateString для обработки "?" 
@@ -491,13 +507,21 @@ if (forceReplace) {
     return wallets;
   }
 
-  // 🔥 НОВАЯ ЛОГИКА ФИЛЬТРАЦИИ - ПРИОРИТЕТ НА ДЕНЬГИ, А НЕ % ПОБЕД!
+  // 🔥🔥🔥 ИСПРАВЛЕНО: НОВАЯ ЛОГИКА ФИЛЬТРАЦИИ + ФИЛЬТР БОТОВ
   private applyProfitFirstFiltering(wallets: DragonWallet[]): DragonWallet[] {
     this.logger.info(`🔍 Applying MONEY-FIRST gatekeeping filters to ${wallets.length} wallets...`);
 
-    let loggedRejections = 0; // 🔥 ИСПРАВЛЕНИЕ: Счетчик вместо filtered.length
+    let loggedRejections = 0;
 
     const filtered = wallets.filter(wallet => {
+      // 🔥🔥🔥 ФИЛЬТР БОТОВ - исключаем кошельки с >1000 сделками за 7 дней
+      if (wallet.buy7d > 1000) {
+        if (loggedRejections < 5) {
+          loggedRejections++;
+        }
+        return false;
+      }
+
       // Отсеиваем кошельки с "?" в winrate (мало торгуют)
       if (typeof wallet.winrate7d !== 'number' || wallet.winrate7d === 0) {
         return false;
@@ -525,7 +549,6 @@ if (forceReplace) {
 
       const passed = basicRequirements && (superGrowth || goodProfitAndGrowth || stabGrowth || whaleGrowth);
 
-      // 🔥 ИСПРАВЛЕНИЕ: Используем loggedRejections вместо filtered.length
       if (!passed && loggedRejections < 5) {
         this.logger.info(`❌ Filtered out: ${wallet.identifier.slice(0,8)}... | Profit7d: $${wallet.usdProfit7d} | Growth: ${wallet.totalProfitPercent}% | WR: ${wallet.winrate7d}% | SOL: ${wallet.solBalance}`);
         loggedRejections++;
@@ -654,6 +677,7 @@ if (forceReplace) {
       `🥉 <b>Priority #3:</b> Stability (30d > 7d) + growth ≥ 12%\n` +
       `🏅 <b>Priority #4:</b> Whale balance ≥ 150 SOL + growth ≥ 10%\n\n` +
       `🚫 <b>Winrate MOSTLY IGNORED</b> (focus on 💰 not %wins)\n` +
+      `🤖 <b>BOT FILTER:</b> Excluded wallets with >1000 trades/7d\n` +
       `🔄 <b>Source:</b> Bulk Wallet Checker CSV\n` +
       (errors.length > 0 ? `⚠️ <b>Errors:</b> <code>${errors.length}</code>\n` : '') +
       `⏰ <code>${new Date().toLocaleString()}</code>`;
@@ -668,6 +692,7 @@ if (forceReplace) {
       `⏭️ <b>Skipped:</b> <code>${skippedCount}</code> unchanged\n\n` +
       `💰 <b>ВХОДНОЙ БИЛЕТ:</b>\n` +
       `Profit7d≥$${this.config.minProfit7d/1000}K | WR7d≥${this.config.minWinrate7d}% | SOL≥${this.config.minSolBalance} | TotalProfit≥${this.config.minTotalProfitPercent}% | Activity≥${this.config.minActivity7d}\n` +
+      `🤖 <b>BOT FILTER:</b> Excluded wallets with >1000 trades/7d\n` +
       `🔄 <b>Source:</b> Bulk Wallet Checker CSV\n` +
       (errors.length > 0 ? `⚠️ <b>Errors:</b> <code>${errors.length}</code>\n` : '') +
       `⏰ <code>${new Date().toLocaleString()}</code>`;
