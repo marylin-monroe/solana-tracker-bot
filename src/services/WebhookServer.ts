@@ -402,16 +402,12 @@ export class WebhookServer {
     inputAmountRaw: number; outputAmountRaw: number;
   } | null> {
     try {
-      // 🔥 ИСПРАВЛЕНИЕ: В WebhookServer txData может быть массивом, берем первый элемент
       const transaction = Array.isArray(txData) ? txData[0] : txData;
       
       if (!transaction?.meta) return null;
 
       const preTokenBalances = transaction.meta.preTokenBalances || [];
       const postTokenBalances = transaction.meta.postTokenBalances || [];
-      
-      // 🔥 ИСПРАВЛЕНИЕ №1: Правильный путь к accountKeys для WebhookServer
-      const accountKeys = transaction.transaction?.message?.accountKeys || [];
       const walletAddress = this.extractWalletAddressFromTransaction(transaction);
 
       if (!walletAddress) {
@@ -419,33 +415,60 @@ export class WebhookServer {
         return null;
       }
 
-      const tokenChanges = new Map<string, { change: number, mint: string, decimals: number }>();
 
-      // Анализ существующих токен-аккаунтов
+
+      const tokenChanges = new Map<string, { changeUI: number, changeRaw: number, mint: string, decimals: number }>();
+
+      // 🔥 ИСПРАВЛЕНИЕ №1: Правильный расчет изменений токенов (UI amounts + RAW amounts)
       for (const pre of preTokenBalances) {
         if (pre.owner !== walletAddress) continue;
+        
         const post = postTokenBalances.find(p => p.accountIndex === pre.accountIndex);
-        const change = (post ? parseFloat(post.uiTokenAmount.amount) : 0) - parseFloat(pre.uiTokenAmount.amount);
-        if (Math.abs(change) > 1e-9) {
-          console.log(`📊 Existing token change: ${pre.mint.slice(0,8)}... = ${change}`);
-          tokenChanges.set(pre.mint, { change, mint: pre.mint, decimals: pre.uiTokenAmount.decimals });
+        
+        // 🔥 ИСПОЛЬЗУЕМ UI AMOUNTS для правильного расчета
+        const preAmountUI = parseFloat(pre.uiTokenAmount.uiAmountString || pre.uiTokenAmount.uiAmount?.toString() || '0');
+        const postAmountUI = post ? parseFloat(post.uiTokenAmount.uiAmountString || post.uiTokenAmount.uiAmount?.toString() || '0') : 0;
+        const changeUI = postAmountUI - preAmountUI;
+        
+        // 🔥 ТАКЖЕ СОХРАНЯЕМ RAW AMOUNTS для точности
+        const preAmountRaw = parseInt(pre.uiTokenAmount.amount || '0');
+        const postAmountRaw = post ? parseInt(post.uiTokenAmount.amount || '0') : 0;
+        const changeRaw = postAmountRaw - preAmountRaw;
+        
+        if (Math.abs(changeUI) > 1e-9) {
+
+          tokenChanges.set(pre.mint, { 
+            changeUI, 
+            changeRaw,
+            mint: pre.mint, 
+            decimals: pre.uiTokenAmount.decimals 
+          });
         }
       }
 
-      // 🔥 ИСПРАВЛЕНИЕ №2: Анализ НОВЫХ токен-аккаунтов
+      // 🔥 ИСПРАВЛЕНИЕ №2: Анализ НОВЫХ токен-аккаунтов (только UI amounts)
       for (const post of postTokenBalances) {
         if (post.owner !== walletAddress || tokenChanges.has(post.mint)) continue;
+        
         const isNewAccount = !preTokenBalances.find(p => p.accountIndex === post.accountIndex);
         if (isNewAccount) {
-          const change = parseFloat(post.uiTokenAmount.amount);
-          if (change > 1e-9) {
-            console.log(`🆕 New token account: ${post.mint.slice(0,8)}... = ${change}`);
-            tokenChanges.set(post.mint, { change, mint: post.mint, decimals: post.uiTokenAmount.decimals });
+          const changeUI = parseFloat(post.uiTokenAmount.uiAmountString || post.uiTokenAmount.uiAmount?.toString() || '0');
+          const changeRaw = parseInt(post.uiTokenAmount.amount || '0');
+          
+          if (changeUI > 1e-9) {
+
+            tokenChanges.set(post.mint, { 
+              changeUI, 
+              changeRaw,
+              mint: post.mint, 
+              decimals: post.uiTokenAmount.decimals 
+            });
           }
         }
       }
 
-      // 🔥🔥🔥 АНАЛИЗИРУЕМ ИЗМЕНЕНИЯ НАТИВНОГО SOL 🔥🔥🔥
+      // 🔥 ИСПРАВЛЕНИЕ №3: Анализ изменений нативного SOL (отдельно от WSOL!)
+      const accountKeys = transaction.transaction?.message?.accountKeys || [];
       const walletIndex = accountKeys.findIndex((key: any) => {
         const keyString = typeof key === 'string' ? key : key?.pubkey || key?.toString?.() || '';
         return keyString === walletAddress;
@@ -455,47 +478,46 @@ export class WebhookServer {
         const preSolBalance = transaction.meta.preBalances[walletIndex] || 0;
         const postSolBalance = transaction.meta.postBalances[walletIndex] || 0;
         const solChangeRaw = postSolBalance - preSolBalance;
-        const solChange = solChangeRaw / 1e9; // SOL имеет 9 decimals
+        const solChangeUI = solChangeRaw / 1e9; // SOL имеет 9 decimals
         
-        if (Math.abs(solChange) > 1e-9) {
-          console.log(`💰 NATIVE SOL CHANGE: ${solChange} SOL (raw: ${solChangeRaw})`);
+        // 🔥 ВАЖНО: Игнорируем изменения SOL если они слишком маленькие (комиссии)
+        if (Math.abs(solChangeUI) > 0.01) { // Больше 0.01 SOL
+
           tokenChanges.set('So11111111111111111111111111111111111111112', {
-            change: solChange,
+            changeUI: solChangeUI,
+            changeRaw: solChangeRaw,
             mint: 'So11111111111111111111111111111111111111112',
             decimals: 9
           });
         }
-      } else {
-        console.log(`⚠️ Could not find wallet ${walletAddress.slice(0,8)} in accountKeys (index: ${walletIndex})`);
       }
 
-      console.log(`🔄 Balance changes detected: ${tokenChanges.size} for wallet ${walletAddress.slice(0,8)}`);
 
-      // Ищем пары "ушло/пришло", которые формируют свап
-      const spentTokens = Array.from(tokenChanges.values()).filter(c => c.change < 0);
-      const receivedTokens = Array.from(tokenChanges.values()).filter(c => c.change > 0);
 
-      console.log(`💸 Spent tokens: ${spentTokens.length}, 💰 Received tokens: ${receivedTokens.length}`);
+      // 🔥 ИСПРАВЛЕНИЕ №4: Правильная классификация spent/received на основе UI amounts
+      const spentTokens = Array.from(tokenChanges.values()).filter(c => c.changeUI < 0);
+      const receivedTokens = Array.from(tokenChanges.values()).filter(c => c.changeUI > 0);
 
-      // Простой случай: один токен ушел, один пришел
+
+      
+
+
+      // Простой случай: один токен потратили, один получили
       if (spentTokens.length === 1 && receivedTokens.length === 1) {
-        const inputMint = spentTokens[0].mint;
-        const outputMint = receivedTokens[0].mint;
-        const inputAmountRaw = Math.abs(spentTokens[0].change) * Math.pow(10, spentTokens[0].decimals);
-        const outputAmountRaw = receivedTokens[0].change * Math.pow(10, receivedTokens[0].decimals);
+        const spentToken = spentTokens[0];
+        const receivedToken = receivedTokens[0];
+        
+        const inputMint = spentToken.mint;
+        const outputMint = receivedToken.mint;
+        
+        // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Используем RAW amounts напрямую (без дополнительной конверсии!)
+        const inputAmountRaw = Math.abs(spentToken.changeRaw);
+        const outputAmountRaw = receivedToken.changeRaw;
 
-        console.log(`🎯 Perfect swap detected: ${inputMint.slice(0,8)}... → ${outputMint.slice(0,8)}...`);
-        console.log(`📊 Raw amounts: input=${inputAmountRaw}, output=${outputAmountRaw}`);
+
 
         return { walletAddress, inputMint, outputMint, inputAmountRaw, outputAmountRaw };
       } else {
-        console.log(`⚠️ Complex swap detected (${spentTokens.length} spent, ${receivedTokens.length} received) - skipping for now`);
-        if (spentTokens.length > 0) {
-          console.log(`   Spent: ${spentTokens.map(t => `${this.tokenMetadataService.getTokenSymbol(t.mint)}(${t.change.toFixed(4)})`).join(', ')}`);
-        }
-        if (receivedTokens.length > 0) {
-          console.log(`   Received: ${receivedTokens.map(t => `${this.tokenMetadataService.getTokenSymbol(t.mint)}(${t.change.toFixed(4)})`).join(', ')}`);
-        }
         return null;
       }
 
