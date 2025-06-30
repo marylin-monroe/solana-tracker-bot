@@ -397,7 +397,7 @@ export class WebhookServer {
   }
 
   // 🔥🔥🔥 УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ИЗВЛЕЧЕНИЯ СВАПОВ - ФИНАЛЬНАЯ ВЕРСИЯ 🔥🔥🔥
-  private async extractSwapInfoFromBalances(txData: SolanaWebhookPayload): Promise<{
+ private async extractSwapInfoFromBalances(txData: SolanaWebhookPayload): Promise<{
     walletAddress: string; inputMint: string; outputMint: string;
     inputAmountRaw: number; outputAmountRaw: number;
   } | null> {
@@ -415,28 +415,26 @@ export class WebhookServer {
         return null;
       }
 
-
+      console.log(`🔍 DEBUG TX: ${transaction.signature?.slice(0,12)}...`);
 
       const tokenChanges = new Map<string, { changeUI: number, changeRaw: number, mint: string, decimals: number }>();
 
-      // 🔥 ИСПРАВЛЕНИЕ №1: Правильный расчет изменений токенов (UI amounts + RAW amounts)
+      // Анализ существующих токен-аккаунтов
       for (const pre of preTokenBalances) {
         if (pre.owner !== walletAddress) continue;
         
         const post = postTokenBalances.find(p => p.accountIndex === pre.accountIndex);
         
-        // 🔥 ИСПОЛЬЗУЕМ UI AMOUNTS для правильного расчета
         const preAmountUI = parseFloat(pre.uiTokenAmount.uiAmountString || pre.uiTokenAmount.uiAmount?.toString() || '0');
         const postAmountUI = post ? parseFloat(post.uiTokenAmount.uiAmountString || post.uiTokenAmount.uiAmount?.toString() || '0') : 0;
         const changeUI = postAmountUI - preAmountUI;
         
-        // 🔥 ТАКЖЕ СОХРАНЯЕМ RAW AMOUNTS для точности
         const preAmountRaw = parseInt(pre.uiTokenAmount.amount || '0');
         const postAmountRaw = post ? parseInt(post.uiTokenAmount.amount || '0') : 0;
         const changeRaw = postAmountRaw - preAmountRaw;
         
         if (Math.abs(changeUI) > 1e-9) {
-
+          console.log(`📊 Token: ${this.tokenMetadataService.getTokenSymbol(pre.mint)} = ${changeUI > 0 ? '+' : ''}${changeUI.toFixed(6)}`);
           tokenChanges.set(pre.mint, { 
             changeUI, 
             changeRaw,
@@ -446,7 +444,7 @@ export class WebhookServer {
         }
       }
 
-      // 🔥 ИСПРАВЛЕНИЕ №2: Анализ НОВЫХ токен-аккаунтов (только UI amounts)
+      // Анализ НОВЫХ токен-аккаунтов
       for (const post of postTokenBalances) {
         if (post.owner !== walletAddress || tokenChanges.has(post.mint)) continue;
         
@@ -456,7 +454,7 @@ export class WebhookServer {
           const changeRaw = parseInt(post.uiTokenAmount.amount || '0');
           
           if (changeUI > 1e-9) {
-
+            console.log(`🆕 New: ${this.tokenMetadataService.getTokenSymbol(post.mint)} = +${changeUI.toFixed(6)}`);
             tokenChanges.set(post.mint, { 
               changeUI, 
               changeRaw,
@@ -467,7 +465,7 @@ export class WebhookServer {
         }
       }
 
-      // 🔥 ИСПРАВЛЕНИЕ №3: Анализ изменений нативного SOL (отдельно от WSOL!)
+      // Анализ изменений нативного SOL
       const accountKeys = transaction.transaction?.message?.accountKeys || [];
       const walletIndex = accountKeys.findIndex((key: any) => {
         const keyString = typeof key === 'string' ? key : key?.pubkey || key?.toString?.() || '';
@@ -478,11 +476,10 @@ export class WebhookServer {
         const preSolBalance = transaction.meta.preBalances[walletIndex] || 0;
         const postSolBalance = transaction.meta.postBalances[walletIndex] || 0;
         const solChangeRaw = postSolBalance - preSolBalance;
-        const solChangeUI = solChangeRaw / 1e9; // SOL имеет 9 decimals
+        const solChangeUI = solChangeRaw / 1e9;
         
-        // 🔥 ВАЖНО: Игнорируем изменения SOL если они слишком маленькие (комиссии)
-        if (Math.abs(solChangeUI) > 0.01) { // Больше 0.01 SOL
-
+        if (Math.abs(solChangeUI) > 0.01) {
+          console.log(`💰 SOL: ${solChangeUI > 0 ? '+' : ''}${solChangeUI.toFixed(6)}`);
           tokenChanges.set('So11111111111111111111111111111111111111112', {
             changeUI: solChangeUI,
             changeRaw: solChangeRaw,
@@ -492,32 +489,29 @@ export class WebhookServer {
         }
       }
 
-
-
-      // 🔥 ИСПРАВЛЕНИЕ №4: Правильная классификация spent/received на основе UI amounts
       const spentTokens = Array.from(tokenChanges.values()).filter(c => c.changeUI < 0);
       const receivedTokens = Array.from(tokenChanges.values()).filter(c => c.changeUI > 0);
 
-
+      console.log(`💸 SPENT (${spentTokens.length}):`);
+      spentTokens.forEach(t => console.log(`   - ${this.tokenMetadataService.getTokenSymbol(t.mint)}: ${t.changeUI.toFixed(6)}`));
       
+      console.log(`💰 RECEIVED (${receivedTokens.length}):`);
+      receivedTokens.forEach(t => console.log(`   + ${this.tokenMetadataService.getTokenSymbol(t.mint)}: ${t.changeUI.toFixed(6)}`));
 
-
-      // Простой случай: один токен потратили, один получили
       if (spentTokens.length === 1 && receivedTokens.length === 1) {
         const spentToken = spentTokens[0];
         const receivedToken = receivedTokens[0];
         
         const inputMint = spentToken.mint;
         const outputMint = receivedToken.mint;
-        
-        // 🔥 КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Используем RAW amounts напрямую (без дополнительной конверсии!)
         const inputAmountRaw = Math.abs(spentToken.changeRaw);
         const outputAmountRaw = receivedToken.changeRaw;
 
-
+        console.log(`🎯 SWAP DIRECTION: ${this.tokenMetadataService.getTokenSymbol(inputMint)} → ${this.tokenMetadataService.getTokenSymbol(outputMint)}`);
 
         return { walletAddress, inputMint, outputMint, inputAmountRaw, outputAmountRaw };
       } else {
+        console.log(`⚠️ Complex: ${spentTokens.length} spent, ${receivedTokens.length} received`);
         return null;
       }
 
