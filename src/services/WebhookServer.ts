@@ -1,4 +1,4 @@
-// src/services/WebhookServer.ts - 🔥 ПОЛНОСТЬЮ ИСПРАВЛЕННЫЙ С ПРАВИЛЬНОЙ ЛОГИКОЙ ИЗВЛЕЧЕНИЯ БАЛАНСОВ
+// src/services/WebhookServer.ts - 🔥 ПОЛНОСТЬЮ ИСПРАВЛЕННЫЙ С ЕДИНОЙ ФУНКЦИЕЙ СОЗДАНИЯ SWAPS
 import express from 'express';
 import { Database } from './Database';
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
@@ -153,7 +153,7 @@ export class WebhookServer {
     'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN', // JUP
     '4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R', // RAY
     'SRMuApVNdxXokk5GT7XD5cUUgXMBCoAz2LHeuAoKWRt', // SRM
-    '7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs', // WIF
+    'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm', // WIF
     '2qEHjDLDLbuBgRYvsxhc5D6uDWAivNFZGan56P1tpump', // PNUT
     'CzLSujWBLFsSjncfkh59rUFqvafWcY5tzedWJSuypump', // GOAT
     'ukHH6c7mMyiWCf1b9pnWe25TSpkDDt3H5pQZgZ74J82', // BOME
@@ -217,7 +217,7 @@ export class WebhookServer {
     this.setupMiddleware();
     this.setupRoutes();
     this.startCacheCleanup();
-    this.logger.info('🚀 WebhookServer ENHANCED: 🔥 ПРОТОКОЛ "ЖЕЛЕЗНЫЙ ДОЛЛАР" + ПРАВИЛЬНОЕ ИЗВЛЕЧЕНИЕ БАЛАНСОВ');
+    this.logger.info('🚀 WebhookServer ENHANCED: 🔥 ЕДИНАЯ ФУНКЦИЯ СОЗДАНИЯ SWAPS + ПРАВИЛЬНОЕ ИЗВЛЕЧЕНИЕ БАЛАНСОВ');
   }
 
   private setupMiddleware(): void {
@@ -537,74 +537,43 @@ export class WebhookServer {
     return null;
   }
 
-  // Обработка Smart Money свапа
+  // 🔥🔥🔥 ИСПРАВЛЕННАЯ ОБРАБОТКА Smart Money свапа С ЕДИНОЙ ФУНКЦИЕЙ 🔥🔥🔥
   private async processSmartMoneySwap(
     balanceInfo: { walletAddress: string; inputMint: string; outputMint: string; inputAmountRaw: number; outputAmountRaw: number; },
     smartWallet: SmartMoneyWallet,
     txData: SolanaWebhookPayload
   ): Promise<void> {
     try {
-      // 🔥🔥🔥 ВЫЗЫВАЕМ ЕДИНЫЙ РАСЧЕТНЫЙ ЦЕНТР 🔥🔥🔥
-      const valueCalculation = await this.tokenMetadataService.calculateSwapUSDValue(
-        balanceInfo.inputMint,
-        balanceInfo.inputAmountRaw,
-        balanceInfo.outputMint,
-        balanceInfo.outputAmountRaw
-      );
+      // 🔥🔥🔥 ИСПОЛЬЗУЕМ ЕДИНУЮ ФУНКЦИЮ СОЗДАНИЯ SWAPS - РЕШЕНИЕ ПРОБЛЕМЫ! 🔥🔥🔥
+      const smartMoneySwap = await this.tokenMetadataService.createConsistentSmartMoneySwap({
+        transactionId: txData.signature,
+        walletAddress: smartWallet.address,
+        walletInfo: {
+          category: smartWallet.category,
+          usdProfit7d: smartWallet.usdProfit7d,
+          winrate7d: smartWallet.winrate7d,
+          buy7d: smartWallet.buy7d
+        },
+        inputMint: balanceInfo.inputMint,
+        outputMint: balanceInfo.outputMint,
+        inputAmountRaw: balanceInfo.inputAmountRaw,
+        outputAmountRaw: balanceInfo.outputAmountRaw,
+        timestamp: new Date(txData.timestamp * 1000)
+      });
       
-      if (!valueCalculation) {
+      if (!smartMoneySwap) {
         this.logger.debug(`[processSmartMoneySwap] ⏭️ IGNORED by Unified Calculator`);
         this.processingStats.unifiedCalculatorIgnored++;
         return;
       }
-      
-      // 🔥 ПОЛУЧАЕМ ВСЕ ГОТОВЫЕ ДАННЫЕ ИЗ ЕДИНОГО РАСЧЕТНОГО ЦЕНТРА
-      const { amountUSD, swapType, tokenAddress, paymentToken, paymentTokenAmount, paymentTokenPrice } = valueCalculation;
 
       // Первичный фильтр по минимальной сумме
-      if (amountUSD < 700) {
+      if (smartMoneySwap.amountUSD < 700) {
         this.processingStats.filteredTransactions++;
         return;
       }
 
       this.processingStats.usdCalculationStats.correctCalculations++;
-
-      // Получаем метаданные токенов
-      const tokenInfo = await this.getTokenInfo(tokenAddress);
-      const paymentTokenInfo = await this.getTokenInfo(paymentToken);
-      
-      // Рассчитываем количество основного токена
-      const actualTokenAmount = swapType === 'buy' ? 
-        balanceInfo.outputAmountRaw / Math.pow(10, tokenInfo.decimals) :
-        balanceInfo.inputAmountRaw / Math.pow(10, tokenInfo.decimals);
-      
-      const tokenPrice = actualTokenAmount > 0 ? amountUSD / actualTokenAmount : 0;
-
-      // 🔥🔥🔥 ФОРМИРУЕМ ИДЕАЛЬНЫЙ ПАСПОРТ СДЕЛКИ С ПРОТОКОЛОМ "ЖЕЛЕЗНЫЙ ДОЛЛАР" 🔥🔥🔥
-      const smartMoneySwap: SmartMoneySwap = {
-        transactionId: txData.signature,
-        walletAddress: smartWallet.address,
-        tokenAddress: tokenAddress,
-        tokenSymbol: tokenInfo.symbol,
-        tokenName: tokenInfo.name,
-        tokenAmount: actualTokenAmount,
-        amountUSD: amountUSD,
-        swapType: swapType,
-        timestamp: new Date(txData.timestamp * 1000),
-        category: smartWallet.category,
-        usdProfit7d: smartWallet.usdProfit7d,
-        winrate7d: smartWallet.winrate7d,
-        buy7d: smartWallet.buy7d,
-        
-        // 🔥🔥🔥 ПРОТОКОЛ "ЖЕЛЕЗНЫЙ ДОЛЛАР" - КЛЮЧЕВЫЕ ПОЛЯ 🔥🔥🔥
-        tokenPrice: tokenPrice,
-        paymentTokenSymbol: paymentTokenInfo.symbol,
-        paymentTokenAmount: paymentTokenAmount,
-        paymentTokenPrice: paymentTokenPrice,
-        
-        isCexListed: this.CEX_TOKENS.has(tokenAddress),
-        isFamilyMember: false as const,
-      };
 
       // Проверяем фильтры и отправляем
       if (this.shouldProcessSmartMoneySwap(smartMoneySwap, smartWallet)) {
@@ -834,7 +803,7 @@ export class WebhookServer {
     return new Promise((resolve, reject) => {
       try {
         this.server = this.app.listen(this.port, () => {
-          this.logger.info(`🚀 Webhook server started on port ${this.port} with 🔥 ПРОТОКОЛ "ЖЕЛЕЗНЫЙ ДОЛЛАР" + ПРАВИЛЬНОЕ ИЗВЛЕЧЕНИЕ БАЛАНСОВ`);
+          this.logger.info(`🚀 Webhook server started on port ${this.port} with 🔥 ЕДИНАЯ ФУНКЦИЯ СОЗДАНИЯ SWAPS + ПРАВИЛЬНОЕ ИЗВЛЕЧЕНИЕ БАЛАНСОВ`);
           resolve();
         });
 

@@ -915,13 +915,9 @@ export class SmartMoneyFlowAnalyzer {
       );
 
       if (report.byWalletCount.length > 0) {
-        let message = `👥 <b>Top Tokens (Единый Расчетный Центр)</b>\n\n`;
-        report.byWalletCount.slice(0, 10).forEach((token, i) => {
-          const medal = i < 3 ? ['🥇', '🥈', '🥉'][i] : `${i + 1}.`;
-          message += `${medal} <b>${token.tokenSymbol}</b>\n`;
-          message += `    👥 <code>${token.uniqueWalletCount}</code> wallets, 💰 <code>$${this.formatNumber(token.totalBalanceUSD)}</code>\n`;
-          if (token.fdv) message += `    💎 FDV: <code>$${this.formatNumber(token.fdv)}</code>\n`;
-          message += `\n`;
+        let message = `🟢 <b>Top Smart Money Inflows in the past 1 hour (Solana)</b> #TopSMIn1sol\n\n`;
+        report.byWalletCount.slice(0, 10).forEach(token => {
+         message += `#${token.tokenSymbol} $${Math.round(token.totalBalanceUSD).toLocaleString()} SolS DS\n`;
         });
         await this.telegramNotifier.sendCycleLog(message);
       }
@@ -929,7 +925,9 @@ export class SmartMoneyFlowAnalyzer {
       this.logger.error('❌ Error sending holdings report:', error);
     }
   }
-
+  
+        
+      
   // 🆕 ПУБЛИЧНЫЙ МЕТОД для обновления одного кошелька
   async updateSingleWalletMetrics(wallet: SmartMoneyWallet): Promise<void> {
     await this.updateWalletPerformanceMetricsOptimized([wallet]);
