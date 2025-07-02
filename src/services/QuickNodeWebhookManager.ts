@@ -837,7 +837,11 @@ export class QuickNodeWebhookManager {
     // Fallback на всякий случай (хотя feePayer должен быть всегда)
     if (txData.meta?.preTokenBalances?.[0]?.owner) return txData.meta.preTokenBalances[0].owner;
     if (txData.meta?.postTokenBalances?.[0]?.owner) return txData.meta.postTokenBalances[0].owner;
-    if (txData.transaction?.message?.accountKeys?.[0]) return txData.transaction.message.accountKeys[0];
+    if (txData.transaction?.message?.accountKeys?.[0]) {
+  const key = txData.transaction.message.accountKeys[0];
+  return typeof key === 'string' ? key : key?.pubkey || key?.toString?.() || null;
+}
+    
     
     return null;
   }
