@@ -429,6 +429,9 @@ export class QuickNodeWebhookManager {
   private async pollWalletsForTransactions(): Promise<void> {
     if (!this.isPollingActive || !this.smDatabase) return;
 
+    const cycleStart = Date.now();
+    console.log(`🔄 [QuickNode] Starting polling cycle - checking ${this.monitoredWallets.length} smart money wallets...`);
+
     try {
       const previousCount = this.monitoredWallets.length;
       this.monitoredWallets = await this.smDatabase.getAllActiveSmartWallets();
@@ -457,6 +460,7 @@ export class QuickNodeWebhookManager {
     
     if (this.monitoredWallets.length === 0) {
       this.syncStats.emptyListCycles++;
+      console.log(`⚠️ [QuickNode] No wallets to monitor - skipping cycle`);
       return;
     }
 
@@ -486,6 +490,9 @@ export class QuickNodeWebhookManager {
       }
     }
     
+    const cycleTime = ((Date.now() - cycleStart) / 1000).toFixed(1);
+    console.log(`✅ [QuickNode] Polling cycle completed in ${cycleTime}s - processed ${totalProcessed} wallets, ${totalErrors} errors`);
+    
     this.logApiUsageWithProviderStats();
   }
 
@@ -504,6 +511,7 @@ export class QuickNodeWebhookManager {
       }
       
       if (signatures.length > 0) {
+        console.log(`📋 [QuickNode] Processing ${signatures.length} transactions for wallet ${wallet.address.slice(0,8)}...`);
         let transactionErrors = 0;
         for (const sig of signatures) {
           try {
@@ -553,6 +561,8 @@ export class QuickNodeWebhookManager {
       const swapInfo = await this.extractSwapInfoFromBalances(transaction);
       if (!swapInfo) return;
 
+      console.log(`🔍 [QuickNode] Analyzing swap: ${this.tokenMetadataService.getTokenSymbol(swapInfo.inputMint)} → ${this.tokenMetadataService.getTokenSymbol(swapInfo.outputMint)} for wallet ${swapInfo.walletAddress.slice(0,8)}...`);
+
       // Вызываем единый расчетный центр
       const valueCalculation = await this.tokenMetadataService.calculateSwapUSDValue(
         swapInfo.inputMint, swapInfo.inputAmountRaw, swapInfo.outputMint, swapInfo.outputAmountRaw
@@ -563,6 +573,7 @@ export class QuickNodeWebhookManager {
       const { amountUSD, swapType, tokenAddress, paymentToken, paymentTokenAmount, paymentTokenPrice } = valueCalculation;
 
       if (amountUSD >= 2000) {
+        console.log(`💰 [QuickNode] Large ${swapType.toUpperCase()}: ${this.tokenMetadataService.getTokenSymbol(tokenAddress)} - ${amountUSD.toFixed(0)} - sending alert...`);
         const tokenInfo = await this.getTokenInfoCached(tokenAddress);
         const paymentTokenInfo = await this.getTokenInfoCached(paymentToken);
 
@@ -712,8 +723,6 @@ export class QuickNodeWebhookManager {
           outputMint = receivedNonPaymentToken.mint;
           inputAmountRaw = Math.abs(spentPaymentToken.changeRaw);
           outputAmountRaw = receivedNonPaymentToken.changeRaw;
-          
-          console.log(`✅ [QuickNode] BUY detected: ${this.tokenMetadataService.getTokenSymbol(outputMint)} for ${this.tokenMetadataService.getTokenSymbol(inputMint)}`);
         }
       } else {
         // Ищем payment token в полученных токенах
@@ -728,16 +737,22 @@ export class QuickNodeWebhookManager {
             outputMint = receivedPaymentToken.mint;
             inputAmountRaw = Math.abs(spentNonPaymentToken.changeRaw);
             outputAmountRaw = receivedPaymentToken.changeRaw;
-            
-            console.log(`✅ [QuickNode] SELL detected: ${this.tokenMetadataService.getTokenSymbol(inputMint)} for ${this.tokenMetadataService.getTokenSymbol(outputMint)}`);
           }
         }
       }
 
-      // Если не нашли правильную пару - возвращаем null (НЕ ИСПОЛЬЗУЕМ FALLBACK!)
+      // Если не нашли правильную пару - используем УМНЫЙ fallback
       if (!inputMint || !outputMint) {
-        console.log(`⚠️ [QuickNode] Cannot determine payment token pair - ignoring`);
-        return null;
+        // Берем первые операции, но с правильным направлением
+        const spentToken = spentTokens[0];
+        const receivedToken = receivedTokens[0];
+        
+        inputMint = spentToken.mint;
+        outputMint = receivedToken.mint;
+        inputAmountRaw = Math.abs(spentToken.changeRaw);
+        outputAmountRaw = receivedToken.changeRaw;
+        
+        console.log(`⚠️ [QuickNode] Using fallback pair: ${this.tokenMetadataService.getTokenSymbol(inputMint)} → ${this.tokenMetadataService.getTokenSymbol(outputMint)}`);
       }
 
       // Фильтрация технических операций (деньги в деньги)
@@ -814,12 +829,16 @@ export class QuickNodeWebhookManager {
     return true;
   }
 
-  // 🔥🔥🔥 ИСПРАВЛЕНО: ТОЛЬКО feePayer - РЕАЛЬНЫЙ ПОЛЬЗОВАТЕЛЬ, НЕ ПУЛЫ! 🔥🔥🔥
+  // 🔥🔥🔥 ПРИОРИТЕТ feePayer, НО С FALLBACK НА ВСЯКИЙ СЛУЧАЙ 🔥🔥🔥
   private extractWalletAddressFromTransaction(txData: any): string | null {
-    // 🔥 ТОЛЬКО feePayer (реальный пользователь) - никаких fallback на пулы!
+    // 🔥 ПРИОРИТЕТ: feePayer (реальный пользователь)
     if (txData.feePayer) return txData.feePayer;
     
-    // НЕ БЕРЕМ owner из балансов - это может быть пул AMM!
+    // Fallback на всякий случай (хотя feePayer должен быть всегда)
+    if (txData.meta?.preTokenBalances?.[0]?.owner) return txData.meta.preTokenBalances[0].owner;
+    if (txData.meta?.postTokenBalances?.[0]?.owner) return txData.meta.postTokenBalances[0].owner;
+    if (txData.transaction?.message?.accountKeys?.[0]) return txData.transaction.message.accountKeys[0];
+    
     return null;
   }
 
