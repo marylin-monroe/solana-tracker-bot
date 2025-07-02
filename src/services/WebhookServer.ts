@@ -497,6 +497,11 @@ export class WebhookServer {
       const spentTokens = Array.from(tokenChanges.values()).filter(c => c.changeUI < 0);
       const receivedTokens = Array.from(tokenChanges.values()).filter(c => c.changeUI > 0);
 
+      // 🔍🔍🔍 ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ДЛЯ ОТЛАДКИ 🔍🔍🔍
+      console.log(`\n🔍 [WebhookServer] ALL TOKEN CHANGES:`, Array.from(tokenChanges.entries()));
+      console.log(`💸 SPENT TOKENS:`, spentTokens.map(t => `${this.tokenMetadataService.getTokenSymbol(t.mint)}(${t.mint.slice(0,8)}): ${t.changeUI}`));
+      console.log(`💰 RECEIVED TOKENS:`, receivedTokens.map(t => `${this.tokenMetadataService.getTokenSymbol(t.mint)}(${t.mint.slice(0,8)}): ${t.changeUI}`));
+
       // 🔥🔥🔥 ПРАВИЛЬНАЯ ЛОГИКА: ИЩЕМ PAYMENT TOKEN ПАРУ 🔥🔥🔥
       if (spentTokens.length === 0 || receivedTokens.length === 0) {
         console.log(`⚠️ [WebhookServer] No valid operations: spent=${spentTokens.length}, received=${receivedTokens.length}`);
@@ -511,9 +516,13 @@ export class WebhookServer {
 
       // Ищем payment token в потраченных токенах
       const spentPaymentToken = spentTokens.find(token => this.PAYMENT_TOKENS.has(token.mint));
+      console.log(`🔍 SPENT PAYMENT TOKEN:`, spentPaymentToken ? `${this.tokenMetadataService.getTokenSymbol(spentPaymentToken.mint)}(${spentPaymentToken.mint.slice(0,8)})` : 'NONE');
+      
       if (spentPaymentToken) {
         // BUY: Тратим payment token -> получаем обычный токен
         const receivedNonPaymentToken = receivedTokens.find(token => !this.PAYMENT_TOKENS.has(token.mint));
+        console.log(`🔍 RECEIVED NON-PAYMENT TOKEN:`, receivedNonPaymentToken ? `${this.tokenMetadataService.getTokenSymbol(receivedNonPaymentToken.mint)}(${receivedNonPaymentToken.mint.slice(0,8)})` : 'NONE');
+        
         if (receivedNonPaymentToken) {
           inputMint = spentPaymentToken.mint;
           outputMint = receivedNonPaymentToken.mint;
@@ -525,9 +534,13 @@ export class WebhookServer {
       } else {
         // Ищем payment token в полученных токенах
         const receivedPaymentToken = receivedTokens.find(token => this.PAYMENT_TOKENS.has(token.mint));
+        console.log(`🔍 RECEIVED PAYMENT TOKEN:`, receivedPaymentToken ? `${this.tokenMetadataService.getTokenSymbol(receivedPaymentToken.mint)}(${receivedPaymentToken.mint.slice(0,8)})` : 'NONE');
+        
         if (receivedPaymentToken) {
           // SELL: Тратим обычный токен -> получаем payment token
           const spentNonPaymentToken = spentTokens.find(token => !this.PAYMENT_TOKENS.has(token.mint));
+          console.log(`🔍 SPENT NON-PAYMENT TOKEN:`, spentNonPaymentToken ? `${this.tokenMetadataService.getTokenSymbol(spentNonPaymentToken.mint)}(${spentNonPaymentToken.mint.slice(0,8)})` : 'NONE');
+          
           if (spentNonPaymentToken) {
             inputMint = spentNonPaymentToken.mint;
             outputMint = receivedPaymentToken.mint;
@@ -541,13 +554,14 @@ export class WebhookServer {
 
       // Если не нашли правильную пару - используем fallback (первые операции)
       if (!inputMint || !outputMint) {
-        console.log(`⚠️ [WebhookServer] FALLBACK: Using first tokens`);
+        console.log(`⚠️ [WebhookServer] FALLBACK: Using first tokens (no proper payment pair found)`);
         const spentToken = spentTokens[0];
         const receivedToken = receivedTokens[0];
         inputMint = spentToken.mint;
         outputMint = receivedToken.mint;
         inputAmountRaw = Math.abs(spentToken.changeRaw);
         outputAmountRaw = receivedToken.changeRaw;
+        console.log(`⚠️ [WebhookServer] FALLBACK PAIR: ${this.tokenMetadataService.getTokenSymbol(inputMint)} → ${this.tokenMetadataService.getTokenSymbol(outputMint)}`);
       }
 
       // 🔥🔥🔥 ДЕТАЛЬНАЯ ОТЛАДКА ДЛЯ АНАЛИЗА РЕЗУЛЬТАТА 🔥🔥🔥
