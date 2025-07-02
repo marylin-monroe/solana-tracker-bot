@@ -628,6 +628,11 @@ export class QuickNodeWebhookManager {
         
         const preAmountUI = parseFloat(pre.uiTokenAmount.uiAmountString || pre.uiTokenAmount.uiAmount?.toString() || '0');
         const postAmountUI = post ? parseFloat(post.uiTokenAmount.uiAmountString || post.uiTokenAmount.uiAmount?.toString() || '0') : 0;
+        const tokenSymbol = this.tokenMetadataService.getTokenSymbol(pre.mint);
+  console.log(`🔍 TOKEN ${tokenSymbol} (${pre.mint.slice(0,8)}...):`);
+  console.log(`  PRE: ${preAmountUI}`);
+  console.log(`  POST: ${postAmountUI}`);
+  console.log(`  CHANGE WILL BE: ${postAmountUI - preAmountUI}`);
         const changeUI = postAmountUI - preAmountUI;
         
         const preAmountRaw = parseInt(pre.uiTokenAmount.amount || '0');
