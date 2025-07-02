@@ -1,11 +1,11 @@
-// src/services/SolanaMonitor.ts - 🔥 ПОЛНОСТЬЮ ИСПРАВЛЕННЫЙ С ПРАВИЛЬНОЙ ЛОГИКОЙ ИЗВЛЕЧЕНИЯ БАЛАНСОВ
+// src/services/SolanaMonitor.ts - 🔥 ТЕХНИЧЕСКОЕ ЛОГИРОВАНИЕ ДЛЯ ОТЛАДКИ
 import { Database } from './Database';
 import { TelegramNotifier } from './TelegramNotifier';
 import { TokenMetadataService } from './TokenMetadataService';
 import { Logger } from '../utils/Logger';
 import { TokenSwap, WalletInfo } from '../types';
 
-// 🎯 ИНТЕРФЕЙСЫ ДЛЯ АГРЕГАЦИИ ПОЗИЦИЙ
+// ИНТЕРФЕЙСЫ ДЛЯ АГРЕГАЦИИ ПОЗИЦИЙ
 interface PositionPurchase {
   transactionId: string;
   amountUSD: number;
@@ -44,7 +44,7 @@ interface AggregatedPosition {
   sizeTolerance: number; // В процентах
   suspicionScore: number; // 0-100
   
-  // 🆕 ДОПОЛНИТЕЛЬНЫЕ ПОЛЯ ДЛЯ АНАЛИЗА
+  // ДОПОЛНИТЕЛЬНЫЕ ПОЛЯ ДЛЯ АНАЛИЗА
   similarSizeCount: number;
   walletAgeDays: number;
   riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
@@ -52,7 +52,7 @@ interface AggregatedPosition {
   confidenceLevel: number;
 }
 
-// 🆕 НОВЫЕ ИНТЕРФЕЙСЫ ДЛЯ РАСШИРЕННОГО АНАЛИЗА
+// НОВЫЕ ИНТЕРФЕЙСЫ ДЛЯ РАСШИРЕННОГО АНАЛИЗА
 interface WalletAnalysis {
   address: string;
   ageDays: number;
@@ -77,14 +77,14 @@ export class SolanaMonitor {
   private tokenMetadataService: TokenMetadataService;
   private logger: Logger;
   
-  // 🎯 АКТИВНЫЕ ПОЗИЦИИ ДЛЯ АГРЕГАЦИИ
+  // АКТИВНЫЕ ПОЗИЦИИ ДЛЯ АГРЕГАЦИИ
   private activePositions = new Map<string, AggregatedPosition>();
   
-  // 🆕 КЕШИ ДЛЯ АНАЛИЗА
+  // КЕШИ ДЛЯ АНАЛИЗА
   private walletAnalysisCache = new Map<string, WalletAnalysis>();
   private tokenAnalysisCache = new Map<string, TokenAnalysis>();
   
-  // 🔧 НАСТРОЙКИ ДЕТЕКЦИИ
+  // НАСТРОЙКИ ДЕТЕКЦИИ
   private readonly config = {
     // Временное окно для агрегации
     timeWindowMinutes: 180,        // 3 часа для агрегации покупок
@@ -106,7 +106,7 @@ export class SolanaMonitor {
     minWalletAge: 7,             // Минимум 7 дней возраст кошелька
     maxWalletActivity: 100,       // Максимум 100 транзакций за день (анти-бот)
     
-    // 🆕 НОВЫЕ НАСТРОЙКИ
+    // НОВЫЕ НАСТРОЙКИ
     highRiskThreshold: 85,        // Порог высокого риска
     autoReportThreshold: 90,      // Автоматическая отправка при высоком риске
     cacheExpiryMinutes: 30,       // Время жизни кеша анализа
@@ -114,7 +114,7 @@ export class SolanaMonitor {
     positionCleanupInterval: 10   // Интервал очистки в минутах
   };
 
-  // 🆕 СТАТИСТИКА РАБОТЫ
+  // СТАТИСТИКА РАБОТЫ
   private stats = {
     totalPositionsDetected: 0,
     highRiskPositions: 0,
@@ -123,7 +123,7 @@ export class SolanaMonitor {
     cacheMisses: 0,
     positionsProcessed: 0,
     avgProcessingTime: 0,
-    // 🔥 НОВАЯ СТАТИСТИКА ФИЛЬТРАЦИИ
+    // НОВАЯ СТАТИСТИКА ФИЛЬТРАЦИИ
     filteringStats: {
       totalTransactionsProcessed: 0,
       paymentToPaymentFiltered: 0,
@@ -142,36 +142,44 @@ export class SolanaMonitor {
     // Запускаем периодическую проверку завершенных позиций
     this.startPositionMonitoring();
     
-    // 🆕 ЗАПУСКАЕМ АВТОМАТИЧЕСКУЮ ОБРАБОТКУ ДЕТЕКЦИЙ
+    // ЗАПУСКАЕМ АВТОМАТИЧЕСКУЮ ОБРАБОТКУ ДЕТЕКЦИЙ
     this.startAutomaticProcessing();
     
-    // 🆕 ЗАПУСКАЕМ ОЧИСТКУ КЕШЕЙ
+    // ЗАПУСКАЕМ ОЧИСТКУ КЕШЕЙ
     this.startCacheCleanup();
     
-    this.logger.info('🚨 SolanaMonitor ENHANCED: 🔥 ПРОТОКОЛ "ЖЕЛЕЗНЫЙ ДОЛЛАР" - ПОЛНОСТЬЮ ИСПРАВЛЕН + Position aggregation');
+    this.logger.info('[SolanaMonitor] CONSTRUCTOR: Initialized with technical debugging + Position aggregation');
   }
 
-  // 🔥🔥🔥 ГЛАВНЫЙ МЕТОД - ПОЛНОСТЬЮ ПЕРЕПИСАН С ПРАВИЛЬНОЙ ЛОГИКОЙ БАЛАНСОВ 🔥🔥🔥
+  // ГЛАВНЫЙ МЕТОД - ПОЛНОСТЬЮ ПЕРЕПИСАН С ПРАВИЛЬНОЙ ЛОГИКОЙ БАЛАНСОВ
   async processTransaction(txData: any): Promise<void> {
     this.stats.filteringStats.totalTransactionsProcessed++;
     
     try {
-      // Базовая обработка транзакций
-      this.logger.debug(`[SolanaMonitor] Processing transaction: ${txData.signature}`);
+      console.log(`[SolanaMonitor] PROCESS_TX_START: signature=${txData.signature?.slice(0,12)}, timestamp=${txData.timestamp}`);
       
       // Проверяем, обрабатывали ли уже эту транзакцию
       if (await this.database.isTransactionProcessed(txData.signature)) {
         this.stats.filteringStats.duplicatesFiltered++;
+        console.log(`[SolanaMonitor] PROCESS_TX_DUPLICATE: signature=${txData.signature?.slice(0,12)} already processed`);
         return;
       }
 
-      // 🔥🔥🔥 ПРОТОКОЛ "ЖЕЛЕЗНЫЙ ДОЛЛАР": ИЗВЛЕКАЕМ ИНФОРМАЦИЮ О СВАПЕ С ПРАВИЛЬНОЙ ЛОГИКОЙ БАЛАНСОВ 🔥🔥🔥
+      // ПРОТОКОЛ "ЖЕЛЕЗНЫЙ ДОЛЛАР": ИЗВЛЕКАЕМ ИНФОРМАЦИЮ О СВАПЕ С ПРАВИЛЬНОЙ ЛОГИКОЙ БАЛАНСОВ
       const swapInfo = await this.extractSwapInfoWithFiltering(txData);
-      if (!swapInfo) return; // Уже отфильтровано в extractSwapInfoWithFiltering
+      if (!swapInfo) {
+        console.log(`[SolanaMonitor] PROCESS_TX_NO_SWAP_INFO: failed to extract swap info for signature=${txData.signature?.slice(0,12)}`);
+        return; // Уже отфильтровано в extractSwapInfoWithFiltering
+      }
 
-      // 🎯 ДОБАВЛЯЕМ В АГРЕГАЦИЮ ПОЗИЦИЙ (только для покупок)
+      console.log(`[SolanaMonitor] PROCESS_TX_SWAP_EXTRACTED: signature=${txData.signature?.slice(0,12)}, swapType=${swapInfo.swapType}, tokenSymbol=${swapInfo.tokenSymbol}, amountUSD=${swapInfo.amountUSD}`);
+
+      // ДОБАВЛЯЕМ В АГРЕГАЦИЮ ПОЗИЦИЙ (только для покупок)
       if (swapInfo.swapType === 'buy' && swapInfo.amountUSD >= 500) { // Минимум $500 для анализа
+        console.log(`[SolanaMonitor] PROCESS_TX_ADDING_TO_AGGREGATION: buy detected, amountUSD=${swapInfo.amountUSD} >= 500`);
         await this.addToPositionAggregation(swapInfo);
+      } else {
+        console.log(`[SolanaMonitor] PROCESS_TX_SKIP_AGGREGATION: swapType=${swapInfo.swapType}, amountUSD=${swapInfo.amountUSD}`);
       }
 
       // Анализируем кошелек
@@ -186,68 +194,110 @@ export class SolanaMonitor {
       }
 
       this.stats.filteringStats.validSwapsProcessed++;
-      this.logger.debug(`[SolanaMonitor] Transaction processed: ${swapInfo.tokenSymbol} - $${swapInfo.amountUSD}`);
+      console.log(`[SolanaMonitor] PROCESS_TX_COMPLETED: signature=${txData.signature?.slice(0,12)}, tokenSymbol=${swapInfo.tokenSymbol}, amountUSD=${swapInfo.amountUSD}`);
       
     } catch (error) {
+      console.error(`[SolanaMonitor] PROCESS_TX_ERROR: signature=${txData.signature?.slice(0,12)}, error=${error}`);
       this.logger.error('[SolanaMonitor] Error processing transaction:', error);
     }
   }
 
-  // 🔥🔥🔥 УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ИЗВЛЕЧЕНИЯ СВАПОВ - ФИНАЛЬНАЯ ВЕРСИЯ 🔥🔥🔥
+  // ===== УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ИЗВЛЕЧЕНИЯ СВАПОВ С МАКСИМАЛЬНЫМ ЛОГИРОВАНИЕМ =====
   private async extractSwapInfoWithFiltering(txData: any): Promise<TokenSwap | null> {
     try {
+      console.log(`[SolanaMonitor] EXTRACT_SWAP_START: signature=${txData.signature?.slice(0,12)}`);
+      
       // Проверяем базовую структуру
       if (!txData || !txData.signature || !txData.timestamp) {
-        this.logger.debug(`[SolanaMonitor] Invalid transaction structure`);
+        console.log(`[SolanaMonitor] EXTRACT_SWAP_INVALID_STRUCTURE: signature=${txData.signature}, timestamp=${txData.timestamp}`);
         return null;
       }
 
       // В SolanaMonitor txData - это уже объект транзакции
       const transaction = txData;
       
-      if (!transaction?.meta) return null;
+      if (!transaction?.meta) {
+        console.log(`[SolanaMonitor] EXTRACT_SWAP_NO_META: transaction.meta is missing`);
+        return null;
+      }
 
       const preTokenBalances = transaction.meta.preTokenBalances || [];
       const postTokenBalances = transaction.meta.postTokenBalances || [];
       
-      // 🔥 ИСПРАВЛЕНИЕ №1: Правильный путь к accountKeys
+      console.log(`[SolanaMonitor] EXTRACT_SWAP_BALANCES: preTokenBalances.length=${preTokenBalances.length}, postTokenBalances.length=${postTokenBalances.length}`);
+      
+      // ИСПРАВЛЕНИЕ №1: Правильный путь к accountKeys
       const accountKeys = transaction.transaction?.message?.accountKeys || [];
+      console.log(`[SolanaMonitor] EXTRACT_SWAP_ACCOUNT_KEYS: accountKeys.length=${accountKeys.length}`);
+      
       const walletAddress = this.extractWalletAddressFromTransaction(transaction);
 
       if (!walletAddress || walletAddress === 'UnknownWallet') {
-        this.logger.debug(`[SolanaMonitor] Cannot determine wallet address`);
+        console.log(`[SolanaMonitor] EXTRACT_SWAP_NO_WALLET: walletAddress=${walletAddress}`);
         return null;
       }
+
+      console.log(`[SolanaMonitor] EXTRACT_SWAP_WALLET_FOUND: walletAddress=${walletAddress}`);
 
       const tokenChanges = new Map<string, { change: number, mint: string, decimals: number }>();
 
       // Анализ существующих токен-аккаунтов
+      let preAnalyzed = 0;
       for (const pre of preTokenBalances) {
-        if (pre.owner !== walletAddress) continue;
+        if (pre.owner !== walletAddress) {
+          console.log(`[SolanaMonitor] EXTRACT_SWAP_SKIP_PRE: pre.owner=${pre.owner} != walletAddress=${walletAddress}, mint=${pre.mint?.slice(0,8)}`);
+          continue;
+        }
+        preAnalyzed++;
+        
         const post = postTokenBalances.find(p => p.accountIndex === pre.accountIndex);
-        const change = (post ? parseFloat(post.uiTokenAmount.amount) : 0) - parseFloat(pre.uiTokenAmount.amount);
+        const preAmount = parseFloat(pre.uiTokenAmount.amount);
+        const postAmount = post ? parseFloat(post.uiTokenAmount.amount) : 0;
+        const change = postAmount - preAmount;
+        
+        console.log(`[SolanaMonitor] EXTRACT_SWAP_PRE_ANALYSIS: mint=${pre.mint?.slice(0,8)}, preAmount=${preAmount}, postAmount=${postAmount}, change=${change}, decimals=${pre.uiTokenAmount.decimals}`);
+        
         if (Math.abs(change) > 1e-9) {
           tokenChanges.set(pre.mint, { change, mint: pre.mint, decimals: pre.uiTokenAmount.decimals });
+          console.log(`[SolanaMonitor] EXTRACT_SWAP_TOKEN_CHANGE_ADDED: mint=${pre.mint?.slice(0,8)}, change=${change}`);
         }
       }
+      
+      console.log(`[SolanaMonitor] EXTRACT_SWAP_PRE_SUMMARY: preAnalyzed=${preAnalyzed} out of ${preTokenBalances.length} total`);
 
-      // 🔥 ИСПРАВЛЕНИЕ №2: Анализ НОВЫХ токен-аккаунтов
+      // ИСПРАВЛЕНИЕ №2: Анализ НОВЫХ токен-аккаунтов
+      let newAccountsAnalyzed = 0;
       for (const post of postTokenBalances) {
-        if (post.owner !== walletAddress || tokenChanges.has(post.mint)) continue;
+        if (post.owner !== walletAddress || tokenChanges.has(post.mint)) {
+          if (post.owner !== walletAddress) {
+            console.log(`[SolanaMonitor] EXTRACT_SWAP_SKIP_POST: post.owner=${post.owner} != walletAddress=${walletAddress}, mint=${post.mint?.slice(0,8)}`);
+          }
+          continue;
+        }
+        
         const isNewAccount = !preTokenBalances.find(p => p.accountIndex === post.accountIndex);
         if (isNewAccount) {
+          newAccountsAnalyzed++;
           const change = parseFloat(post.uiTokenAmount.amount);
+          
+          console.log(`[SolanaMonitor] EXTRACT_SWAP_NEW_ACCOUNT: mint=${post.mint?.slice(0,8)}, change=${change}, decimals=${post.uiTokenAmount.decimals}`);
+          
           if (change > 1e-9) {
             tokenChanges.set(post.mint, { change, mint: post.mint, decimals: post.uiTokenAmount.decimals });
+            console.log(`[SolanaMonitor] EXTRACT_SWAP_NEW_TOKEN_CHANGE_ADDED: mint=${post.mint?.slice(0,8)}, change=${change}`);
           }
         }
       }
+      
+      console.log(`[SolanaMonitor] EXTRACT_SWAP_POST_SUMMARY: newAccountsAnalyzed=${newAccountsAnalyzed}`);
 
-      // 🔥🔥🔥 АНАЛИЗИРУЕМ ИЗМЕНЕНИЯ НАТИВНОГО SOL 🔥🔥🔥
+      // АНАЛИЗИРУЕМ ИЗМЕНЕНИЯ НАТИВНОГО SOL
       const walletIndex = accountKeys.findIndex((key: any) => {
         const keyString = typeof key === 'string' ? key : key?.pubkey || key?.toString?.() || '';
         return keyString === walletAddress;
       });
+      
+      console.log(`[SolanaMonitor] EXTRACT_SWAP_WALLET_INDEX: walletIndex=${walletIndex}`);
       
       if (walletIndex !== -1 && transaction.meta?.preBalances && transaction.meta?.postBalances) {
         const preSolBalance = transaction.meta.preBalances[walletIndex] || 0;
@@ -255,13 +305,16 @@ export class SolanaMonitor {
         const solChangeRaw = postSolBalance - preSolBalance;
         const solChange = solChangeRaw / 1e9; // SOL имеет 9 decimals
         
+        console.log(`[SolanaMonitor] EXTRACT_SWAP_SOL_ANALYSIS: preSolBalance=${preSolBalance}, postSolBalance=${postSolBalance}, solChangeRaw=${solChangeRaw}, solChange=${solChange}`);
+        
         if (Math.abs(solChange) > 1e-9) {
-          this.logger.debug(`[SolanaMonitor] NATIVE SOL CHANGE: ${solChange} SOL`);
+          console.log(`[SolanaMonitor] EXTRACT_SWAP_SOL_CHANGE_DETECTED: solChange=${solChange}`);
           tokenChanges.set('So11111111111111111111111111111111111111112', {
             change: solChange,
             mint: 'So11111111111111111111111111111111111111112',
             decimals: 9
           });
+          console.log(`[SolanaMonitor] EXTRACT_SWAP_SOL_CHANGE_ADDED: solChange=${solChange}`);
         }
       }
 
@@ -269,42 +322,61 @@ export class SolanaMonitor {
       const spentTokens = Array.from(tokenChanges.values()).filter(c => c.change < 0);
       const receivedTokens = Array.from(tokenChanges.values()).filter(c => c.change > 0);
 
+      console.log(`[SolanaMonitor] EXTRACT_SWAP_TOKEN_SUMMARY: spentTokens.length=${spentTokens.length}, receivedTokens.length=${receivedTokens.length}`);
+      
+      spentTokens.forEach((token, index) => {
+        console.log(`[SolanaMonitor] EXTRACT_SWAP_SPENT_TOKEN_${index}: mint=${token.mint?.slice(0,8)}, change=${token.change}, decimals=${token.decimals}`);
+      });
+      
+      receivedTokens.forEach((token, index) => {
+        console.log(`[SolanaMonitor] EXTRACT_SWAP_RECEIVED_TOKEN_${index}: mint=${token.mint?.slice(0,8)}, change=${token.change}, decimals=${token.decimals}`);
+      });
+
       // Простой случай: один токен ушел, один пришел
       if (spentTokens.length === 1 && receivedTokens.length === 1) {
         const inputMint = spentTokens[0].mint;
         const outputMint = receivedTokens[0].mint;
         
+        console.log(`[SolanaMonitor] EXTRACT_SWAP_SIMPLE_CASE: inputMint=${inputMint?.slice(0,8)}, outputMint=${outputMint?.slice(0,8)}`);
+        
         // Конвертируем UI amounts обратно в raw amounts
         const inputAmountRaw = Math.abs(spentTokens[0].change) * Math.pow(10, spentTokens[0].decimals);
         const outputAmountRaw = receivedTokens[0].change * Math.pow(10, receivedTokens[0].decimals);
 
-        // 🔥🔥🔥 ВЫЗЫВАЕМ ЕДИНЫЙ РАСЧЕТНЫЙ ЦЕНТР 🔥🔥🔥
+        console.log(`[SolanaMonitor] EXTRACT_SWAP_RAW_AMOUNTS: inputAmountRaw=${inputAmountRaw}, outputAmountRaw=${outputAmountRaw}`);
+
+        // ВЫЗЫВАЕМ ЕДИНЫЙ РАСЧЕТНЫЙ ЦЕНТР С ЛОГИРОВАНИЕМ
+        console.log(`[SolanaMonitor] CALLING_UNIFIED_CALCULATOR: inputMint=${inputMint}, inputAmountRaw=${inputAmountRaw}, outputMint=${outputMint}, outputAmountRaw=${outputAmountRaw}`);
+        
         const valueCalculation = await this.tokenMetadataService.calculateSwapUSDValue(
           inputMint, inputAmountRaw, outputMint, outputAmountRaw
         );
         
         if (!valueCalculation) {
-          // Расчет не удался или это нецелевой свап - игнорируем
-          this.logger.debug(`[SolanaMonitor] Value calculation failed or filtered swap`);
+          console.log(`[SolanaMonitor] UNIFIED_CALCULATOR_FILTERED: No result from calculateSwapUSDValue`);
           return null;
         }
         
-        // 🔥 ПОЛУЧАЕМ ВСЕ ГОТОВЫЕ ДАННЫЕ ИЗ ЕДИНОГО РАСЧЕТНОГО ЦЕНТРА
+        console.log(`[SolanaMonitor] UNIFIED_CALCULATOR_RESULT: amountUSD=${valueCalculation.amountUSD}, swapType=${valueCalculation.swapType}, tokenAddress=${valueCalculation.tokenAddress}, paymentToken=${valueCalculation.paymentToken}, paymentTokenAmount=${valueCalculation.paymentTokenAmount}, paymentTokenPrice=${valueCalculation.paymentTokenPrice}`);
+        
+        // ПОЛУЧАЕМ ВСЕ ГОТОВЫЕ ДАННЫЕ ИЗ ЕДИНОГО РАСЧЕТНОГО ЦЕНТРА
         const { amountUSD, swapType, tokenAddress, paymentToken, paymentTokenAmount, paymentTokenPrice } = valueCalculation;
 
         // Проверяем минимальный порог
         if (amountUSD < 100) { // Минимум $100 для обработки
-          this.logger.debug(`[SolanaMonitor] Below minimum threshold: ${amountUSD}`);
+          console.log(`[SolanaMonitor] EXTRACT_SWAP_BELOW_THRESHOLD: amountUSD=${amountUSD} < 100`);
           return null;
         }
 
-        // 🔥 ПОЛУЧАЕМ МЕТАДАННЫЕ ДЛЯ ТОКЕНА
+        // ПОЛУЧАЕМ МЕТАДАННЫЕ ДЛЯ ТОКЕНА
         const tokenMetadata = await this.tokenMetadataService.getTokenMetadata(tokenAddress);
         const tokenSymbol = tokenMetadata?.symbol || this.tokenMetadataService.getTokenSymbol(tokenAddress);
         const tokenName = tokenMetadata?.name || `Token ${tokenAddress.slice(0, 8)}...`;
         const tokenDecimals = tokenMetadata?.decimals ?? 9;
 
-        // 🔥 ИСПРАВЛЕНО: Получаем данные о кошельке для обязательных полей
+        console.log(`[SolanaMonitor] EXTRACT_SWAP_TOKEN_METADATA: tokenSymbol=${tokenSymbol}, tokenName=${tokenName}, tokenDecimals=${tokenDecimals}`);
+
+        // ИСПРАВЛЕНО: Получаем данные о кошельке для обязательных полей
         const walletInfo = await this.getWalletAnalysis(walletAddress);
         
         // Рассчитываем количество токенов на основе типа свапа (используем UI amounts)
@@ -312,10 +384,14 @@ export class SolanaMonitor {
           receivedTokens[0].change :
           Math.abs(spentTokens[0].change);
 
+        console.log(`[SolanaMonitor] EXTRACT_SWAP_TOKEN_AMOUNT_CALC: swapType=${swapType}, tokenAmount=${tokenAmount}, calculation=${swapType === 'buy' ? `received=${receivedTokens[0].change}` : `abs(spent)=${Math.abs(spentTokens[0].change)}`}`);
+
         // Получаем символ платежного токена
         const paymentTokenInfo = await this.tokenMetadataService.getTokenMetadata(paymentToken);
 
-        // 🔥🔥🔥 ФОРМИРУЕМ ПОЛНОЦЕННЫЙ ОБЪЕКТ TokenSwap С ПРОТОКОЛОМ "ЖЕЛЕЗНЫЙ ДОЛЛАР" 🔥🔥🔥
+        console.log(`[SolanaMonitor] EXTRACT_SWAP_PAYMENT_TOKEN_INFO: paymentTokenSymbol=${paymentTokenInfo?.symbol || this.tokenMetadataService.getTokenSymbol(paymentToken)}`);
+
+        // ФОРМИРУЕМ ПОЛНОЦЕННЫЙ ОБЪЕКТ TokenSwap С ПРОТОКОЛОМ "ЖЕЛЕЗНЫЙ ДОЛЛАР"
         const tokenSwap: TokenSwap = {
           transactionId: txData.signature,
           walletAddress: walletAddress,
@@ -329,12 +405,12 @@ export class SolanaMonitor {
           swapType: swapType,
           price: amountUSD / tokenAmount,
           
-          // 🔥 ИСПРАВЛЕНО: Добавлены все обязательные поля
+          // ИСПРАВЛЕНО: Добавлены все обязательные поля
           isNewWallet: walletInfo.ageDays < 1,
           isReactivatedWallet: walletInfo.ageDays > 30 && walletInfo.totalTransactions < 5, // Простая логика
           daysSinceLastActivity: Math.floor(walletInfo.ageDays),
           
-          // 🔥🔥🔥 ПРОТОКОЛ "ЖЕЛЕЗНЫЙ ДОЛЛАР" - НОВЫЕ ПОЛЯ ДЛЯ TokenSwap 🔥🔥🔥
+          // ПРОТОКОЛ "ЖЕЛЕЗНЫЙ ДОЛЛАР" - НОВЫЕ ПОЛЯ ДЛЯ TokenSwap
           paymentTokenSymbol: paymentTokenInfo?.symbol || this.tokenMetadataService.getTokenSymbol(paymentToken),
           paymentTokenAmount: paymentTokenAmount,
           paymentTokenPrice: paymentTokenPrice,
@@ -343,39 +419,92 @@ export class SolanaMonitor {
           rawTokenAmount: swapType === 'buy' ? outputAmountRaw : inputAmountRaw,
         };
 
-        this.logger.info(`🔥 [SolanaMonitor] ✅ Valid ${swapType.toUpperCase()}: ${tokenSwap.tokenSymbol} - ${amountUSD.toFixed(0)}`);
+        console.log(`[SolanaMonitor] EXTRACT_SWAP_TOKEN_SWAP_CREATED: transactionId=${tokenSwap.transactionId?.slice(0,12)}, walletAddress=${tokenSwap.walletAddress?.slice(0,8)}, tokenSymbol=${tokenSwap.tokenSymbol}, swapType=${tokenSwap.swapType}, amountUSD=${tokenSwap.amountUSD}`);
+
+        this.logger.info(`[SolanaMonitor] Valid ${swapType.toUpperCase()}: ${tokenSwap.tokenSymbol} - ${amountUSD.toFixed(0)}`);
         return tokenSwap;
       } else {
-        this.logger.debug(`[SolanaMonitor] Complex swap detected (${spentTokens.length} spent, ${receivedTokens.length} received) - skipping for now`);
+        console.log(`[SolanaMonitor] EXTRACT_SWAP_COMPLEX: Complex swap detected (${spentTokens.length} spent, ${receivedTokens.length} received) - skipping for now`);
         return null;
       }
 
     } catch (error) {
+      console.error(`[SolanaMonitor] EXTRACT_SWAP_ERROR: ${error}`);
       this.logger.error('[SolanaMonitor] Error extracting swap info:', error);
       return null;
     }
   }
 
-  // 🔥🔥🔥 ИСПРАВЛЕНО: Правильное извлечение адреса кошелька с правильным приоритетом
+  // ===== КРИТИЧЕСКАЯ ФУНКЦИЯ С МАКСИМАЛЬНЫМ ЛОГИРОВАНИЕМ =====
   private extractWalletAddressFromTransaction(txData: any): string | null {
-    // 🔥 ПРАВИЛЬНЫЙ ПОРЯДОК ПРИОРИТЕТОВ:
-    // 1. feePayer (наиболее надежный - это всегда кошелек пользователя)
-    if (txData.feePayer) return txData.feePayer;
+    console.log(`[SolanaMonitor] EXTRACT_WALLET_START: Analyzing transaction for wallet address`);
     
-    // 2. Из балансов - берем первого owner (это реальный кошелек пользователя)
-    if (txData.meta?.preTokenBalances?.[0]?.owner) return txData.meta.preTokenBalances[0].owner;
-    if (txData.meta?.postTokenBalances?.[0]?.owner) return txData.meta.postTokenBalances[0].owner;
+    let walletSource = '';
+    let walletAddress = null;
     
-    // 3. ТОЛЬКО В КРАЙНЕМ СЛУЧАЕ: первый accountKey (может быть программой!)
-    if (txData.transaction?.message?.accountKeys?.[0]) {
+    // ПРИОРИТЕТ 1: feePayer (наиболее надежный - это всегда кошелек пользователя)
+    if (txData.feePayer) {
+      walletAddress = txData.feePayer;
+      walletSource = 'feePayer';
+      console.log(`[SolanaMonitor] EXTRACT_WALLET_FEEPAYER: Found feePayer=${walletAddress}`);
+    }
+    // ПРИОРИТЕТ 2: accountKeys[0]
+    else if (txData.transaction?.message?.accountKeys?.[0]) {
       const key = txData.transaction.message.accountKeys[0];
-      return typeof key === 'string' ? key : key?.pubkey || key?.toString?.() || null;
+      walletAddress = typeof key === 'string' ? key : key?.pubkey || key?.toString?.() || null;
+      walletSource = 'accountKeys[0]';
+      console.log(`[SolanaMonitor] EXTRACT_WALLET_ACCOUNT_KEYS: Found accountKeys[0]=${walletAddress}`);
+    }
+    // ПРИОРИТЕТ 3: Из балансов - берем первого owner (МОЖЕТ БЫТЬ ПУЛОМ!)
+    else if (txData.meta?.preTokenBalances?.[0]?.owner) {
+      walletAddress = txData.meta.preTokenBalances[0].owner;
+      walletSource = 'preTokenBalances[0].owner';
+      console.log(`[SolanaMonitor] EXTRACT_WALLET_PRE_TOKEN_BALANCE: Found preTokenBalances[0].owner=${walletAddress} - WARNING: MAY BE POOL!`);
+    }
+    else if (txData.meta?.postTokenBalances?.[0]?.owner) {
+      walletAddress = txData.meta.postTokenBalances[0].owner;
+      walletSource = 'postTokenBalances[0].owner';
+      console.log(`[SolanaMonitor] EXTRACT_WALLET_POST_TOKEN_BALANCE: Found postTokenBalances[0].owner=${walletAddress} - WARNING: MAY BE POOL!`);
     }
     
-    return null;
+    if (walletAddress) {
+      console.log(`[SolanaMonitor] EXTRACT_WALLET_SUCCESS: source=${walletSource}, address=${walletAddress}`);
+      
+      // ДЕТЕКЦИЯ ИЗВЕСТНЫХ ПУЛОВ
+      if (walletAddress === 'BFauTbx7qMjsz9dQJSmSraxmCD1C7x9DwJ9ynYreB1YJ') {
+        console.log(`[SolanaMonitor] EXTRACT_WALLET_WARNING: DETECTED KNOWN POOL ADDRESS! This is AMM pool, not user wallet!`);
+      }
+      
+      // АНАЛИЗ ВСЕХ БАЛАНСОВ ДЛЯ КОНТЕКСТА
+      if (txData.meta?.preTokenBalances) {
+        console.log(`[SolanaMonitor] EXTRACT_WALLET_CONTEXT_PRE: All preTokenBalances owners:`);
+        txData.meta.preTokenBalances.forEach((balance: any, index: number) => {
+          console.log(`[SolanaMonitor] EXTRACT_WALLET_CONTEXT_PRE_${index}: owner=${balance.owner}, mint=${balance.mint?.slice(0,8)}`);
+        });
+      }
+      
+      if (txData.meta?.postTokenBalances) {
+        console.log(`[SolanaMonitor] EXTRACT_WALLET_CONTEXT_POST: All postTokenBalances owners:`);
+        txData.meta.postTokenBalances.forEach((balance: any, index: number) => {
+          console.log(`[SolanaMonitor] EXTRACT_WALLET_CONTEXT_POST_${index}: owner=${balance.owner}, mint=${balance.mint?.slice(0,8)}`);
+        });
+      }
+      
+      if (txData.transaction?.message?.accountKeys) {
+        console.log(`[SolanaMonitor] EXTRACT_WALLET_CONTEXT_KEYS: All accountKeys:`);
+        txData.transaction.message.accountKeys.forEach((key: any, index: number) => {
+          const keyString = typeof key === 'string' ? key : key?.pubkey || key?.toString?.() || 'unknown';
+          console.log(`[SolanaMonitor] EXTRACT_WALLET_CONTEXT_KEY_${index}: ${keyString}`);
+        });
+      }
+    } else {
+      console.log(`[SolanaMonitor] EXTRACT_WALLET_FAILED: No wallet address found in any source`);
+    }
+    
+    return walletAddress;
   }
 
-  // 🔥 ПРОТОКОЛ "ЖЕЛЕЗНЫЙ ДОЛЛАР" - НОВЫЙ ПУБЛИЧНЫЙ МЕТОД 🔥
+  // ПРОТОКОЛ "ЖЕЛЕЗНЫЙ ДОЛЛАР" - НОВЫЙ ПУБЛИЧНЫЙ МЕТОД
   public getAggregatedPositionsForWallets(walletAddresses: string[]): Map<string, AggregatedPosition[]> {
     const result = new Map<string, AggregatedPosition[]>();
     
@@ -394,24 +523,27 @@ export class SolanaMonitor {
       }
     }
     
-    this.logger.info(`🔥 [getAggregatedPositionsForWallets] Found ${result.size} wallets with ${Array.from(result.values()).reduce((sum, positions) => sum + positions.length, 0)} total positions`);
+    this.logger.info(`[getAggregatedPositionsForWallets] Found ${result.size} wallets with ${Array.from(result.values()).reduce((sum, positions) => sum + positions.length, 0)} total positions`);
     return result;
   }
 
-  // 🎯 ОСНОВНОЙ МЕТОД АГРЕГАЦИИ ПОЗИЦИЙ
+  // ОСНОВНОЙ МЕТОД АГРЕГАЦИИ ПОЗИЦИЙ
   private async addToPositionAggregation(swap: TokenSwap): Promise<void> {
     const startTime = Date.now();
     
     try {
+      console.log(`[SolanaMonitor] ADD_TO_AGGREGATION_START: walletAddress=${swap.walletAddress?.slice(0,8)}, tokenAddress=${swap.tokenAddress?.slice(0,8)}, amountUSD=${swap.amountUSD}`);
+      
       // Фильтруем слишком крупные покупки (не разбивка)
       if (swap.amountUSD > this.config.maxIndividualUSD) {
+        console.log(`[SolanaMonitor] ADD_TO_AGGREGATION_TOO_LARGE: amountUSD=${swap.amountUSD} > maxIndividualUSD=${this.config.maxIndividualUSD}`);
         return;
       }
 
       // Проверяем базовые фильтры кошелька
       const walletFilters = await this.checkWalletFilters(swap.walletAddress);
       if (!walletFilters.passed) {
-        this.logger.debug(`Wallet filtered out: ${walletFilters.reason}`);
+        console.log(`[SolanaMonitor] ADD_TO_AGGREGATION_WALLET_FILTERED: reason=${walletFilters.reason}`);
         return;
       }
 
@@ -426,13 +558,19 @@ export class SolanaMonitor {
         timestamp: swap.timestamp
       };
 
+      console.log(`[SolanaMonitor] ADD_TO_AGGREGATION_NEW_PURCHASE: positionKey=${positionKey}, price=${price}, amountUSD=${swap.amountUSD}`);
+
       // Получаем или создаем позицию
       let position = this.activePositions.get(positionKey);
       
       if (!position) {
-        // 🆕 РАСШИРЕННЫЙ АНАЛИЗ ПРИ СОЗДАНИИ ПОЗИЦИИ
+        console.log(`[SolanaMonitor] ADD_TO_AGGREGATION_NEW_POSITION: creating new position for key=${positionKey}`);
+        
+        // РАСШИРЕННЫЙ АНАЛИЗ ПРИ СОЗДАНИИ ПОЗИЦИИ
         const walletAnalysis = await this.getWalletAnalysis(swap.walletAddress);
         const tokenAnalysis = await this.getTokenAnalysis(swap.tokenAddress, swap.tokenSymbol);
+        
+        console.log(`[SolanaMonitor] ADD_TO_AGGREGATION_ANALYSIS: walletAgeDays=${walletAnalysis.ageDays}, tokenAgeDays=${tokenAnalysis.ageDays}`);
         
         // Создаем новую позицию
         position = {
@@ -456,7 +594,7 @@ export class SolanaMonitor {
           hasSimilarSizes: false,
           sizeTolerance: 0,
           suspicionScore: 0,
-          // 🆕 НОВЫЕ ПОЛЯ
+          // НОВЫЕ ПОЛЯ
           similarSizeCount: 0,
           walletAgeDays: walletAnalysis.ageDays,
           riskLevel: 'LOW',
@@ -464,12 +602,16 @@ export class SolanaMonitor {
           confidenceLevel: 0
         };
         this.activePositions.set(positionKey, position);
+        console.log(`[SolanaMonitor] ADD_TO_AGGREGATION_POSITION_CREATED: positionKey=${positionKey}`);
       }
 
       // Проверяем временное окно
       const timeDiffMinutes = (swap.timestamp.getTime() - position.firstBuyTime.getTime()) / (1000 * 60);
       
+      console.log(`[SolanaMonitor] ADD_TO_AGGREGATION_TIME_CHECK: timeDiffMinutes=${timeDiffMinutes}, maxWindowMinutes=${this.config.timeWindowMinutes}`);
+      
       if (timeDiffMinutes > this.config.timeWindowMinutes) {
+        console.log(`[SolanaMonitor] ADD_TO_AGGREGATION_TIME_EXPIRED: analyzing old position and creating new one`);
         // Если вышли за временное окно - анализируем старую позицию и начинаем новую
         await this.analyzePosition(position);
         
@@ -513,18 +655,21 @@ export class SolanaMonitor {
       position.lastBuyTime = swap.timestamp;
       position.timeWindowMinutes = timeDiffMinutes;
 
+      console.log(`[SolanaMonitor] ADD_TO_AGGREGATION_PURCHASE_ADDED: purchaseCount=${position.purchaseCount}, totalUSD=${position.totalUSD}, totalTokens=${position.totalTokens}`);
+
       // Пересчитываем метрики
       this.recalculatePositionMetrics(position);
 
-      this.logger.debug(`Added to position: ${swap.tokenSymbol} - $${swap.amountUSD} (${position.purchaseCount} purchases, score: ${position.suspicionScore})`);
+      console.log(`[SolanaMonitor] ADD_TO_AGGREGATION_METRICS_RECALCULATED: suspicionScore=${position.suspicionScore}, hasSimilarSizes=${position.hasSimilarSizes}, riskLevel=${position.riskLevel}`);
 
-      // 🆕 УЛУЧШЕННАЯ ПРОВЕРКА НА ПОДОЗРИТЕЛЬНОСТЬ
+      // УЛУЧШЕННАЯ ПРОВЕРКА НА ПОДОЗРИТЕЛЬНОСТЬ
       if (position.purchaseCount >= this.config.minPurchaseCount) {
         if (position.suspicionScore >= this.config.minSuspicionScore) {
-          this.logger.info(`🎯 Suspicious position pattern detected: ${position.tokenSymbol} - $${position.totalUSD} in ${position.purchaseCount} purchases (score: ${position.suspicionScore})`);
+          console.log(`[SolanaMonitor] ADD_TO_AGGREGATION_SUSPICIOUS_DETECTED: tokenSymbol=${position.tokenSymbol}, totalUSD=${position.totalUSD}, purchaseCount=${position.purchaseCount}, suspicionScore=${position.suspicionScore}`);
           
-          // 🆕 АВТОМАТИЧЕСКАЯ ОТПРАВКА ПРИ ОЧЕНЬ ВЫСОКОМ РИСКЕ
+          // АВТОМАТИЧЕСКАЯ ОТПРАВКА ПРИ ОЧЕНЬ ВЫСОКОМ РИСКЕ
           if (position.suspicionScore >= this.config.autoReportThreshold) {
+            console.log(`[SolanaMonitor] ADD_TO_AGGREGATION_AUTO_REPORT: sending alert for high risk position`);
             await this.sendPositionSplittingAlert(position);
             this.stats.alertsSent++;
           }
@@ -536,21 +681,26 @@ export class SolanaMonitor {
       this.stats.avgProcessingTime = (this.stats.avgProcessingTime + processingTime) / 2;
       this.stats.positionsProcessed++;
 
+      console.log(`[SolanaMonitor] ADD_TO_AGGREGATION_COMPLETED: processingTime=${processingTime}ms, positionKey=${positionKey}`);
+
     } catch (error) {
+      console.error(`[SolanaMonitor] ADD_TO_AGGREGATION_ERROR: ${error}`);
       this.logger.error('Error adding to position aggregation:', error);
     }
   }
 
-  // 🆕 НОВЫЙ МЕТОД: АНАЛИЗ КОШЕЛЬКА С КЕШИРОВАНИЕМ
+  // НОВЫЙ МЕТОД: АНАЛИЗ КОШЕЛЬКА С КЕШИРОВАНИЕМ
   private async getWalletAnalysis(walletAddress: string): Promise<WalletAnalysis> {
     // Проверяем кеш
     const cached = this.walletAnalysisCache.get(walletAddress);
     if (cached && Date.now() - cached.ageDays < this.config.cacheExpiryMinutes * 60 * 1000) {
       this.stats.cacheHits++;
+      console.log(`[SolanaMonitor] GET_WALLET_ANALYSIS_CACHE_HIT: walletAddress=${walletAddress?.slice(0,8)}`);
       return cached;
     }
 
     this.stats.cacheMisses++;
+    console.log(`[SolanaMonitor] GET_WALLET_ANALYSIS_CACHE_MISS: walletAddress=${walletAddress?.slice(0,8)}`);
 
     // Получаем информацию о кошельке
     const walletInfo = await this.database.getWalletInfo(walletAddress);
@@ -562,7 +712,9 @@ export class SolanaMonitor {
     const avgTxSize = recentTxs.length > 0 ? 
       recentTxs.reduce((sum, tx) => sum + tx.amountUSD, 0) / recentTxs.length : 0;
 
-    // 🆕 ДЕТЕКЦИЯ ПОДОЗРИТЕЛЬНЫХ ПАТТЕРНОВ
+    console.log(`[SolanaMonitor] GET_WALLET_ANALYSIS_DATA: walletAddress=${walletAddress?.slice(0,8)}, ageDays=${ageDays}, recentTxs=${recentTxs.length}, avgTxSize=${avgTxSize}`);
+
+    // ДЕТЕКЦИЯ ПОДОЗРИТЕЛЬНЫХ ПАТТЕРНОВ
     const suspiciousPatterns: string[] = [];
     let riskScore = 0;
 
@@ -587,6 +739,8 @@ export class SolanaMonitor {
       riskScore += 10;
     }
 
+    console.log(`[SolanaMonitor] GET_WALLET_ANALYSIS_PATTERNS: suspiciousPatterns=${JSON.stringify(suspiciousPatterns)}, riskScore=${riskScore}`);
+
     const analysis: WalletAnalysis = {
       address: walletAddress,
       ageDays,
@@ -599,19 +753,22 @@ export class SolanaMonitor {
     // Кешируем результат
     this.walletAnalysisCache.set(walletAddress, analysis);
     
+    console.log(`[SolanaMonitor] GET_WALLET_ANALYSIS_COMPLETED: walletAddress=${walletAddress?.slice(0,8)}, cached=true`);
     return analysis;
   }
 
-  // 🆕 НОВЫЙ МЕТОД: АНАЛИЗ ТОКЕНА С КЕШИРОВАНИЕМ
+  // НОВЫЙ МЕТОД: АНАЛИЗ ТОКЕНА С КЕШИРОВАНИЕМ
   private async getTokenAnalysis(tokenAddress: string, tokenSymbol: string): Promise<TokenAnalysis> {
     // Проверяем кеш
     const cached = this.tokenAnalysisCache.get(tokenAddress);
     if (cached && Date.now() - cached.ageDays < this.config.cacheExpiryMinutes * 60 * 1000) {
       this.stats.cacheHits++;
+      console.log(`[SolanaMonitor] GET_TOKEN_ANALYSIS_CACHE_HIT: tokenAddress=${tokenAddress?.slice(0,8)}`);
       return cached;
     }
 
     this.stats.cacheMisses++;
+    console.log(`[SolanaMonitor] GET_TOKEN_ANALYSIS_CACHE_MISS: tokenAddress=${tokenAddress?.slice(0,8)}`);
 
     // Получаем транзакции по токену
     const tokenTxs = await this.database.getTransactionsByTokenAddress(tokenAddress, 100);
@@ -623,7 +780,9 @@ export class SolanaMonitor {
     // Уникальные держатели
     const uniqueHolders = new Set(tokenTxs.map(tx => tx.walletAddress)).size;
 
-    // 🆕 ДЕТЕКЦИЯ ПОДОЗРИТЕЛЬНОЙ АКТИВНОСТИ
+    console.log(`[SolanaMonitor] GET_TOKEN_ANALYSIS_DATA: tokenAddress=${tokenAddress?.slice(0,8)}, ageDays=${ageDays}, tokenTxs=${tokenTxs.length}, uniqueHolders=${uniqueHolders}`);
+
+    // ДЕТЕКЦИЯ ПОДОЗРИТЕЛЬНОЙ АКТИВНОСТИ
     const riskFactors: string[] = [];
     let suspiciousActivity = false;
 
@@ -639,6 +798,8 @@ export class SolanaMonitor {
       suspiciousActivity = true;
     }
 
+    console.log(`[SolanaMonitor] GET_TOKEN_ANALYSIS_PATTERNS: riskFactors=${JSON.stringify(riskFactors)}, suspiciousActivity=${suspiciousActivity}`);
+
     const analysis: TokenAnalysis = {
       address: tokenAddress,
       symbol: tokenSymbol,
@@ -651,10 +812,11 @@ export class SolanaMonitor {
     // Кешируем результат
     this.tokenAnalysisCache.set(tokenAddress, analysis);
     
+    console.log(`[SolanaMonitor] GET_TOKEN_ANALYSIS_COMPLETED: tokenAddress=${tokenAddress?.slice(0,8)}, cached=true`);
     return analysis;
   }
 
-  // 🔧 ПЕРЕСЧЕТ МЕТРИК ПОЗИЦИИ
+  // ПЕРЕСЧЕТ МЕТРИК ПОЗИЦИИ
   private recalculatePositionMetrics(position: AggregatedPosition): void {
     const purchases = position.purchases;
     const amounts = purchases.map(p => p.amountUSD);
@@ -671,23 +833,23 @@ export class SolanaMonitor {
     position.sizeStandardDeviation = Math.sqrt(variance);
     position.sizeCoefficient = position.sizeStandardDeviation / mean;
     
-    // 🎯 ДЕТЕКЦИЯ ПОХОЖИХ СУММ
+    // ДЕТЕКЦИЯ ПОХОЖИХ СУММ
     const similarSizeAnalysis = this.detectSimilarSizes(amounts);
     position.hasSimilarSizes = similarSizeAnalysis.hasSimilar;
     position.similarSizeCount = similarSizeAnalysis.count;
     position.sizeTolerance = this.calculateSizeTolerance(amounts);
     
-    // 🎯 РАСЧЕТ ПОДОЗРИТЕЛЬНОСТИ
+    // РАСЧЕТ ПОДОЗРИТЕЛЬНОСТИ
     position.suspicionScore = this.calculateSuspicionScore(position);
     
-    // 🆕 ОПРЕДЕЛЕНИЕ УРОВНЯ РИСКА
+    // ОПРЕДЕЛЕНИЕ УРОВНЯ РИСКА
     position.riskLevel = this.determineRiskLevel(position.suspicionScore);
     
-    // 🆕 РАСЧЕТ УВЕРЕННОСТИ В ДЕТЕКЦИИ
+    // РАСЧЕТ УВЕРЕННОСТИ В ДЕТЕКЦИИ
     position.confidenceLevel = this.calculateConfidenceLevel(position);
   }
 
-  // 🎯 ДЕТЕКЦИЯ ПОХОЖИХ СУММ (КЛЮЧЕВАЯ ЛОГИКА!)
+  // ДЕТЕКЦИЯ ПОХОЖИХ СУММ (КЛЮЧЕВАЯ ЛОГИКА!)
   private detectSimilarSizes(amounts: number[]): { hasSimilar: boolean; count: number } {
     if (amounts.length < this.config.minSimilarPurchases) {
       return { hasSimilar: false, count: 0 };
@@ -728,7 +890,7 @@ export class SolanaMonitor {
     };
   }
 
-  // 🎯 РАСЧЕТ ТОЛЕРАНТНОСТИ РАЗМЕРОВ
+  // РАСЧЕТ ТОЛЕРАНТНОСТИ РАЗМЕРОВ
   private calculateSizeTolerance(amounts: number[]): number {
     if (amounts.length < 2) return 0;
     
@@ -768,7 +930,7 @@ export class SolanaMonitor {
     return maxTolerance;
   }
 
-  // 🎯 РАСЧЕТ ПОДОЗРИТЕЛЬНОСТИ (0-100) - УЛУЧШЕННЫЙ
+  // РАСЧЕТ ПОДОЗРИТЕЛЬНОСТИ (0-100) - УЛУЧШЕННЫЙ
   private calculateSuspicionScore(position: AggregatedPosition): number {
     let score = 0;
     
@@ -782,7 +944,7 @@ export class SolanaMonitor {
     if (position.totalUSD >= 25000) score += 10;
     if (position.totalUSD >= 50000) score += 10;
     
-    // 3. 🎯 ГЛАВНЫЙ КРИТЕРИЙ: Похожие размеры покупок
+    // 3. ГЛАВНЫЙ КРИТЕРИЙ: Похожие размеры покупок
     if (position.hasSimilarSizes) {
       score += 30; // Основной бонус
       
@@ -791,7 +953,7 @@ export class SolanaMonitor {
       else if (position.sizeTolerance <= 2.0) score += 10; // Точно (≤2%)
       else if (position.sizeTolerance <= 5.0) score += 5;  // Приблизительно (≤5%)
       
-      // 🆕 БОНУС ЗА КОЛИЧЕСТВО ПОХОЖИХ ПОКУПОК
+      // БОНУС ЗА КОЛИЧЕСТВО ПОХОЖИХ ПОКУПОК
       score += Math.min(position.similarSizeCount * 2, 10);
     }
     
@@ -808,7 +970,7 @@ export class SolanaMonitor {
       score -= 15; // Штраф за большую разницу в размерах
     }
     
-    // 🆕 7. ДОПОЛНИТЕЛЬНЫЕ ФАКТОРЫ РИСКА
+    // 7. ДОПОЛНИТЕЛЬНЫЕ ФАКТОРЫ РИСКА
     
     // Возраст кошелька
     if (position.walletAgeDays < 1) score += 20;
@@ -822,14 +984,14 @@ export class SolanaMonitor {
     return Math.min(Math.max(score, 0), 100);
   }
 
-  // 🆕 ОПРЕДЕЛЕНИЕ УРОВНЯ РИСКА
+  // ОПРЕДЕЛЕНИЕ УРОВНЯ РИСКА
   private determineRiskLevel(suspicionScore: number): 'LOW' | 'MEDIUM' | 'HIGH' {
     if (suspicionScore >= this.config.highRiskThreshold) return 'HIGH';
     if (suspicionScore >= this.config.minSuspicionScore) return 'MEDIUM';
     return 'LOW';
   }
 
-  // 🆕 РАСЧЕТ УВЕРЕННОСТИ В ДЕТЕКЦИИ
+  // РАСЧЕТ УВЕРЕННОСТИ В ДЕТЕКЦИИ
   private calculateConfidenceLevel(position: AggregatedPosition): number {
     let confidence = 50; // Базовая уверенность
     
@@ -847,7 +1009,7 @@ export class SolanaMonitor {
     return Math.min(Math.max(confidence, 0), 100);
   }
 
-  // 🔍 ПРОВЕРКА ФИЛЬТРОВ КОШЕЛЬКА
+  // ПРОВЕРКА ФИЛЬТРОВ КОШЕЛЬКА
   private async checkWalletFilters(walletAddress: string): Promise<{
     passed: boolean;
     reason?: string;
@@ -874,7 +1036,7 @@ export class SolanaMonitor {
     }
   }
 
-  // 🔍 АНАЛИЗ ЗАВЕРШЕННОЙ ПОЗИЦИИ
+  // АНАЛИЗ ЗАВЕРШЕННОЙ ПОЗИЦИИ
   private async analyzePosition(position: AggregatedPosition): Promise<void> {
     try {
       // Проверяем критерии для отправки алерта
@@ -882,7 +1044,7 @@ export class SolanaMonitor {
         return;
       }
 
-      // 🆕 СОХРАНЯЕМ В БАЗУ ДАННЫХ
+      // СОХРАНЯЕМ В БАЗУ ДАННЫХ
       const aggregationId = await this.database.savePositionAggregation({
         walletAddress: position.walletAddress,
         tokenAddress: position.tokenAddress,
@@ -901,7 +1063,7 @@ export class SolanaMonitor {
           amountUSD: p.amountUSD,
           timestamp: p.timestamp
         })),
-        // 🆕 ДОПОЛНИТЕЛЬНЫЕ ПОЛЯ
+        // ДОПОЛНИТЕЛЬНЫЕ ПОЛЯ
         maxPurchaseSize: position.maxPurchaseSize,
         minPurchaseSize: position.minPurchaseSize,
         sizeStdDeviation: position.sizeStandardDeviation,
@@ -914,7 +1076,7 @@ export class SolanaMonitor {
       // Отправляем алерт о подозрительной позиции
       await this.sendPositionSplittingAlert(position);
       
-      this.logger.info(`🚨 Position splitting detected and saved: ${position.tokenSymbol} - $${position.totalUSD.toFixed(0)} in ${position.purchaseCount} purchases (score: ${position.suspicionScore}, ID: ${aggregationId})`);
+      this.logger.info(`Position splitting detected and saved: ${position.tokenSymbol} - $${position.totalUSD.toFixed(0)} in ${position.purchaseCount} purchases (score: ${position.suspicionScore}, ID: ${aggregationId})`);
 
       // Обновляем статистику
       this.stats.totalPositionsDetected++;
@@ -927,17 +1089,17 @@ export class SolanaMonitor {
     }
   }
 
-  // 🔍 ПРОВЕРКА КРИТЕРИЕВ ДЛЯ АЛЕРТА
+  // ПРОВЕРКА КРИТЕРИЕВ ДЛЯ АЛЕРТА
   private shouldReportPosition(position: AggregatedPosition): boolean {
     return position.purchaseCount >= this.config.minPurchaseCount &&
            position.totalUSD >= this.config.minTotalUSD &&
            position.suspicionScore >= this.config.minSuspicionScore &&
            position.hasSimilarSizes &&
            position.timeWindowMinutes <= this.config.timeWindowMinutes &&
-           position.confidenceLevel >= 60; // 🆕 МИНИМАЛЬНАЯ УВЕРЕННОСТЬ
+           position.confidenceLevel >= 60; // МИНИМАЛЬНАЯ УВЕРЕННОСТЬ
   }
 
-  // 📢 ОТПРАВКА АЛЕРТА О РАЗБИВКЕ ПОЗИЦИИ
+  // ОТПРАВКА АЛЕРТА О РАЗБИВКЕ ПОЗИЦИИ
   private async sendPositionSplittingAlert(position: AggregatedPosition): Promise<void> {
     try {
       await this.telegramNotifier.sendPositionSplittingAlert({
@@ -967,27 +1129,27 @@ export class SolanaMonitor {
     }
   }
 
-  // 🕒 МОНИТОРИНГ ПОЗИЦИЙ (ПЕРИОДИЧЕСКАЯ ПРОВЕРКА)
+  // МОНИТОРИНГ ПОЗИЦИЙ (ПЕРИОДИЧЕСКАЯ ПРОВЕРКА)
   private startPositionMonitoring(): void {
     // Проверяем завершенные позиции каждые 5 минут
     setInterval(async () => {
       await this.checkExpiredPositions();
     }, 5 * 60 * 1000); // 5 минут
 
-    this.logger.info('🕒 Position monitoring started: checking every 5 minutes');
+    this.logger.info('Position monitoring started: checking every 5 minutes');
   }
 
-  // 🆕 АВТОМАТИЧЕСКАЯ ОБРАБОТКА ДЕТЕКЦИЙ
+  // АВТОМАТИЧЕСКАЯ ОБРАБОТКА ДЕТЕКЦИЙ
   private startAutomaticProcessing(): void {
     // Обрабатываем необработанные позиции каждые 2 минуты
     setInterval(async () => {
       await this.processUnhandledDetections();
     }, 2 * 60 * 1000); // 2 минуты
 
-    this.logger.info('🤖 Automatic processing started: every 2 minutes');
+    this.logger.info('Automatic processing started: every 2 minutes');
   }
 
-  // 🆕 ОЧИСТКА КЕШЕЙ
+  // ОЧИСТКА КЕШЕЙ
   private startCacheCleanup(): void {
     // Очищаем кеши каждые 30 минут
     setInterval(() => {
@@ -995,10 +1157,10 @@ export class SolanaMonitor {
       this.cleanupActivePositions();
     }, 30 * 60 * 1000); // 30 минут
 
-    this.logger.info('🧹 Cache cleanup started: every 30 minutes');
+    this.logger.info('Cache cleanup started: every 30 minutes');
   }
 
-  // 🕒 ПРОВЕРКА ИСТЕКШИХ ПОЗИЦИЙ
+  // ПРОВЕРКА ИСТЕКШИХ ПОЗИЦИЙ
   private async checkExpiredPositions(): Promise<void> {
     const now = Date.now();
     const expiredPositions: string[] = [];
@@ -1019,11 +1181,11 @@ export class SolanaMonitor {
     }
     
     if (expiredPositions.length > 0) {
-      this.logger.debug(`🧹 Cleaned up ${expiredPositions.length} expired positions`);
+      this.logger.debug(`Cleaned up ${expiredPositions.length} expired positions`);
     }
   }
 
-  // 🆕 ОБРАБОТКА НЕОБРАБОТАННЫХ ДЕТЕКЦИЙ
+  // ОБРАБОТКА НЕОБРАБОТАННЫХ ДЕТЕКЦИЙ
   private async processUnhandledDetections(): Promise<void> {
     try {
       const unprocessed = await this.database.getUnprocessedPositionAggregations(20);
@@ -1032,12 +1194,12 @@ export class SolanaMonitor {
         if (detection.suspicionScore >= this.config.autoReportThreshold) {
           // Отправляем алерт для высокорисковых позиций
           await this.telegramNotifier.sendCycleLog(
-            `🚨 <b>HIGH RISK POSITION DETECTED</b>\n\n` +
-            `💰 Total: <code>$${this.formatNumber(detection.totalUSD)}</code>\n` +
-            `🪙 Token: <code>#${detection.tokenSymbol}</code>\n` +
-            `👤 Wallet: <code>${detection.walletAddress.slice(0, 8)}...${detection.walletAddress.slice(-4)}</code>\n` +
-            `🎯 Risk Score: <code>${detection.suspicionScore}/100</code>\n` +
-            `🔢 Purchases: <code>${detection.purchaseCount}</code>\n\n` +
+            `HIGH RISK POSITION DETECTED\n\n` +
+            `Total: $${this.formatNumber(detection.totalUSD)}\n` +
+            `Token: #${detection.tokenSymbol}\n` +
+            `Wallet: ${detection.walletAddress.slice(0, 8)}...${detection.walletAddress.slice(-4)}\n` +
+            `Risk Score: ${detection.suspicionScore}/100\n` +
+            `Purchases: ${detection.purchaseCount}\n\n` +
             `<a href="https://solscan.io/token/${detection.tokenAddress}">Token</a> | <a href="https://solscan.io/account/${detection.walletAddress}">Wallet</a>`
           );
           
@@ -1049,7 +1211,7 @@ export class SolanaMonitor {
       }
       
       if (unprocessed.length > 0) {
-        this.logger.info(`🤖 Processed ${unprocessed.length} unhandled detections`);
+        this.logger.info(`Processed ${unprocessed.length} unhandled detections`);
       }
       
     } catch (error) {
@@ -1057,7 +1219,7 @@ export class SolanaMonitor {
     }
   }
 
-  // 🆕 ОЧИСТКА КЕШЕЙ
+  // ОЧИСТКА КЕШЕЙ
   private cleanupCaches(): void {
     const now = Date.now();
     const expiryMs = this.config.cacheExpiryMinutes * 60 * 1000;
@@ -1081,11 +1243,11 @@ export class SolanaMonitor {
     }
     
     if (walletCacheCleared > 0 || tokenCacheCleared > 0) {
-      this.logger.debug(`🧹 Cache cleanup: ${walletCacheCleared} wallets, ${tokenCacheCleared} tokens`);
+      this.logger.debug(`Cache cleanup: ${walletCacheCleared} wallets, ${tokenCacheCleared} tokens`);
     }
   }
 
-  // 🆕 ОЧИСТКА АКТИВНЫХ ПОЗИЦИЙ
+  // ОЧИСТКА АКТИВНЫХ ПОЗИЦИЙ
   private cleanupActivePositions(): void {
     if (this.activePositions.size > this.config.maxActivePositions) {
       // Удаляем самые старые позиции
@@ -1098,11 +1260,11 @@ export class SolanaMonitor {
         this.activePositions.delete(key);
       }
       
-      this.logger.info(`🧹 Removed ${toRemove.length} old active positions (limit: ${this.config.maxActivePositions})`);
+      this.logger.info(`Removed ${toRemove.length} old active positions (limit: ${this.config.maxActivePositions})`);
     }
   }
 
-  // 🆕 ФОРМАТИРОВАНИЕ ЧИСЕЛ
+  // ФОРМАТИРОВАНИЕ ЧИСЕЛ
   private formatNumber(num: number): string {
     if (num >= 1_000_000) {
       return `${(num / 1_000_000).toFixed(1)}M`;
@@ -1133,13 +1295,13 @@ export class SolanaMonitor {
     }
   }
 
-  // 📊 СТАТИСТИКА АГРЕГАТОРА С НОВОЙ ФИЛЬТРАЦИЕЙ
+  // СТАТИСТИКА АГРЕГАТОРА С НОВОЙ ФИЛЬТРАЦИЕЙ
   getAggregationStats() {
     return {
       activePositions: this.activePositions.size,
       config: this.config,
       stats: this.stats,
-      // 🔥 НОВАЯ СТАТИСТИКА ФИЛЬТРАЦИИ
+      // НОВАЯ СТАТИСТИКА ФИЛЬТРАЦИИ
       filteringStats: {
         totalTransactionsProcessed: this.stats.filteringStats.totalTransactionsProcessed,
         paymentToPaymentFiltered: this.stats.filteringStats.paymentToPaymentFiltered,
@@ -1169,7 +1331,7 @@ export class SolanaMonitor {
     };
   }
 
-  // 🆕 НОВЫЕ МЕТОДЫ ДЛЯ ВНЕШНЕГО ИСПОЛЬЗОВАНИЯ
+  // НОВЫЕ МЕТОДЫ ДЛЯ ВНЕШНЕГО ИСПОЛЬЗОВАНИЯ
 
   // Получение статистики детекций
   getDetectionStats() {
@@ -1195,7 +1357,7 @@ export class SolanaMonitor {
       }
     }
     
-    this.logger.info(`🔍 Force-checked all positions: ${processed} analyzed`);
+    this.logger.info(`Force-checked all positions: ${processed} analyzed`);
     return processed;
   }
 
@@ -1205,7 +1367,7 @@ export class SolanaMonitor {
     return this.activePositions.get(key) || null;
   }
 
-  // 🆕 МЕТОД ПРОВЕРКИ НА АГРЕГАЦИЮ (ДЛЯ ДРУГИХ СЕРВИСОВ)
+  // МЕТОД ПРОВЕРКИ НА АГРЕГАЦИЮ (ДЛЯ ДРУГИХ СЕРВИСОВ)
   async checkForPositionAggregation(walletAddress: string, tokenAddress: string, amountUSD: number): Promise<{
     isPartOfAggregation: boolean;
     suspicionScore: number;
