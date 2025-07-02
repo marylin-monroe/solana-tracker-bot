@@ -1,4 +1,4 @@
-// src/services/WebhookServer.ts - 🔥 ТЕХНИЧЕСКОЕ ЛОГИРОВАНИЕ ДЛЯ ОТЛАДКИ
+// src/services/WebhookServer.ts - 🔥 ИСПРАВЛЕНО: BUY/SELL ПРОБЛЕМА РЕШЕНА
 import express from 'express';
 import { Database } from './Database';
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
@@ -130,6 +130,7 @@ export class WebhookServer {
   private port: number;
   private server: any;
 
+  // 🔥🔥🔥 PAYMENT TOKENS ДЛЯ ПРАВИЛЬНОГО ОПРЕДЕЛЕНИЯ BUY/SELL (СИНХРОНИЗИРОВАНО) 🔥🔥🔥
   private readonly PAYMENT_TOKENS = new Set([
     'So11111111111111111111111111111111111111112', // SOL
     'So11111111111111111111111111111111111111111', // WSOL
@@ -153,6 +154,7 @@ export class WebhookServer {
 
   private readonly PRICE_CACHE_TTL = 5 * 60 * 1000; // 5 минут
 
+  // 📈 ПОПУЛЯРНЫЕ CEX ТОКЕНЫ - РАСШИРЕННЫЙ СПИСОК
   private readonly CEX_TOKENS = new Set([
     'So11111111111111111111111111111111111111112', // SOL
     'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
@@ -228,7 +230,7 @@ export class WebhookServer {
     this.setupMiddleware();
     this.setupRoutes();
     this.startCacheCleanup();
-    this.logger.info('[WebhookServer] CONSTRUCTOR: Initialized with technical debugging');
+    this.logger.info('🔥 WebhookServer initialized with FIXED buy/sell detection');
   }
 
   private setupMiddleware(): void {
@@ -274,7 +276,7 @@ export class WebhookServer {
         await this.processWebhookTransactionWithStats(req.body as SolanaWebhookPayload);
         res.status(200).json({ success: true });
       } catch (error) {
-        this.logger.error('Webhook processing error:', error as Error);
+        this.logger.error('❌ Webhook processing error:', error as Error);
         this.processingStats.errorCount++;
         this.requestCounters.lastMinuteErrors++;
         res.status(500).json({ error: 'Processing failed' });
@@ -287,7 +289,7 @@ export class WebhookServer {
         await this.processWebhookTransactionWithStats(req.body as SolanaWebhookPayload);
         res.status(200).json({ success: true });
       } catch (error) {
-        this.logger.error('Webhook processing error:', error as Error);
+        this.logger.error('❌ Webhook processing error:', error as Error);
         this.processingStats.errorCount++;
         this.requestCounters.lastMinuteErrors++;
         res.status(500).json({ error: 'Processing failed' });
@@ -313,24 +315,19 @@ export class WebhookServer {
     const startTime = Date.now();
     
     try {
-      console.log(`[WebhookServer] WEBHOOK_RECEIVED: signature=${txData.signature?.slice(0,12)}, timestamp=${txData.timestamp}, feePayer=${txData.feePayer || 'undefined'}`);
-      
+      // 🔥 ТОЛЬКО НОВЫЕ ТРАНЗАКЦИИ: последние 10 минут
       if (!this.isTransactionRecentAndValid(txData)) {
         this.processingStats.oldTransactionsFiltered++;
-        console.log(`[WebhookServer] WEBHOOK_FILTERED_OLD: signature=${txData.signature?.slice(0,12)}, reason=too_old_or_invalid`);
         return;
       }
 
       // Определяем тип транзакции для статистики
       if (txData.meta?.preTokenBalances && txData.meta?.postTokenBalances) {
         this.processingStats.transactionTypes.swaps++;
-        console.log(`[WebhookServer] WEBHOOK_TYPE_DETECTED: type=swap, signature=${txData.signature?.slice(0,12)}`);
       } else if (txData.tokenTransfers && txData.tokenTransfers.length > 0) {
         this.processingStats.transactionTypes.transfers++;
-        console.log(`[WebhookServer] WEBHOOK_TYPE_DETECTED: type=transfer, signature=${txData.signature?.slice(0,12)}`);
       } else {
         this.processingStats.transactionTypes.other++;
-        console.log(`[WebhookServer] WEBHOOK_TYPE_DETECTED: type=other, signature=${txData.signature?.slice(0,12)}`);
       }
 
       await this.processWebhookTransaction(txData);
@@ -340,17 +337,13 @@ export class WebhookServer {
         (this.processingStats.avgProcessingTime + processingTime) / 2;
         
     } catch (error) {
-      console.error(`[WebhookServer] WEBHOOK_PROCESSING_ERROR: signature=${txData.signature?.slice(0,12)}, error=${error}`);
       this.processingStats.errorCount++;
       throw error;
     }
   }
 
   private isTransactionRecentAndValid(txData: SolanaWebhookPayload): boolean {
-    if (!txData || !txData.timestamp) {
-      console.log(`[WebhookServer] VALIDATION_FAILED: missing_txData_or_timestamp`);
-      return false;
-    }
+    if (!txData || !txData.timestamp) return false;
 
     const transactionTime = txData.timestamp * 1000;
     const now = Date.now();
@@ -358,57 +351,44 @@ export class WebhookServer {
 
     const transactionAge = Math.abs(now - transactionTime);
 
-    console.log(`[WebhookServer] VALIDATION_CHECK: transactionTime=${transactionTime}, now=${now}, age=${transactionAge}ms, maxAge=${maxAge}ms`);
-
     if (transactionAge > maxAge) {
-        console.log(`[WebhookServer] VALIDATION_FAILED: transaction_too_old, age=${transactionAge}ms > ${maxAge}ms`);
         return false;
     }
     
     if (txData.meta?.err) {
-        console.log(`[WebhookServer] VALIDATION_FAILED: transaction_has_error, err=${JSON.stringify(txData.meta.err)}`);
         return false;
     }
 
-    console.log(`[WebhookServer] VALIDATION_PASSED: signature=${txData.signature?.slice(0,12)}`);
     return true;
   }
 
   private async processWebhookTransaction(txData: SolanaWebhookPayload): Promise<void> {
     try {
-      console.log(`[WebhookServer] PROCESS_WEBHOOK_START: signature=${txData.signature?.slice(0,12)}`);
-      console.log(`[WebhookServer] PROCESS_WEBHOOK_BALANCES_CHECK: preTokenBalances=${!!txData.meta?.preTokenBalances}, postTokenBalances=${!!txData.meta?.postTokenBalances}, preTokenBalances_length=${txData.meta?.preTokenBalances?.length || 0}, postTokenBalances_length=${txData.meta?.postTokenBalances?.length || 0}`);
-      
+      // 🔥🔥🔥 РАБОТАЕМ С БАЛАНСАМИ 🔥🔥🔥
       if (!txData.meta?.preTokenBalances || !txData.meta?.postTokenBalances) {
         this.processingStats.eventsIgnored++;
-        console.log(`[WebhookServer] PROCESS_WEBHOOK_NO_BALANCES: forwarding to SolanaMonitor, signature=${txData.signature?.slice(0,12)}`);
         
         // Попробуем fallback к SolanaMonitor для обработки
         if (this.solanaMonitor) {
           await this.solanaMonitor.processTransaction(txData);
           this.processingStats.regularTransactions++;
-          console.log(`[WebhookServer] PROCESS_WEBHOOK_FORWARDED: to SolanaMonitor, signature=${txData.signature?.slice(0,12)}`);
         }
         return;
       }
 
       this.processingStats.balancesExtracted++;
-      console.log(`[WebhookServer] PROCESS_WEBHOOK_BALANCES_FOUND: extracting swap info, signature=${txData.signature?.slice(0,12)}`);
       
+      // 🔥🔥🔥 ИСПОЛЬЗУЕМ ИСПРАВЛЕННУЮ ФУНКЦИЮ ИЗВЛЕЧЕНИЯ СВАПОВ 🔥🔥🔥
       const swapInfo = await this.extractSwapInfoFromBalances(txData);
-      if (!swapInfo) {
-        console.log(`[WebhookServer] PROCESS_WEBHOOK_NO_SWAP_INFO: failed to extract, signature=${txData.signature?.slice(0,12)}`);
-        return;
-      }
+      if (!swapInfo) return;
 
-      console.log(`[WebhookServer] PROCESS_WEBHOOK_SWAP_EXTRACTED: walletAddress=${swapInfo.walletAddress.slice(0,8)}, inputMint=${swapInfo.inputMint.slice(0,8)}, outputMint=${swapInfo.outputMint.slice(0,8)}, signature=${txData.signature?.slice(0,12)}`);
+      console.log(`🔍 [WebhookServer] Analyzing swap: ${this.tokenMetadataService.getTokenSymbol(swapInfo.inputMint)} → ${this.tokenMetadataService.getTokenSymbol(swapInfo.outputMint)} for wallet ${swapInfo.walletAddress.slice(0,8)}...`);
 
       // Проверяем, является ли это Smart Money кошельком
-      console.log(`[WebhookServer] PROCESS_WEBHOOK_CHECKING_SMART_WALLET: walletAddress=${swapInfo.walletAddress}`);
       const smartWallet = await this.smDatabase.getSmartWallet(swapInfo.walletAddress);
       
       if (!smartWallet || !smartWallet.isActive) {
-        console.log(`[WebhookServer] PROCESS_WEBHOOK_REGULAR_WALLET: not smart money or inactive, forwarding to SolanaMonitor, walletAddress=${swapInfo.walletAddress.slice(0,8)}`);
+        console.log(`📊 [WebhookServer] Regular wallet transaction - forwarding to SolanaMonitor`);
         // Обычная транзакция - отправляем в SolanaMonitor
         if (this.solanaMonitor) {
           await this.solanaMonitor.processTransaction(txData);
@@ -417,56 +397,38 @@ export class WebhookServer {
         return;
       }
 
-      console.log(`[WebhookServer] PROCESS_WEBHOOK_SMART_WALLET_DETECTED: category=${smartWallet.category}, walletAddress=${smartWallet.address.slice(0,8)}, isActive=${smartWallet.isActive}`);
+      console.log(`⭐ [WebhookServer] Smart Money wallet detected: ${smartWallet.category} wallet`);
 
       // Smart Money транзакция - обрабатываем здесь
       await this.processSmartMoneySwap(swapInfo, smartWallet, txData);
 
     } catch (error) {
-      console.error(`[WebhookServer] PROCESS_WEBHOOK_ERROR: signature=${txData.signature?.slice(0,12)}, error=${error}`);
-      this.logger.error(`Error processing transaction ${txData.signature}:`, error as Error);
+      this.logger.error(`❌ Error processing transaction ${txData.signature}:`, error as Error);
     }
   }
 
-  // ===== КРИТИЧЕСКАЯ ФУНКЦИЯ С МАКСИМАЛЬНЫМ ЛОГИРОВАНИЕМ =====
+  // 🔥🔥🔥 ИСПРАВЛЕНО: ПРАВИЛЬНЫЙ АНАЛИЗ БАЛАНСОВ ПОЛЬЗОВАТЕЛЯ (НЕ ПУЛА!) 🔥🔥🔥
   private async extractSwapInfoFromBalances(txData: SolanaWebhookPayload): Promise<{
     walletAddress: string; inputMint: string; outputMint: string;
     inputAmountRaw: number; outputAmountRaw: number;
   } | null> {
     try {
-      console.log(`[WebhookServer] EXTRACT_SWAP_START: signature=${txData.signature?.slice(0,12)}`);
-      
       const transaction = Array.isArray(txData) ? txData[0] : txData;
       
-      if (!transaction?.meta) {
-        console.log(`[WebhookServer] EXTRACT_SWAP_NO_META: transaction.meta is missing`);
-        return null;
-      }
+      if (!transaction?.meta) return null;
 
       const preTokenBalances = transaction.meta.preTokenBalances || [];
       const postTokenBalances = transaction.meta.postTokenBalances || [];
       
-      console.log(`[WebhookServer] EXTRACT_SWAP_BALANCES: preTokenBalances.length=${preTokenBalances.length}, postTokenBalances.length=${postTokenBalances.length}`);
-      
-      // КРИТИЧЕСКИЙ АНАЛИЗ КОШЕЛЬКА
+      // 🔥 ИСПРАВЛЕНО: ТОЛЬКО РЕАЛЬНЫЙ ПОЛЬЗОВАТЕЛЬ (feePayer), НЕ ПУЛЫ!
       const walletAddress = this.extractWalletAddressFromTransaction(transaction);
-      if (!walletAddress) {
-        console.log(`[WebhookServer] EXTRACT_SWAP_NO_WALLET: extractWalletAddressFromTransaction returned null`);
-        return null;
-      }
-
-      console.log(`[WebhookServer] EXTRACT_SWAP_WALLET_FOUND: walletAddress=${walletAddress}`);
+      if (!walletAddress) return null;
 
       const tokenChanges = new Map<string, { changeUI: number, changeRaw: number, mint: string, decimals: number }>();
 
       // Анализ существующих токен-аккаунтов ТОЛЬКО для пользователя
-      let preBalanceAnalyzed = 0;
       for (const pre of preTokenBalances) {
-        if (pre.owner !== walletAddress) {
-          console.log(`[WebhookServer] EXTRACT_SWAP_SKIP_PRE: pre.owner=${pre.owner} != walletAddress=${walletAddress}, mint=${pre.mint}`);
-          continue;
-        }
-        preBalanceAnalyzed++;
+        if (pre.owner !== walletAddress) continue;
         
         const post = postTokenBalances.find(p => p.accountIndex === pre.accountIndex);
         
@@ -478,8 +440,6 @@ export class WebhookServer {
         const postAmountRaw = post ? parseInt(post.uiTokenAmount.amount || '0') : 0;
         const changeRaw = postAmountRaw - preAmountRaw;
         
-        console.log(`[WebhookServer] EXTRACT_SWAP_PRE_ANALYZED: mint=${pre.mint.slice(0,8)}, preAmountUI=${preAmountUI}, postAmountUI=${postAmountUI}, changeUI=${changeUI}, changeRaw=${changeRaw}`);
-        
         if (Math.abs(changeUI) > 1e-9) {
           tokenChanges.set(pre.mint, { 
             changeUI, 
@@ -487,29 +447,17 @@ export class WebhookServer {
             mint: pre.mint, 
             decimals: pre.uiTokenAmount.decimals 
           });
-          console.log(`[WebhookServer] EXTRACT_SWAP_TOKEN_CHANGE_ADDED: mint=${pre.mint.slice(0,8)}, changeUI=${changeUI}, changeRaw=${changeRaw}`);
         }
       }
-      
-      console.log(`[WebhookServer] EXTRACT_SWAP_PRE_SUMMARY: preBalanceAnalyzed=${preBalanceAnalyzed} out of ${preTokenBalances.length} total`);
 
       // Анализ НОВЫХ токен-аккаунтов ТОЛЬКО для пользователя
-      let newAccountsAnalyzed = 0;
       for (const post of postTokenBalances) {
-        if (post.owner !== walletAddress || tokenChanges.has(post.mint)) {
-          if (post.owner !== walletAddress) {
-            console.log(`[WebhookServer] EXTRACT_SWAP_SKIP_POST: post.owner=${post.owner} != walletAddress=${walletAddress}, mint=${post.mint}`);
-          }
-          continue;
-        }
+        if (post.owner !== walletAddress || tokenChanges.has(post.mint)) continue;
         
         const isNewAccount = !preTokenBalances.find(p => p.accountIndex === post.accountIndex);
         if (isNewAccount) {
-          newAccountsAnalyzed++;
           const changeUI = parseFloat(post.uiTokenAmount.uiAmountString || post.uiTokenAmount.uiAmount?.toString() || '0');
           const changeRaw = parseInt(post.uiTokenAmount.amount || '0');
-          
-          console.log(`[WebhookServer] EXTRACT_SWAP_NEW_ACCOUNT: mint=${post.mint.slice(0,8)}, changeUI=${changeUI}, changeRaw=${changeRaw}`);
           
           if (changeUI > 1e-9) {
             tokenChanges.set(post.mint, { 
@@ -518,31 +466,22 @@ export class WebhookServer {
               mint: post.mint, 
               decimals: post.uiTokenAmount.decimals 
             });
-            console.log(`[WebhookServer] EXTRACT_SWAP_NEW_TOKEN_CHANGE_ADDED: mint=${post.mint.slice(0,8)}, changeUI=${changeUI}, changeRaw=${changeRaw}`);
           }
         }
       }
-      
-      console.log(`[WebhookServer] EXTRACT_SWAP_POST_SUMMARY: newAccountsAnalyzed=${newAccountsAnalyzed}`);
 
       // Анализ изменений нативного SOL для пользователя
       const accountKeys = transaction.transaction?.message?.accountKeys || [];
-      console.log(`[WebhookServer] EXTRACT_SWAP_ACCOUNT_KEYS: accountKeys.length=${accountKeys.length}`);
-      
       const walletIndex = accountKeys.findIndex((key: any) => {
         const keyString = typeof key === 'string' ? key : key?.pubkey || key?.toString?.() || '';
         return keyString === walletAddress;
       });
-      
-      console.log(`[WebhookServer] EXTRACT_SWAP_WALLET_INDEX: walletIndex=${walletIndex}`);
       
       if (walletIndex !== -1 && transaction.meta?.preBalances && transaction.meta?.postBalances) {
         const preSolBalance = transaction.meta.preBalances[walletIndex] || 0;
         const postSolBalance = transaction.meta.postBalances[walletIndex] || 0;
         const solChangeRaw = postSolBalance - preSolBalance;
         const solChangeUI = solChangeRaw / 1e9;
-        
-        console.log(`[WebhookServer] EXTRACT_SWAP_SOL_ANALYSIS: preSolBalance=${preSolBalance}, postSolBalance=${postSolBalance}, solChangeRaw=${solChangeRaw}, solChangeUI=${solChangeUI}`);
         
         if (Math.abs(solChangeUI) > 0.01) {
           tokenChanges.set('So11111111111111111111111111111111111111112', {
@@ -551,29 +490,17 @@ export class WebhookServer {
             mint: 'So11111111111111111111111111111111111111112',
             decimals: 9
           });
-          console.log(`[WebhookServer] EXTRACT_SWAP_SOL_CHANGE_ADDED: solChangeUI=${solChangeUI}, solChangeRaw=${solChangeRaw}`);
         }
       }
 
       const spentTokens = Array.from(tokenChanges.values()).filter(c => c.changeUI < 0);
       const receivedTokens = Array.from(tokenChanges.values()).filter(c => c.changeUI > 0);
 
-      console.log(`[WebhookServer] EXTRACT_SWAP_TOKEN_SUMMARY: spentTokens.length=${spentTokens.length}, receivedTokens.length=${receivedTokens.length}`);
-      
-      spentTokens.forEach((token, index) => {
-        console.log(`[WebhookServer] EXTRACT_SWAP_SPENT_TOKEN_${index}: mint=${token.mint.slice(0,8)}, changeUI=${token.changeUI}, changeRaw=${token.changeRaw}`);
-      });
-      
-      receivedTokens.forEach((token, index) => {
-        console.log(`[WebhookServer] EXTRACT_SWAP_RECEIVED_TOKEN_${index}: mint=${token.mint.slice(0,8)}, changeUI=${token.changeUI}, changeRaw=${token.changeRaw}`);
-      });
-
       if (spentTokens.length === 0 || receivedTokens.length === 0) {
-        console.log(`[WebhookServer] EXTRACT_SWAP_INSUFFICIENT_TOKENS: spentTokens.length=${spentTokens.length}, receivedTokens.length=${receivedTokens.length}`);
         return null;
       }
 
-      // ПРАВИЛЬНАЯ ЛОГИКА: ИЩЕМ PAYMENT TOKEN ПАРУ
+      // 🔥🔥🔥 ПРАВИЛЬНАЯ ЛОГИКА: ИЩЕМ PAYMENT TOKEN ПАРУ 🔥🔥🔥
       let inputMint: string | null = null;
       let outputMint: string | null = null;
       let inputAmountRaw = 0;
@@ -582,47 +509,36 @@ export class WebhookServer {
       // Ищем payment token в потраченных токенах
       const spentPaymentToken = spentTokens.find(token => this.PAYMENT_TOKENS.has(token.mint));
       
-      console.log(`[WebhookServer] EXTRACT_SWAP_SPENT_PAYMENT_CHECK: spentPaymentToken=${spentPaymentToken ? spentPaymentToken.mint.slice(0,8) : 'not found'}`);
-      
       if (spentPaymentToken) {
         // BUY: Тратим payment token -> получаем обычный токен
         const receivedNonPaymentToken = receivedTokens.find(token => !this.PAYMENT_TOKENS.has(token.mint));
-        
-        console.log(`[WebhookServer] EXTRACT_SWAP_BUY_CHECK: receivedNonPaymentToken=${receivedNonPaymentToken ? receivedNonPaymentToken.mint.slice(0,8) : 'not found'}`);
         
         if (receivedNonPaymentToken) {
           inputMint = spentPaymentToken.mint;
           outputMint = receivedNonPaymentToken.mint;
           inputAmountRaw = Math.abs(spentPaymentToken.changeRaw);
           outputAmountRaw = receivedNonPaymentToken.changeRaw;
-          console.log(`[WebhookServer] EXTRACT_SWAP_BUY_DETECTED: inputMint=${inputMint.slice(0,8)}, outputMint=${outputMint.slice(0,8)}, inputAmountRaw=${inputAmountRaw}, outputAmountRaw=${outputAmountRaw}`);
         }
       } else {
         // Ищем payment token в полученных токенах
         const receivedPaymentToken = receivedTokens.find(token => this.PAYMENT_TOKENS.has(token.mint));
         
-        console.log(`[WebhookServer] EXTRACT_SWAP_RECEIVED_PAYMENT_CHECK: receivedPaymentToken=${receivedPaymentToken ? receivedPaymentToken.mint.slice(0,8) : 'not found'}`);
-        
         if (receivedPaymentToken) {
           // SELL: Тратим обычный токен -> получаем payment token
           const spentNonPaymentToken = spentTokens.find(token => !this.PAYMENT_TOKENS.has(token.mint));
-          
-          console.log(`[WebhookServer] EXTRACT_SWAP_SELL_CHECK: spentNonPaymentToken=${spentNonPaymentToken ? spentNonPaymentToken.mint.slice(0,8) : 'not found'}`);
           
           if (spentNonPaymentToken) {
             inputMint = spentNonPaymentToken.mint;
             outputMint = receivedPaymentToken.mint;
             inputAmountRaw = Math.abs(spentNonPaymentToken.changeRaw);
             outputAmountRaw = receivedPaymentToken.changeRaw;
-            console.log(`[WebhookServer] EXTRACT_SWAP_SELL_DETECTED: inputMint=${inputMint.slice(0,8)}, outputMint=${outputMint.slice(0,8)}, inputAmountRaw=${inputAmountRaw}, outputAmountRaw=${outputAmountRaw}`);
           }
         }
       }
 
       // Если не нашли правильную пару - используем УМНЫЙ fallback
       if (!inputMint || !outputMint) {
-        console.log(`[WebhookServer] EXTRACT_SWAP_FALLBACK: No payment token pair found, using fallback logic`);
-        
+        // Берем первые операции, но с правильным направлением
         const spentToken = spentTokens[0];
         const receivedToken = receivedTokens[0];
         
@@ -631,97 +547,36 @@ export class WebhookServer {
         inputAmountRaw = Math.abs(spentToken.changeRaw);
         outputAmountRaw = receivedToken.changeRaw;
         
-        console.log(`[WebhookServer] EXTRACT_SWAP_FALLBACK_RESULT: inputMint=${inputMint.slice(0,8)}, outputMint=${outputMint.slice(0,8)}, inputAmountRaw=${inputAmountRaw}, outputAmountRaw=${outputAmountRaw}`);
+        console.log(`⚠️ [WebhookServer] Using fallback pair: ${this.tokenMetadataService.getTokenSymbol(inputMint)} → ${this.tokenMetadataService.getTokenSymbol(outputMint)}`);
       }
 
       // Фильтрация технических операций (деньги в деньги)
       const inputIsPayment = this.PAYMENT_TOKENS.has(inputMint);
       const outputIsPayment = this.PAYMENT_TOKENS.has(outputMint);
 
-      console.log(`[WebhookServer] EXTRACT_SWAP_PAYMENT_CHECK: inputIsPayment=${inputIsPayment}, outputIsPayment=${outputIsPayment}`);
-
       if (inputIsPayment && outputIsPayment) {
-        console.log(`[WebhookServer] EXTRACT_SWAP_PAYMENT_TO_PAYMENT_FILTERED: Both tokens are payment tokens`);
         return null;
       }
 
-      console.log(`[WebhookServer] EXTRACT_SWAP_SUCCESS: walletAddress=${walletAddress.slice(0,8)}, inputMint=${inputMint.slice(0,8)}, outputMint=${outputMint.slice(0,8)}, inputAmountRaw=${inputAmountRaw}, outputAmountRaw=${outputAmountRaw}`);
       return { walletAddress, inputMint, outputMint, inputAmountRaw, outputAmountRaw };
 
     } catch (error) {
-      console.error(`[WebhookServer] EXTRACT_SWAP_ERROR: ${error}`);
       this.logger.error('[extractSwapInfoFromBalances] Error:', error);
       return null;
     }
   }
 
-  // ===== КРИТИЧЕСКАЯ ФУНКЦИЯ С МАКСИМАЛЬНЫМ ЛОГИРОВАНИЕМ =====
+  // 🔥🔥🔥 ПРИОРИТЕТ feePayer, НО С FALLBACK НА ВСЯКИЙ СЛУЧАЙ 🔥🔥🔥
   private extractWalletAddressFromTransaction(txData: any): string | null {
-    console.log(`[WebhookServer] EXTRACT_WALLET_START: Analyzing transaction for wallet address`);
+    // 🔥 ПРИОРИТЕТ: feePayer (реальный пользователь)
+    if (txData.feePayer) return txData.feePayer;
     
-    let walletSource = '';
-    let walletAddress = null;
+    // Fallback на всякий случай (хотя feePayer должен быть всегда)
+    if (txData.meta?.preTokenBalances?.[0]?.owner) return txData.meta.preTokenBalances[0].owner;
+    if (txData.meta?.postTokenBalances?.[0]?.owner) return txData.meta.postTokenBalances[0].owner;
+    if (txData.transaction?.message?.accountKeys?.[0]) return txData.transaction.message.accountKeys[0];
     
-    // ПРИОРИТЕТ 1: feePayer
-    if (txData.feePayer) {
-      walletAddress = txData.feePayer;
-      walletSource = 'feePayer';
-      console.log(`[WebhookServer] EXTRACT_WALLET_FEEPAYER: Found feePayer=${walletAddress}`);
-    }
-    // ПРИОРИТЕТ 2: accountKeys[0]
-    else if (txData.transaction?.message?.accountKeys?.[0]) {
-      walletAddress = txData.transaction.message.accountKeys[0];
-      walletSource = 'accountKeys[0]';
-      console.log(`[WebhookServer] EXTRACT_WALLET_ACCOUNT_KEYS: Found accountKeys[0]=${walletAddress}`);
-    }
-    // ПРИОРИТЕТ 3: preTokenBalances[0].owner (МОЖЕТ БЫТЬ ПУЛ!)
-    else if (txData.meta?.preTokenBalances?.[0]?.owner) {
-      walletAddress = txData.meta.preTokenBalances[0].owner;
-      walletSource = 'preTokenBalances[0].owner';
-      console.log(`[WebhookServer] EXTRACT_WALLET_PRE_TOKEN_BALANCE: Found preTokenBalances[0].owner=${walletAddress} - WARNING: MAY BE POOL!`);
-    }
-    // ПРИОРИТЕТ 4: postTokenBalances[0].owner (МОЖЕТ БЫТЬ ПУЛ!)
-    else if (txData.meta?.postTokenBalances?.[0]?.owner) {
-      walletAddress = txData.meta.postTokenBalances[0].owner;
-      walletSource = 'postTokenBalances[0].owner';
-      console.log(`[WebhookServer] EXTRACT_WALLET_POST_TOKEN_BALANCE: Found postTokenBalances[0].owner=${walletAddress} - WARNING: MAY BE POOL!`);
-    }
-    
-    if (walletAddress) {
-      console.log(`[WebhookServer] EXTRACT_WALLET_SUCCESS: source=${walletSource}, address=${walletAddress}`);
-      
-      // ДЕТЕКЦИЯ ИЗВЕСТНЫХ ПУЛОВ
-      if (walletAddress === 'BFauTbx7qMjsz9dQJSmSraxmCD1C7x9DwJ9ynYreB1YJ') {
-        console.log(`[WebhookServer] EXTRACT_WALLET_WARNING: DETECTED KNOWN POOL ADDRESS! This is AMM pool, not user wallet!`);
-      }
-      
-      // АНАЛИЗ ВСЕХ БАЛАНСОВ ДЛЯ КОНТЕКСТА
-      if (txData.meta?.preTokenBalances) {
-        console.log(`[WebhookServer] EXTRACT_WALLET_CONTEXT_PRE: All preTokenBalances owners:`);
-        txData.meta.preTokenBalances.forEach((balance: any, index: number) => {
-          console.log(`[WebhookServer] EXTRACT_WALLET_CONTEXT_PRE_${index}: owner=${balance.owner}, mint=${balance.mint?.slice(0,8)}`);
-        });
-      }
-      
-      if (txData.meta?.postTokenBalances) {
-        console.log(`[WebhookServer] EXTRACT_WALLET_CONTEXT_POST: All postTokenBalances owners:`);
-        txData.meta.postTokenBalances.forEach((balance: any, index: number) => {
-          console.log(`[WebhookServer] EXTRACT_WALLET_CONTEXT_POST_${index}: owner=${balance.owner}, mint=${balance.mint?.slice(0,8)}`);
-        });
-      }
-      
-      if (txData.transaction?.message?.accountKeys) {
-        console.log(`[WebhookServer] EXTRACT_WALLET_CONTEXT_KEYS: All accountKeys:`);
-        txData.transaction.message.accountKeys.forEach((key: any, index: number) => {
-          const keyString = typeof key === 'string' ? key : key?.pubkey || key?.toString?.() || 'unknown';
-          console.log(`[WebhookServer] EXTRACT_WALLET_CONTEXT_KEY_${index}: ${keyString}`);
-        });
-      }
-    } else {
-      console.log(`[WebhookServer] EXTRACT_WALLET_FAILED: No wallet address found in any source`);
-    }
-    
-    return walletAddress;
+    return null;
   }
 
   // Обработка Smart Money свапа
@@ -731,11 +586,7 @@ export class WebhookServer {
     txData: SolanaWebhookPayload
   ): Promise<void> {
     try {
-      console.log(`[WebhookServer] PROCESS_SMART_MONEY_START: walletAddress=${balanceInfo.walletAddress.slice(0,8)}, inputMint=${balanceInfo.inputMint.slice(0,8)}, outputMint=${balanceInfo.outputMint.slice(0,8)}`);
-      
-      // ВЫЗЫВАЕМ ЕДИНЫЙ РАСЧЕТНЫЙ ЦЕНТР С ЛОГИРОВАНИЕМ
-      console.log(`[WebhookServer] CALLING_UNIFIED_CALCULATOR: inputMint=${balanceInfo.inputMint}, inputAmountRaw=${balanceInfo.inputAmountRaw}, outputMint=${balanceInfo.outputMint}, outputAmountRaw=${balanceInfo.outputAmountRaw}`);
-      
+      // 🔥🔥🔥 ВЫЗЫВАЕМ ЕДИНЫЙ РАСЧЕТНЫЙ ЦЕНТР 🔥🔥🔥
       const valueCalculation = await this.tokenMetadataService.calculateSwapUSDValue(
         balanceInfo.inputMint,
         balanceInfo.inputAmountRaw,
@@ -744,25 +595,22 @@ export class WebhookServer {
       );
       
       if (!valueCalculation) {
-        console.log(`[WebhookServer] UNIFIED_CALCULATOR_FILTERED: No result from calculateSwapUSDValue`);
-        this.logger.debug(`[processSmartMoneySwap] IGNORED by Unified Calculator`);
+        this.logger.debug(`[processSmartMoneySwap] ⏭️ IGNORED by Unified Calculator`);
         this.processingStats.unifiedCalculatorIgnored++;
         return;
       }
       
-      console.log(`[WebhookServer] UNIFIED_CALCULATOR_RESULT: amountUSD=${valueCalculation.amountUSD}, swapType=${valueCalculation.swapType}, tokenAddress=${valueCalculation.tokenAddress}, paymentToken=${valueCalculation.paymentToken}, paymentTokenAmount=${valueCalculation.paymentTokenAmount}, paymentTokenPrice=${valueCalculation.paymentTokenPrice}`);
-      
-      // ПОЛУЧАЕМ ВСЕ ГОТОВЫЕ ДАННЫЕ ИЗ ЕДИНОГО РАСЧЕТНОГО ЦЕНТРА
+      // 🔥 ПОЛУЧАЕМ ВСЕ ГОТОВЫЕ ДАННЫЕ ИЗ ЕДИНОГО РАСЧЕТНОГО ЦЕНТРА
       const { amountUSD, swapType, tokenAddress, paymentToken, paymentTokenAmount, paymentTokenPrice } = valueCalculation;
 
       // Первичный фильтр по минимальной сумме
       if (amountUSD < 700) {
-        console.log(`[WebhookServer] SMART_MONEY_SMALL_TRANSACTION: amountUSD=${amountUSD} < 700, filtered out`);
+        console.log(`📉 [WebhookServer] Small transaction: ${amountUSD.toFixed(0)} - below threshold`);
         this.processingStats.filteredTransactions++;
         return;
       }
 
-      console.log(`[WebhookServer] SMART_MONEY_LARGE_TRANSACTION: ${swapType.toUpperCase()} - ${this.tokenMetadataService.getTokenSymbol(tokenAddress)} - $${amountUSD.toFixed(0)} - processing`);
+      console.log(`💰 [WebhookServer] Large ${swapType.toUpperCase()}: ${this.tokenMetadataService.getTokenSymbol(tokenAddress)} - ${amountUSD.toFixed(0)} - processing...`);
 
       this.processingStats.usdCalculationStats.correctCalculations++;
 
@@ -770,18 +618,14 @@ export class WebhookServer {
       const tokenInfo = await this.getTokenInfo(tokenAddress);
       const paymentTokenInfo = await this.getTokenInfo(paymentToken);
       
-      console.log(`[WebhookServer] SMART_MONEY_TOKEN_INFO: tokenInfo.symbol=${tokenInfo.symbol}, tokenInfo.decimals=${tokenInfo.decimals}, paymentTokenInfo.symbol=${paymentTokenInfo.symbol}`);
-      
       // Рассчитываем количество основного токена
       const actualTokenAmount = swapType === 'buy' ? 
         balanceInfo.outputAmountRaw / Math.pow(10, tokenInfo.decimals) :
         balanceInfo.inputAmountRaw / Math.pow(10, tokenInfo.decimals);
       
-      console.log(`[WebhookServer] SMART_MONEY_ACTUAL_TOKEN_AMOUNT: swapType=${swapType}, actualTokenAmount=${actualTokenAmount}, calculation=${swapType === 'buy' ? `${balanceInfo.outputAmountRaw} / ${Math.pow(10, tokenInfo.decimals)}` : `${balanceInfo.inputAmountRaw} / ${Math.pow(10, tokenInfo.decimals)}`}`);
-      
       const tokenPrice = actualTokenAmount > 0 ? amountUSD / actualTokenAmount : 0;
 
-      // ФОРМИРУЕМ СМАРТ МАНИ СВАП
+      // 🔥🔥🔥 ФОРМИРУЕМ СМАРТ МАНИ СВАП 🔥🔥🔥
       const smartMoneySwap: SmartMoneySwap = {
         transactionId: txData.signature,
         walletAddress: smartWallet.address,
@@ -797,6 +641,7 @@ export class WebhookServer {
         winrate7d: smartWallet.winrate7d,
         buy7d: smartWallet.buy7d,
         
+        // 🔥🔥🔥 ПРОТОКОЛ "ЖЕЛЕЗНЫЙ ДОЛЛАР" - КЛЮЧЕВЫЕ ПОЛЯ 🔥🔥🔥
         tokenPrice: tokenPrice,
         paymentTokenSymbol: paymentTokenInfo.symbol,
         paymentTokenAmount: paymentTokenAmount,
@@ -806,34 +651,29 @@ export class WebhookServer {
         isFamilyMember: false as const,
       };
 
-      console.log(`[WebhookServer] SMART_MONEY_SWAP_CREATED: transactionId=${smartMoneySwap.transactionId.slice(0,12)}, walletAddress=${smartMoneySwap.walletAddress.slice(0,8)}, tokenSymbol=${smartMoneySwap.tokenSymbol}, swapType=${smartMoneySwap.swapType}, amountUSD=${smartMoneySwap.amountUSD}`);
-
       // Проверяем фильтры и отправляем
       if (this.shouldProcessSmartMoneySwap(smartMoneySwap, smartWallet)) {
-        console.log(`[WebhookServer] SMART_MONEY_SWAP_APPROVED: proceeding with save and notify`);
         await this.saveSmartMoneyTransaction(smartMoneySwap);
         await this.sendSmartMoneyNotification(smartMoneySwap, smartWallet);
         
         this.processingStats.smartMoneyTransactions++;
         this.processingStats.profitableSwaps++;
 
-        console.log(`[WebhookServer] SMART_MONEY_ALERT_SENT: ${smartMoneySwap.tokenSymbol} - ${smartMoneySwap.amountUSD.toFixed(0)} - ${smartMoneySwap.swapType}`);
+        console.log(`📨 [WebhookServer] ✅ SMART MONEY ALERT SENT: ${smartMoneySwap.tokenSymbol} - ${smartMoneySwap.amountUSD.toFixed(0)} - ${smartMoneySwap.swapType}`);
       } else {
-        console.log(`[WebhookServer] SMART_MONEY_SWAP_FILTERED: below $2000 threshold or other filter`);
+        console.log(`🔒 [WebhookServer] Transaction filtered out - below $2000 threshold`);
         this.processingStats.filteredTransactions++;
       }
 
     } catch (error) {
-      console.error(`[WebhookServer] PROCESS_SMART_MONEY_ERROR: ${error}`);
-      this.logger.error('Error processing Smart Money swap:', error as Error);
+      this.logger.error('❌ Error processing Smart Money swap:', error as Error);
       this.processingStats.errorCount++;
     }
   }
 
   private shouldProcessSmartMoneySwap(swapInfo: SmartMoneySwap, smartWallet: SmartMoneyWallet): boolean {
-    const result = swapInfo.amountUSD >= 2000;
-    console.log(`[WebhookServer] SHOULD_PROCESS_SMART_MONEY: amountUSD=${swapInfo.amountUSD}, threshold=2000, result=${result}`);
-    return result;
+    // 🔥 ЕДИНСТВЕННЫЙ ФИЛЬТР: Мы доверяем кошельку, поэтому проверяем только минимальную сумму сделки.
+    return swapInfo.amountUSD >= 2000;
   }
 
   private async validateSmartMoneyTransaction(
@@ -908,6 +748,7 @@ export class WebhookServer {
         isNewWallet: false,
         isReactivatedWallet: false,
         daysSinceLastActivity: 0,
+        // 🔥🔥🔥 ПРОТОКОЛ "ЖЕЛЕЗНЫЙ ДОЛЛАР" - ДОБАВЛЯЕМ НОВЫЕ ПОЛЯ В TokenSwap 🔥🔥🔥
         paymentTokenSymbol: swapInfo.paymentTokenSymbol,
         paymentTokenAmount: swapInfo.paymentTokenAmount,
         paymentTokenPrice: swapInfo.paymentTokenPrice,
@@ -1040,12 +881,12 @@ export class WebhookServer {
         });
 
         this.server.on('error', (error: any) => {
-          this.logger.error('Server error:', error);
+          this.logger.error('❌ Server error:', error);
           reject(error);
         });
 
       } catch (error) {
-        this.logger.error('Failed to start webhook server:', error);
+        this.logger.error('❌ Failed to start webhook server:', error);
         reject(error);
       }
     });

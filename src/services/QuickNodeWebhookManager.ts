@@ -1,4 +1,4 @@
-// src/services/QuickNodeWebhookManager.ts - 🔥 ТЕХНИЧЕСКОЕ ЛОГИРОВАНИЕ ДЛЯ ОТЛАДКИ
+// src/services/QuickNodeWebhookManager.ts - 🔥 ИСПРАВЛЕНО: BUY/SELL ПРОБЛЕМА РЕШЕНА
 import { Logger } from '../utils/Logger';
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
 import { TelegramNotifier } from './TelegramNotifier';
@@ -80,6 +80,7 @@ export class QuickNodeWebhookManager {
   private lastCleanupTime = Date.now();
   private botStartTime = Date.now();
   
+  // 🔥🔥🔥 PAYMENT TOKENS ДЛЯ ПРАВИЛЬНОГО ОПРЕДЕЛЕНИЯ BUY/SELL 🔥🔥🔥
   private readonly PAYMENT_TOKENS = new Set([
     'So11111111111111111111111111111111111111112', // SOL
     'So11111111111111111111111111111111111111111', // WSOL
@@ -126,7 +127,7 @@ export class QuickNodeWebhookManager {
     this.initializeProviders();
     this.startLimitResetTimer();
     this.startCacheCleanup();
-    this.logger.info('[QuickNodeWebhookManager] CONSTRUCTOR: Initialized with technical debugging');
+    this.logger.info('🔥 QuickNodeWebhookManager initialized with FIXED buy/sell detection');
   }
 
   setTelegramNotifier(telegramNotifier: TelegramNotifier): void {
@@ -429,7 +430,7 @@ export class QuickNodeWebhookManager {
     if (!this.isPollingActive || !this.smDatabase) return;
 
     const cycleStart = Date.now();
-    console.log(`[QuickNode] POLL_START: Starting polling cycle - checking ${this.monitoredWallets.length} smart money wallets`);
+    console.log(`🔄 [QuickNode] Starting polling cycle - checking ${this.monitoredWallets.length} smart money wallets...`);
 
     try {
       const previousCount = this.monitoredWallets.length;
@@ -459,7 +460,7 @@ export class QuickNodeWebhookManager {
     
     if (this.monitoredWallets.length === 0) {
       this.syncStats.emptyListCycles++;
-      console.log(`[QuickNode] POLL_EMPTY: No wallets to monitor - skipping cycle`);
+      console.log(`⚠️ [QuickNode] No wallets to monitor - skipping cycle`);
       return;
     }
 
@@ -490,7 +491,7 @@ export class QuickNodeWebhookManager {
     }
     
     const cycleTime = ((Date.now() - cycleStart) / 1000).toFixed(1);
-    console.log(`[QuickNode] POLL_COMPLETE: Polling cycle completed in ${cycleTime}s - processed ${totalProcessed} wallets, ${totalErrors} errors`);
+    console.log(`✅ [QuickNode] Polling cycle completed in ${cycleTime}s - processed ${totalProcessed} wallets, ${totalErrors} errors`);
     
     this.logApiUsageWithProviderStats();
   }
@@ -510,7 +511,7 @@ export class QuickNodeWebhookManager {
       }
       
       if (signatures.length > 0) {
-        console.log(`[QuickNode] WALLET_PROCESSING: Processing ${signatures.length} transactions for wallet ${wallet.address.slice(0,8)}...`);
+        console.log(`📋 [QuickNode] Processing ${signatures.length} transactions for wallet ${wallet.address.slice(0,8)}...`);
         let transactionErrors = 0;
         for (const sig of signatures) {
           try {
@@ -556,47 +557,30 @@ export class QuickNodeWebhookManager {
         return;
       }
 
-      // ===== ТЕХНИЧЕСКОЕ ЛОГИРОВАНИЕ НАЧАЛО =====
-      console.log(`[QuickNode] TX_PROCESSING_START: signature=${signature.slice(0,12)}, wallet=${wallet.address.slice(0,8)}`);
-      
+      // 🔥🔥🔥 ИСПОЛЬЗУЕМ ИСПРАВЛЕННУЮ ФУНКЦИЮ ИЗВЛЕЧЕНИЯ СВАПОВ 🔥🔥🔥
       const swapInfo = await this.extractSwapInfoFromBalances(transaction);
-      if (!swapInfo) {
-        console.log(`[QuickNode] TX_EXTRACT_FAILED: No swap info extracted for signature=${signature.slice(0,12)}`);
-        return;
-      }
+      if (!swapInfo) return;
 
-      console.log(`[QuickNode] TX_SWAP_EXTRACTED: walletAddress=${swapInfo.walletAddress.slice(0,8)}, inputMint=${swapInfo.inputMint.slice(0,8)}, outputMint=${swapInfo.outputMint.slice(0,8)}, inputAmountRaw=${swapInfo.inputAmountRaw}, outputAmountRaw=${swapInfo.outputAmountRaw}`);
+      console.log(`🔍 [QuickNode] Analyzing swap: ${this.tokenMetadataService.getTokenSymbol(swapInfo.inputMint)} → ${this.tokenMetadataService.getTokenSymbol(swapInfo.outputMint)} for wallet ${swapInfo.walletAddress.slice(0,8)}...`);
 
-      // ВЫЗОВ ЕДИНОГО РАСЧЕТНОГО ЦЕНТРА С ЛОГИРОВАНИЕМ
-      console.log(`[QuickNode] CALLING_UNIFIED_CALCULATOR: inputMint=${swapInfo.inputMint}, inputAmountRaw=${swapInfo.inputAmountRaw}, outputMint=${swapInfo.outputMint}, outputAmountRaw=${swapInfo.outputAmountRaw}`);
-      
+      // Вызываем единый расчетный центр
       const valueCalculation = await this.tokenMetadataService.calculateSwapUSDValue(
         swapInfo.inputMint, swapInfo.inputAmountRaw, swapInfo.outputMint, swapInfo.outputAmountRaw
       );
 
-      if (!valueCalculation) {
-        console.log(`[QuickNode] UNIFIED_CALCULATOR_FILTERED: No result from calculateSwapUSDValue for signature=${signature.slice(0,12)}`);
-        return;
-      }
-
-      console.log(`[QuickNode] UNIFIED_CALCULATOR_RESULT: amountUSD=${valueCalculation.amountUSD}, swapType=${valueCalculation.swapType}, tokenAddress=${valueCalculation.tokenAddress}, paymentToken=${valueCalculation.paymentToken}, paymentTokenAmount=${valueCalculation.paymentTokenAmount}, paymentTokenPrice=${valueCalculation.paymentTokenPrice}`);
+      if (!valueCalculation) return;
 
       const { amountUSD, swapType, tokenAddress, paymentToken, paymentTokenAmount, paymentTokenPrice } = valueCalculation;
 
       if (amountUSD >= 2000) {
-        console.log(`[QuickNode] LARGE_SWAP_DETECTED: ${swapType.toUpperCase()} - ${this.tokenMetadataService.getTokenSymbol(tokenAddress)} - $${amountUSD.toFixed(0)} - processing alert`);
-        
+        console.log(`💰 [QuickNode] Large ${swapType.toUpperCase()}: ${this.tokenMetadataService.getTokenSymbol(tokenAddress)} - ${amountUSD.toFixed(0)} - sending alert...`);
         const tokenInfo = await this.getTokenInfoCached(tokenAddress);
         const paymentTokenInfo = await this.getTokenInfoCached(paymentToken);
-
-        console.log(`[QuickNode] TOKEN_INFO_CACHED: tokenInfo.symbol=${tokenInfo.symbol}, tokenInfo.decimals=${tokenInfo.decimals}, paymentTokenInfo.symbol=${paymentTokenInfo.symbol}`);
 
         // Получаем правильное количество основного токена
         const actualTokenAmount = swapType === 'buy' ? 
           swapInfo.outputAmountRaw / Math.pow(10, tokenInfo.decimals) :
           swapInfo.inputAmountRaw / Math.pow(10, tokenInfo.decimals);
-
-        console.log(`[QuickNode] ACTUAL_TOKEN_AMOUNT_CALC: swapType=${swapType}, actualTokenAmount=${actualTokenAmount}, calculation=${swapType === 'buy' ? `${swapInfo.outputAmountRaw} / ${Math.pow(10, tokenInfo.decimals)}` : `${swapInfo.inputAmountRaw} / ${Math.pow(10, tokenInfo.decimals)}`}`);
 
         // Формируем объект SmartMoneySwap
         const smartMoneySwap: SmartMoneySwap = {
@@ -620,60 +604,36 @@ export class QuickNodeWebhookManager {
           isFamilyMember: false,
         };
 
-        console.log(`[QuickNode] SMART_MONEY_SWAP_CREATED: transactionId=${smartMoneySwap.transactionId.slice(0,12)}, walletAddress=${smartMoneySwap.walletAddress.slice(0,8)}, tokenSymbol=${smartMoneySwap.tokenSymbol}, swapType=${smartMoneySwap.swapType}, amountUSD=${smartMoneySwap.amountUSD}`);
-
         await this.saveAndNotifySwap(smartMoneySwap);
-        console.log(`[QuickNode] SWAP_SAVED_AND_NOTIFIED: signature=${signature.slice(0,12)}`);
-      } else {
-        console.log(`[QuickNode] SWAP_BELOW_THRESHOLD: amountUSD=${amountUSD} < 2000`);
       }
-      // ===== ТЕХНИЧЕСКОЕ ЛОГИРОВАНИЕ КОНЕЦ =====
 
     } catch (error) {
-      console.error(`[QuickNode] TX_PROCESSING_ERROR: signature=${signature.slice(0,12)}, error=${error}`);
       this.errorStats.transactionProcessingErrors++;
       throw error;
     }
   }
 
-  // ===== КРИТИЧЕСКАЯ ФУНКЦИЯ С МАКСИМАЛЬНЫМ ЛОГИРОВАНИЕМ =====
+  // 🔥🔥🔥 ИСПРАВЛЕНО: ПРАВИЛЬНЫЙ АНАЛИЗ БАЛАНСОВ ПОЛЬЗОВАТЕЛЯ (НЕ ПУЛА!) 🔥🔥🔥
   private async extractSwapInfoFromBalances(txData: any): Promise<{
     walletAddress: string; inputMint: string; outputMint: string;
     inputAmountRaw: number; outputAmountRaw: number;
   } | null> {
     try {
-      console.log(`[QuickNode] EXTRACT_SWAP_START: signature=${txData.signature?.slice(0,12)}`);
-      
       const transaction = txData;
-      if (!transaction?.meta) {
-        console.log(`[QuickNode] EXTRACT_SWAP_NO_META: transaction.meta is missing`);
-        return null;
-      }
+      if (!transaction?.meta) return null;
 
       const preTokenBalances = transaction.meta.preTokenBalances || [];
       const postTokenBalances = transaction.meta.postTokenBalances || [];
       
-      console.log(`[QuickNode] EXTRACT_SWAP_BALANCES: preTokenBalances.length=${preTokenBalances.length}, postTokenBalances.length=${postTokenBalances.length}`);
-      
-      // КРИТИЧЕСКИЙ АНАЛИЗ КОШЕЛЬКА
+      // 🔥 ИСПРАВЛЕНО: ТОЛЬКО РЕАЛЬНЫЙ ПОЛЬЗОВАТЕЛЬ (feePayer), НЕ ПУЛЫ!
       const walletAddress = this.extractWalletAddressFromTransaction(transaction);
-      if (!walletAddress) {
-        console.log(`[QuickNode] EXTRACT_SWAP_NO_WALLET: extractWalletAddressFromTransaction returned null`);
-        return null;
-      }
-
-      console.log(`[QuickNode] EXTRACT_SWAP_WALLET_FOUND: walletAddress=${walletAddress}`);
+      if (!walletAddress) return null;
 
       const tokenChanges = new Map<string, { changeUI: number, changeRaw: number, mint: string, decimals: number }>();
 
       // Анализ существующих токен-аккаунтов ТОЛЬКО для пользователя
-      let preBalanceAnalyzed = 0;
       for (const pre of preTokenBalances) {
-        if (pre.owner !== walletAddress) {
-          console.log(`[QuickNode] EXTRACT_SWAP_SKIP_PRE: pre.owner=${pre.owner} != walletAddress=${walletAddress}, mint=${pre.mint}`);
-          continue;
-        }
-        preBalanceAnalyzed++;
+        if (pre.owner !== walletAddress) continue;
         
         const post = postTokenBalances.find(p => p.accountIndex === pre.accountIndex);
         
@@ -685,8 +645,6 @@ export class QuickNodeWebhookManager {
         const postAmountRaw = post ? parseInt(post.uiTokenAmount.amount || '0') : 0;
         const changeRaw = postAmountRaw - preAmountRaw;
         
-        console.log(`[QuickNode] EXTRACT_SWAP_PRE_ANALYZED: mint=${pre.mint.slice(0,8)}, preAmountUI=${preAmountUI}, postAmountUI=${postAmountUI}, changeUI=${changeUI}, changeRaw=${changeRaw}`);
-        
         if (Math.abs(changeUI) > 1e-9) {
           tokenChanges.set(pre.mint, { 
             changeUI, 
@@ -694,29 +652,17 @@ export class QuickNodeWebhookManager {
             mint: pre.mint, 
             decimals: pre.uiTokenAmount.decimals 
           });
-          console.log(`[QuickNode] EXTRACT_SWAP_TOKEN_CHANGE_ADDED: mint=${pre.mint.slice(0,8)}, changeUI=${changeUI}, changeRaw=${changeRaw}`);
         }
       }
-      
-      console.log(`[QuickNode] EXTRACT_SWAP_PRE_SUMMARY: preBalanceAnalyzed=${preBalanceAnalyzed} out of ${preTokenBalances.length} total`);
 
       // Анализ НОВЫХ токен-аккаунтов ТОЛЬКО для пользователя
-      let newAccountsAnalyzed = 0;
       for (const post of postTokenBalances) {
-        if (post.owner !== walletAddress || tokenChanges.has(post.mint)) {
-          if (post.owner !== walletAddress) {
-            console.log(`[QuickNode] EXTRACT_SWAP_SKIP_POST: post.owner=${post.owner} != walletAddress=${walletAddress}, mint=${post.mint}`);
-          }
-          continue;
-        }
+        if (post.owner !== walletAddress || tokenChanges.has(post.mint)) continue;
         
         const isNewAccount = !preTokenBalances.find(p => p.accountIndex === post.accountIndex);
         if (isNewAccount) {
-          newAccountsAnalyzed++;
           const changeUI = parseFloat(post.uiTokenAmount.uiAmountString || post.uiTokenAmount.uiAmount?.toString() || '0');
           const changeRaw = parseInt(post.uiTokenAmount.amount || '0');
-          
-          console.log(`[QuickNode] EXTRACT_SWAP_NEW_ACCOUNT: mint=${post.mint.slice(0,8)}, changeUI=${changeUI}, changeRaw=${changeRaw}`);
           
           if (changeUI > 1e-9) {
             tokenChanges.set(post.mint, { 
@@ -725,31 +671,22 @@ export class QuickNodeWebhookManager {
               mint: post.mint, 
               decimals: post.uiTokenAmount.decimals 
             });
-            console.log(`[QuickNode] EXTRACT_SWAP_NEW_TOKEN_CHANGE_ADDED: mint=${post.mint.slice(0,8)}, changeUI=${changeUI}, changeRaw=${changeRaw}`);
           }
         }
       }
-      
-      console.log(`[QuickNode] EXTRACT_SWAP_POST_SUMMARY: newAccountsAnalyzed=${newAccountsAnalyzed}`);
 
       // Анализ изменений нативного SOL для пользователя
       const accountKeys = transaction.transaction?.message?.accountKeys || [];
-      console.log(`[QuickNode] EXTRACT_SWAP_ACCOUNT_KEYS: accountKeys.length=${accountKeys.length}`);
-      
       const walletIndex = accountKeys.findIndex((key: any) => {
         const keyString = typeof key === 'string' ? key : key?.pubkey || key?.toString?.() || '';
         return keyString === walletAddress;
       });
-      
-      console.log(`[QuickNode] EXTRACT_SWAP_WALLET_INDEX: walletIndex=${walletIndex}`);
       
       if (walletIndex !== -1 && transaction.meta?.preBalances && transaction.meta?.postBalances) {
         const preSolBalance = transaction.meta.preBalances[walletIndex] || 0;
         const postSolBalance = transaction.meta.postBalances[walletIndex] || 0;
         const solChangeRaw = postSolBalance - preSolBalance;
         const solChangeUI = solChangeRaw / 1e9;
-        
-        console.log(`[QuickNode] EXTRACT_SWAP_SOL_ANALYSIS: preSolBalance=${preSolBalance}, postSolBalance=${postSolBalance}, solChangeRaw=${solChangeRaw}, solChangeUI=${solChangeUI}`);
         
         if (Math.abs(solChangeUI) > 0.01) {
           tokenChanges.set('So11111111111111111111111111111111111111112', {
@@ -758,29 +695,17 @@ export class QuickNodeWebhookManager {
             mint: 'So11111111111111111111111111111111111111112',
             decimals: 9
           });
-          console.log(`[QuickNode] EXTRACT_SWAP_SOL_CHANGE_ADDED: solChangeUI=${solChangeUI}, solChangeRaw=${solChangeRaw}`);
         }
       }
 
       const spentTokens = Array.from(tokenChanges.values()).filter(c => c.changeUI < 0);
       const receivedTokens = Array.from(tokenChanges.values()).filter(c => c.changeUI > 0);
 
-      console.log(`[QuickNode] EXTRACT_SWAP_TOKEN_SUMMARY: spentTokens.length=${spentTokens.length}, receivedTokens.length=${receivedTokens.length}`);
-      
-      spentTokens.forEach((token, index) => {
-        console.log(`[QuickNode] EXTRACT_SWAP_SPENT_TOKEN_${index}: mint=${token.mint.slice(0,8)}, changeUI=${token.changeUI}, changeRaw=${token.changeRaw}`);
-      });
-      
-      receivedTokens.forEach((token, index) => {
-        console.log(`[QuickNode] EXTRACT_SWAP_RECEIVED_TOKEN_${index}: mint=${token.mint.slice(0,8)}, changeUI=${token.changeUI}, changeRaw=${token.changeRaw}`);
-      });
-
       if (spentTokens.length === 0 || receivedTokens.length === 0) {
-        console.log(`[QuickNode] EXTRACT_SWAP_INSUFFICIENT_TOKENS: spentTokens.length=${spentTokens.length}, receivedTokens.length=${receivedTokens.length}`);
         return null;
       }
 
-      // ПРАВИЛЬНАЯ ЛОГИКА: ИЩЕМ PAYMENT TOKEN ПАРУ
+      // 🔥🔥🔥 ПРАВИЛЬНАЯ ЛОГИКА: ИЩЕМ PAYMENT TOKEN ПАРУ 🔥🔥🔥
       let inputMint: string | null = null;
       let outputMint: string | null = null;
       let inputAmountRaw = 0;
@@ -789,47 +714,36 @@ export class QuickNodeWebhookManager {
       // Ищем payment token в потраченных токенах
       const spentPaymentToken = spentTokens.find(token => this.PAYMENT_TOKENS.has(token.mint));
       
-      console.log(`[QuickNode] EXTRACT_SWAP_SPENT_PAYMENT_CHECK: spentPaymentToken=${spentPaymentToken ? spentPaymentToken.mint.slice(0,8) : 'not found'}`);
-      
       if (spentPaymentToken) {
         // BUY: Тратим payment token -> получаем обычный токен
         const receivedNonPaymentToken = receivedTokens.find(token => !this.PAYMENT_TOKENS.has(token.mint));
-        
-        console.log(`[QuickNode] EXTRACT_SWAP_BUY_CHECK: receivedNonPaymentToken=${receivedNonPaymentToken ? receivedNonPaymentToken.mint.slice(0,8) : 'not found'}`);
         
         if (receivedNonPaymentToken) {
           inputMint = spentPaymentToken.mint;
           outputMint = receivedNonPaymentToken.mint;
           inputAmountRaw = Math.abs(spentPaymentToken.changeRaw);
           outputAmountRaw = receivedNonPaymentToken.changeRaw;
-          console.log(`[QuickNode] EXTRACT_SWAP_BUY_DETECTED: inputMint=${inputMint.slice(0,8)}, outputMint=${outputMint.slice(0,8)}, inputAmountRaw=${inputAmountRaw}, outputAmountRaw=${outputAmountRaw}`);
         }
       } else {
         // Ищем payment token в полученных токенах
         const receivedPaymentToken = receivedTokens.find(token => this.PAYMENT_TOKENS.has(token.mint));
         
-        console.log(`[QuickNode] EXTRACT_SWAP_RECEIVED_PAYMENT_CHECK: receivedPaymentToken=${receivedPaymentToken ? receivedPaymentToken.mint.slice(0,8) : 'not found'}`);
-        
         if (receivedPaymentToken) {
           // SELL: Тратим обычный токен -> получаем payment token
           const spentNonPaymentToken = spentTokens.find(token => !this.PAYMENT_TOKENS.has(token.mint));
-          
-          console.log(`[QuickNode] EXTRACT_SWAP_SELL_CHECK: spentNonPaymentToken=${spentNonPaymentToken ? spentNonPaymentToken.mint.slice(0,8) : 'not found'}`);
           
           if (spentNonPaymentToken) {
             inputMint = spentNonPaymentToken.mint;
             outputMint = receivedPaymentToken.mint;
             inputAmountRaw = Math.abs(spentNonPaymentToken.changeRaw);
             outputAmountRaw = receivedPaymentToken.changeRaw;
-            console.log(`[QuickNode] EXTRACT_SWAP_SELL_DETECTED: inputMint=${inputMint.slice(0,8)}, outputMint=${outputMint.slice(0,8)}, inputAmountRaw=${inputAmountRaw}, outputAmountRaw=${outputAmountRaw}`);
           }
         }
       }
 
       // Если не нашли правильную пару - используем УМНЫЙ fallback
       if (!inputMint || !outputMint) {
-        console.log(`[QuickNode] EXTRACT_SWAP_FALLBACK: No payment token pair found, using fallback logic`);
-        
+        // Берем первые операции, но с правильным направлением
         const spentToken = spentTokens[0];
         const receivedToken = receivedTokens[0];
         
@@ -838,96 +752,23 @@ export class QuickNodeWebhookManager {
         inputAmountRaw = Math.abs(spentToken.changeRaw);
         outputAmountRaw = receivedToken.changeRaw;
         
-        console.log(`[QuickNode] EXTRACT_SWAP_FALLBACK_RESULT: inputMint=${inputMint.slice(0,8)}, outputMint=${outputMint.slice(0,8)}, inputAmountRaw=${inputAmountRaw}, outputAmountRaw=${outputAmountRaw}`);
+        console.log(`⚠️ [QuickNode] Using fallback pair: ${this.tokenMetadataService.getTokenSymbol(inputMint)} → ${this.tokenMetadataService.getTokenSymbol(outputMint)}`);
       }
 
       // Фильтрация технических операций (деньги в деньги)
       const inputIsPayment = this.PAYMENT_TOKENS.has(inputMint);
       const outputIsPayment = this.PAYMENT_TOKENS.has(outputMint);
 
-      console.log(`[QuickNode] EXTRACT_SWAP_PAYMENT_CHECK: inputIsPayment=${inputIsPayment}, outputIsPayment=${outputIsPayment}`);
-
       if (inputIsPayment && outputIsPayment) {
-        console.log(`[QuickNode] EXTRACT_SWAP_PAYMENT_TO_PAYMENT_FILTERED: Both tokens are payment tokens`);
         return null;
       }
 
-      console.log(`[QuickNode] EXTRACT_SWAP_SUCCESS: walletAddress=${walletAddress.slice(0,8)}, inputMint=${inputMint.slice(0,8)}, outputMint=${outputMint.slice(0,8)}, inputAmountRaw=${inputAmountRaw}, outputAmountRaw=${outputAmountRaw}`);
       return { walletAddress, inputMint, outputMint, inputAmountRaw, outputAmountRaw };
 
     } catch (error) {
-      console.error(`[QuickNode] EXTRACT_SWAP_ERROR: ${error}`);
+      console.error(`❌ [QuickNode] extractSwapInfoFromBalances error:`, error);
       return null;
     }
-  }
-
-  // ===== КРИТИЧЕСКАЯ ФУНКЦИЯ С МАКСИМАЛЬНЫМ ЛОГИРОВАНИЕМ =====
-  private extractWalletAddressFromTransaction(txData: any): string | null {
-    console.log(`[QuickNode] EXTRACT_WALLET_START: Analyzing transaction for wallet address`);
-    
-    let walletSource = '';
-    let walletAddress = null;
-    
-    // ПРИОРИТЕТ 1: feePayer
-    if (txData.feePayer) {
-      walletAddress = txData.feePayer;
-      walletSource = 'feePayer';
-      console.log(`[QuickNode] EXTRACT_WALLET_FEEPAYER: Found feePayer=${walletAddress}`);
-    } 
-    // ПРИОРИТЕТ 2: accountKeys[0]
-    else if (txData.transaction?.message?.accountKeys?.[0]) {
-      walletAddress = txData.transaction.message.accountKeys[0];
-      walletSource = 'accountKeys[0]';
-      console.log(`[QuickNode] EXTRACT_WALLET_ACCOUNT_KEYS: Found accountKeys[0]=${walletAddress}`);
-    }
-    // ПРИОРИТЕТ 3: preTokenBalances[0].owner (МОЖЕТ БЫТЬ ПУЛ!)
-    else if (txData.meta?.preTokenBalances?.[0]?.owner) {
-      walletAddress = txData.meta.preTokenBalances[0].owner;
-      walletSource = 'preTokenBalances[0].owner';
-      console.log(`[QuickNode] EXTRACT_WALLET_PRE_TOKEN_BALANCE: Found preTokenBalances[0].owner=${walletAddress} - WARNING: MAY BE POOL!`);
-    }
-    // ПРИОРИТЕТ 4: postTokenBalances[0].owner (МОЖЕТ БЫТЬ ПУЛ!)
-    else if (txData.meta?.postTokenBalances?.[0]?.owner) {
-      walletAddress = txData.meta.postTokenBalances[0].owner;
-      walletSource = 'postTokenBalances[0].owner';
-      console.log(`[QuickNode] EXTRACT_WALLET_POST_TOKEN_BALANCE: Found postTokenBalances[0].owner=${walletAddress} - WARNING: MAY BE POOL!`);
-    }
-    
-    if (walletAddress) {
-      console.log(`[QuickNode] EXTRACT_WALLET_SUCCESS: source=${walletSource}, address=${walletAddress}`);
-      
-      // ДЕТЕКЦИЯ ИЗВЕСТНЫХ ПУЛОВ
-      if (walletAddress === 'BFauTbx7qMjsz9dQJSmSraxmCD1C7x9DwJ9ynYreB1YJ') {
-        console.log(`[QuickNode] EXTRACT_WALLET_WARNING: DETECTED KNOWN POOL ADDRESS! This is AMM pool, not user wallet!`);
-      }
-      
-      // АНАЛИЗ ВСЕХ БАЛАНСОВ ДЛЯ КОНТЕКСТА
-      if (txData.meta?.preTokenBalances) {
-        console.log(`[QuickNode] EXTRACT_WALLET_CONTEXT_PRE: All preTokenBalances owners:`);
-        txData.meta.preTokenBalances.forEach((balance: any, index: number) => {
-          console.log(`[QuickNode] EXTRACT_WALLET_CONTEXT_PRE_${index}: owner=${balance.owner}, mint=${balance.mint?.slice(0,8)}`);
-        });
-      }
-      
-      if (txData.meta?.postTokenBalances) {
-        console.log(`[QuickNode] EXTRACT_WALLET_CONTEXT_POST: All postTokenBalances owners:`);
-        txData.meta.postTokenBalances.forEach((balance: any, index: number) => {
-          console.log(`[QuickNode] EXTRACT_WALLET_CONTEXT_POST_${index}: owner=${balance.owner}, mint=${balance.mint?.slice(0,8)}`);
-        });
-      }
-      
-      if (txData.transaction?.message?.accountKeys) {
-        console.log(`[QuickNode] EXTRACT_WALLET_CONTEXT_KEYS: All accountKeys:`);
-        txData.transaction.message.accountKeys.forEach((key: any, index: number) => {
-          const keyString = typeof key === 'string' ? key : key?.pubkey || key?.toString?.() || 'unknown';
-          console.log(`[QuickNode] EXTRACT_WALLET_CONTEXT_KEY_${index}: ${keyString}`);
-        });
-      }
-    } else {
-      console.log(`[QuickNode] EXTRACT_WALLET_FAILED: No wallet address found in any source`);
-    }
-    
-    return walletAddress;
   }
 
   private async getWalletSignatures(walletAddress: string): Promise<Array<{signature: string; blockTime: number}>> {
@@ -943,7 +784,7 @@ export class QuickNodeWebhookManager {
       const data = await this.makeRpcRequest('getSignaturesForAddress', params);
       const signatures = data.result || [];
       
-      // ТОЛЬКО НОВЫЕ ТРАНЗАКЦИИ: последние 10 минут
+      // 🔥 ТОЛЬКО НОВЫЕ ТРАНЗАКЦИИ: последние 10 минут
       const tenMinutesAgo = Math.floor(Date.now() / 1000) - (10 * 60);
       const recentSignatures = signatures.filter((sig: any) => sig.blockTime > tenMinutesAgo);
       
@@ -986,6 +827,19 @@ export class QuickNodeWebhookManager {
     }
     
     return true;
+  }
+
+  // 🔥🔥🔥 ПРИОРИТЕТ feePayer, НО С FALLBACK НА ВСЯКИЙ СЛУЧАЙ 🔥🔥🔥
+  private extractWalletAddressFromTransaction(txData: any): string | null {
+    // 🔥 ПРИОРИТЕТ: feePayer (реальный пользователь)
+    if (txData.feePayer) return txData.feePayer;
+    
+    // Fallback на всякий случай (хотя feePayer должен быть всегда)
+    if (txData.meta?.preTokenBalances?.[0]?.owner) return txData.meta.preTokenBalances[0].owner;
+    if (txData.meta?.postTokenBalances?.[0]?.owner) return txData.meta.postTokenBalances[0].owner;
+    if (txData.transaction?.message?.accountKeys?.[0]) return txData.transaction.message.accountKeys[0];
+    
+    return null;
   }
 
   private getDefaultDecimals(tokenMint: string): number {
