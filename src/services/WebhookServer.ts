@@ -492,6 +492,12 @@ export class WebhookServer {
           });
         }
       }
+      console.log(`\n🔍 ALL TOKEN CHANGES BEFORE FILTERING:`);
+      for (const [mint, change] of tokenChanges.entries()) {
+  const symbol = this.tokenMetadataService.getTokenSymbol(mint);
+  console.log(`${symbol} (${mint.slice(0,8)}...): ${change.changeUI > 0 ? '+' : ''}${change.changeUI} (raw: ${change.changeRaw})`);
+}
+      
 
       // 🔥 УНИФИЦИРОВАННАЯ ЛОГИКА: используем changeUI для фильтрации, changeRaw для расчетов
       const spentTokens = Array.from(tokenChanges.values()).filter(c => c.changeUI < 0);
@@ -507,6 +513,9 @@ export class WebhookServer {
       let outputMint: string | null = null;
       let inputAmountRaw = 0;
       let outputAmountRaw = 0;
+      console.log(`🔍 SPENT TOKENS:`, spentTokens.map(t => this.tokenMetadataService.getTokenSymbol(t.mint)));
+      console.log(`🔍 RECEIVED TOKENS:`, receivedTokens.map(t => this.tokenMetadataService.getTokenSymbol(t.mint)));
+      console.log(`🔍 LOOKING FOR PAYMENT IN SPENT...`);
 
       // Ищем payment token в потраченных токенах
       const spentPaymentToken = spentTokens.find(token => this.PAYMENT_TOKENS.has(token.mint));
@@ -542,8 +551,8 @@ export class WebhookServer {
       if (!inputMint || !outputMint) {
         const spentToken = spentTokens[0];
         const receivedToken = receivedTokens[0];
-        inputMint = spentToken.mint;
-        outputMint = receivedToken.mint;
+        inputMint = receivedToken.mint;
+        outputMint = spentToken.mint; 
         inputAmountRaw = Math.abs(spentToken.changeRaw);
         outputAmountRaw = receivedToken.changeRaw;
       }
