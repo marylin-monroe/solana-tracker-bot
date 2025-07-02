@@ -139,7 +139,7 @@ export class WebhookServer {
     timestamp: number; 
   }>();
 
-  private readonly PRICE_CACHE_TTL = 45 * 60 * 1000; // 5 минут
+  private readonly PRICE_CACHE_TTL = 5 * 60 * 1000; // 5 минут
 
   // 📈 ПОПУЛЯРНЫЕ CEX ТОКЕНЫ - РАСШИРЕННЫЙ СПИСОК
   private readonly CEX_TOKENS = new Set([
@@ -394,7 +394,7 @@ export class WebhookServer {
     }
   }
 
-  // 🔥🔥🔥 НОВАЯ ЛОГИКА: СОБИРАЕМ ВСЕ ИЗМЕНЕНИЯ И ПРОБУЕМ ВСЕ ПАРЫ 🔥🔥🔥
+  // 🔥🔥🔥 ИСПРАВЛЕННАЯ ЛОГИКА: ЖЕЛЕЗНОЕ ОПРЕДЕЛЕНИЕ НАПРАВЛЕНИЯ 🔥🔥🔥
   private async findBestSwapThroughTokenMetadata(txData: SolanaWebhookPayload): Promise<{
     walletAddress: string; 
     tokenAddress: string;
@@ -419,49 +419,130 @@ export class WebhookServer {
       const tokenChanges = await this.getAllTokenChangesForWallet(transaction, walletAddress);
       if (tokenChanges.length < 2) return null;
 
+      console.log(`🔍 [DEBUG] Token changes:`, tokenChanges.map(t => `${this.tokenMetadataService.getTokenSymbol(t.mint)}: ${(t.changeRaw / Math.pow(10, t.decimals)).toFixed(4)}`));
+
       const spentTokens = tokenChanges.filter(c => c.changeRaw < 0);
       const receivedTokens = tokenChanges.filter(c => c.changeRaw > 0);
 
+      console.log(`🔍 [DEBUG] Spent:`, spentTokens.map(t => this.tokenMetadataService.getTokenSymbol(t.mint)));
+      console.log(`🔍 [DEBUG] Received:`, receivedTokens.map(t => this.tokenMetadataService.getTokenSymbol(t.mint)));
+
       if (spentTokens.length === 0 || receivedTokens.length === 0) return null;
 
-      // 🔥 ПРОБУЕМ ВСЕ ВОЗМОЖНЫЕ ПАРЫ ЧЕРЕЗ TokenMetadataService
+      // 🔥🔥🔥 ЖЕЛЕЗНАЯ ЛОГИКА: ОПРЕДЕЛЯЕМ НАПРАВЛЕНИЕ ПО PAYMENT TOKENS 🔥🔥🔥
+      
+      // Списки payment токенов (синхронизировано с TokenMetadataService)
+      const PAYMENT_TOKENS = new Set([
+        'So11111111111111111111111111111111111111112', // SOL
+        'So11111111111111111111111111111111111111111', // WSOL  
+        'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+        'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
+        'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So', // mSOL
+        'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn', // JitoSOL
+        '7Q2afV64in6N6SeZsAAB81TJzwDoD6zpqmHkzi9Dcavn', // stSOL
+        'bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1', // bSOL
+        'he1iusmfkpAdwvxLNGV8Y1iSbj4rUy6yMhEA3fotn9A'  // hSOL
+      ]);
+
+      let bestResult: any = null;
+      let bestUSD = 0;
+
+      // 🔥 ПРАВИЛО 1: ПРИОРИТЕТ PAYMENT → NON-PAYMENT (BUY)
       for (const spentToken of spentTokens) {
-        for (const receivedToken of receivedTokens) {
-          const inputMint = spentToken.mint;
-          const outputMint = receivedToken.mint;
-          const inputAmountRaw = Math.abs(spentToken.changeRaw);
-          const outputAmountRaw = receivedToken.changeRaw;
-
-          // Вызываем TokenMetadataService для этой пары
-          const valueCalculation = await this.tokenMetadataService.calculateSwapUSDValue(
-            inputMint, inputAmountRaw, outputMint, outputAmountRaw
-          );
-
-          if (valueCalculation && valueCalculation.amountUSD >= 700) {
-            // Нашли валидную пару!
-            return {
-              walletAddress,
-              tokenAddress: valueCalculation.tokenAddress,
-              swapType: valueCalculation.swapType,
-              amountUSD: valueCalculation.amountUSD,
-              paymentToken: valueCalculation.paymentToken,
-              paymentTokenAmount: valueCalculation.paymentTokenAmount,
-              paymentTokenPrice: valueCalculation.paymentTokenPrice,
-              inputMint,
-              outputMint,
-              inputAmountRaw,
-              outputAmountRaw
-            };
+        if (PAYMENT_TOKENS.has(spentToken.mint)) {
+          for (const receivedToken of receivedTokens) {
+            if (!PAYMENT_TOKENS.has(receivedToken.mint)) {
+              console.log(`🔥 [DEBUG] Trying BUY: ${this.tokenMetadataService.getTokenSymbol(spentToken.mint)} → ${this.tokenMetadataService.getTokenSymbol(receivedToken.mint)}`);
+              
+              const result = await this.trySwapPair(
+                spentToken.mint, Math.abs(spentToken.changeRaw),
+                receivedToken.mint, receivedToken.changeRaw,
+                walletAddress
+              );
+              
+              if (result && result.amountUSD > bestUSD) {
+                bestResult = result;
+                bestUSD = result.amountUSD;
+                console.log(`✅ [DEBUG] Valid BUY found: ${result.amountUSD.toFixed(0)}`);
+              }
+            }
           }
         }
       }
 
-      return null;
+      // 🔥 ПРАВИЛО 2: NON-PAYMENT → PAYMENT (SELL)
+      for (const spentToken of spentTokens) {
+        if (!PAYMENT_TOKENS.has(spentToken.mint)) {
+          for (const receivedToken of receivedTokens) {
+            if (PAYMENT_TOKENS.has(receivedToken.mint)) {
+              console.log(`🔥 [DEBUG] Trying SELL: ${this.tokenMetadataService.getTokenSymbol(spentToken.mint)} → ${this.tokenMetadataService.getTokenSymbol(receivedToken.mint)}`);
+              
+              const result = await this.trySwapPair(
+                spentToken.mint, Math.abs(spentToken.changeRaw),
+                receivedToken.mint, receivedToken.changeRaw,
+                walletAddress
+              );
+              
+              if (result && result.amountUSD > bestUSD) {
+                bestResult = result;
+                bestUSD = result.amountUSD;
+                console.log(`✅ [DEBUG] Valid SELL found: ${result.amountUSD.toFixed(0)}`);
+              }
+            }
+          }
+        }
+      }
+
+      return bestResult;
 
     } catch (error) {
-      this.logger.error('[findBestSwapThroughTokenMetadata] Error:', error);
+      console.error(`❌ [findBestSwapThroughTokenMetadata] error:`, error);
       return null;
     }
+  }
+
+  // 🔥 ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ: ПРОБУЕМ ПАРУ
+  private async trySwapPair(
+    inputMint: string, 
+    inputAmountRaw: number, 
+    outputMint: string, 
+    outputAmountRaw: number,
+    walletAddress: string
+  ): Promise<{
+    walletAddress: string; 
+    tokenAddress: string;
+    swapType: 'buy' | 'sell';
+    amountUSD: number;
+    paymentToken: string;
+    paymentTokenAmount: number;
+    paymentTokenPrice: number;
+    inputMint: string;
+    outputMint: string;
+    inputAmountRaw: number;
+    outputAmountRaw: number;
+  } | null> {
+    
+    const valueCalculation = await this.tokenMetadataService.calculateSwapUSDValue(
+      inputMint, inputAmountRaw, outputMint, outputAmountRaw
+    );
+
+    if (valueCalculation && valueCalculation.amountUSD >= 700) {
+      return {
+        walletAddress,
+        tokenAddress: valueCalculation.tokenAddress,
+        swapType: valueCalculation.swapType,
+        amountUSD: valueCalculation.amountUSD,
+        paymentToken: valueCalculation.paymentToken,
+        paymentTokenAmount: valueCalculation.paymentTokenAmount,
+        paymentTokenPrice: valueCalculation.paymentTokenPrice,
+        inputMint,
+        outputMint,
+        inputAmountRaw,
+        outputAmountRaw
+      };
+    }
+
+    return null;
   }
 
   // 🔥 СОБИРАЕМ ВСЕ ИЗМЕНЕНИЯ ТОКЕНОВ ДЛЯ КОШЕЛЬКА
@@ -555,7 +636,7 @@ export class WebhookServer {
   ): Promise<void> {
     try {
       // Первичный фильтр по минимальной сумме
-      if (swapInfo.amountUSD < 3000) {
+      if (swapInfo.amountUSD < 700) {
         console.log(`📉 [WebhookServer] Small transaction: ${swapInfo.amountUSD.toFixed(0)} - below threshold`);
         this.processingStats.filteredTransactions++;
         return;
