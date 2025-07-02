@@ -1,4 +1,4 @@
-// src/services/QuickNodeWebhookManager.ts - 🔥 ИСПРАВЛЕНО: ПРАВИЛЬНЫЙ ВЫБОР ТОКЕНОВ ДЛЯ BUY/SELL
+// src/services/QuickNodeWebhookManager.ts - 🔥 ИСПРАВЛЕНО: BUY/SELL ПРОБЛЕМА РЕШЕНА
 import { Logger } from '../utils/Logger';
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
 import { TelegramNotifier } from './TelegramNotifier';
@@ -127,7 +127,7 @@ export class QuickNodeWebhookManager {
     this.initializeProviders();
     this.startLimitResetTimer();
     this.startCacheCleanup();
-    this.logger.info('🔥 QuickNodeWebhookManager initialized with improved buy/sell detection');
+    this.logger.info('🔥 QuickNodeWebhookManager initialized with FIXED buy/sell detection');
   }
 
   setTelegramNotifier(telegramNotifier: TelegramNotifier): void {
@@ -602,7 +602,7 @@ export class QuickNodeWebhookManager {
     }
   }
 
-  // 🔥🔥🔥 ИСПРАВЛЕНО: ПРАВИЛЬНЫЙ ВЫБОР ТОКЕНОВ ДЛЯ BUY/SELL 🔥🔥🔥
+  // 🔥🔥🔥 ИСПРАВЛЕНО: ПРАВИЛЬНЫЙ АНАЛИЗ БАЛАНСОВ ПОЛЬЗОВАТЕЛЯ (НЕ ПУЛА!) 🔥🔥🔥
   private async extractSwapInfoFromBalances(txData: any): Promise<{
     walletAddress: string; inputMint: string; outputMint: string;
     inputAmountRaw: number; outputAmountRaw: number;
@@ -613,17 +613,14 @@ export class QuickNodeWebhookManager {
 
       const preTokenBalances = transaction.meta.preTokenBalances || [];
       const postTokenBalances = transaction.meta.postTokenBalances || [];
+      
+      // 🔥 ИСПРАВЛЕНО: ТОЛЬКО РЕАЛЬНЫЙ ПОЛЬЗОВАТЕЛЬ (feePayer), НЕ ПУЛЫ!
       const walletAddress = this.extractWalletAddressFromTransaction(transaction);
-      console.log(`🔍 ANALYZING WALLET: ${walletAddress}`);
-console.log(`🔍 TRANSACTION feePayer: ${transaction.feePayer}`);
-console.log(`🔍 FIRST TOKEN OWNER: ${transaction.meta?.preTokenBalances?.[0]?.owner}`);
-
       if (!walletAddress) return null;
 
-      // 🔥 УНИФИЦИРОВАННАЯ СТРУКТУРА: используем changeRaw как в WebhookServer
       const tokenChanges = new Map<string, { changeUI: number, changeRaw: number, mint: string, decimals: number }>();
 
-      // Анализ существующих токен-аккаунтов
+      // Анализ существующих токен-аккаунтов ТОЛЬКО для пользователя
       for (const pre of preTokenBalances) {
         if (pre.owner !== walletAddress) continue;
         
@@ -631,11 +628,6 @@ console.log(`🔍 FIRST TOKEN OWNER: ${transaction.meta?.preTokenBalances?.[0]?.
         
         const preAmountUI = parseFloat(pre.uiTokenAmount.uiAmountString || pre.uiTokenAmount.uiAmount?.toString() || '0');
         const postAmountUI = post ? parseFloat(post.uiTokenAmount.uiAmountString || post.uiTokenAmount.uiAmount?.toString() || '0') : 0;
-        const tokenSymbol = this.tokenMetadataService.getTokenSymbol(pre.mint);
-  console.log(`🔍 TOKEN ${tokenSymbol} (${pre.mint.slice(0,8)}...):`);
-  console.log(`  PRE: ${preAmountUI}`);
-  console.log(`  POST: ${postAmountUI}`);
-  console.log(`  CHANGE WILL BE: ${postAmountUI - preAmountUI}`);
         const changeUI = postAmountUI - preAmountUI;
         
         const preAmountRaw = parseInt(pre.uiTokenAmount.amount || '0');
@@ -652,7 +644,7 @@ console.log(`🔍 FIRST TOKEN OWNER: ${transaction.meta?.preTokenBalances?.[0]?.
         }
       }
 
-      // Анализ НОВЫХ токен-аккаунтов
+      // Анализ НОВЫХ токен-аккаунтов ТОЛЬКО для пользователя
       for (const post of postTokenBalances) {
         if (post.owner !== walletAddress || tokenChanges.has(post.mint)) continue;
         
@@ -672,7 +664,7 @@ console.log(`🔍 FIRST TOKEN OWNER: ${transaction.meta?.preTokenBalances?.[0]?.
         }
       }
 
-      // Анализ изменений нативного SOL
+      // Анализ изменений нативного SOL для пользователя
       const accountKeys = transaction.transaction?.message?.accountKeys || [];
       const walletIndex = accountKeys.findIndex((key: any) => {
         const keyString = typeof key === 'string' ? key : key?.pubkey || key?.toString?.() || '';
@@ -694,29 +686,19 @@ console.log(`🔍 FIRST TOKEN OWNER: ${transaction.meta?.preTokenBalances?.[0]?.
           });
         }
       }
-      console.log(`\n🔍 ALL TOKEN CHANGES BEFORE FILTERING:`);
-for (const [mint, change] of tokenChanges.entries()) {
-  const symbol = this.tokenMetadataService.getTokenSymbol(mint);
-  console.log(`${symbol} (${mint.slice(0,8)}...): ${change.changeUI > 0 ? '+' : ''}${change.changeUI} (raw: ${change.changeRaw})`);
-}
 
-      // 🔥 УНИФИЦИРОВАННАЯ ЛОГИКА: используем changeUI для фильтрации, changeRaw для расчетов
       const spentTokens = Array.from(tokenChanges.values()).filter(c => c.changeUI < 0);
       const receivedTokens = Array.from(tokenChanges.values()).filter(c => c.changeUI > 0);
 
-      // 🔥🔥🔥 ПРАВИЛЬНАЯ ЛОГИКА: ИЩЕМ PAYMENT TOKEN ПАРУ 🔥🔥🔥
       if (spentTokens.length === 0 || receivedTokens.length === 0) {
         return null;
       }
 
-      // 🚀 НОВАЯ ЛОГИКА: Ищем правильную пару токенов
+      // 🔥🔥🔥 ПРАВИЛЬНАЯ ЛОГИКА: ИЩЕМ PAYMENT TOKEN ПАРУ 🔥🔥🔥
       let inputMint: string | null = null;
       let outputMint: string | null = null;
       let inputAmountRaw = 0;
       let outputAmountRaw = 0;
-      console.log(`🔍 SPENT TOKENS:`, spentTokens.map(t => this.tokenMetadataService.getTokenSymbol(t.mint)));
-      console.log(`🔍 RECEIVED TOKENS:`, receivedTokens.map(t => this.tokenMetadataService.getTokenSymbol(t.mint)));
-      console.log(`🔍 LOOKING FOR PAYMENT IN SPENT...`);
 
       // Ищем payment token в потраченных токенах
       const spentPaymentToken = spentTokens.find(token => this.PAYMENT_TOKENS.has(token.mint));
@@ -730,6 +712,8 @@ for (const [mint, change] of tokenChanges.entries()) {
           outputMint = receivedNonPaymentToken.mint;
           inputAmountRaw = Math.abs(spentPaymentToken.changeRaw);
           outputAmountRaw = receivedNonPaymentToken.changeRaw;
+          
+          console.log(`✅ [QuickNode] BUY detected: ${this.tokenMetadataService.getTokenSymbol(outputMint)} for ${this.tokenMetadataService.getTokenSymbol(inputMint)}`);
         }
       } else {
         // Ищем payment token в полученных токенах
@@ -744,35 +728,23 @@ for (const [mint, change] of tokenChanges.entries()) {
             outputMint = receivedPaymentToken.mint;
             inputAmountRaw = Math.abs(spentNonPaymentToken.changeRaw);
             outputAmountRaw = receivedPaymentToken.changeRaw;
+            
+            console.log(`✅ [QuickNode] SELL detected: ${this.tokenMetadataService.getTokenSymbol(inputMint)} for ${this.tokenMetadataService.getTokenSymbol(outputMint)}`);
           }
         }
       }
 
-      // Если не нашли правильную пару - используем fallback (первые операции)
+      // Если не нашли правильную пару - возвращаем null (НЕ ИСПОЛЬЗУЕМ FALLBACK!)
       if (!inputMint || !outputMint) {
-        const spentToken = spentTokens[0];
-        const receivedToken = receivedTokens[0];
-        inputMint = receivedToken.mint;
-        outputMint = spentToken.mint; 
-        inputAmountRaw = Math.abs(spentToken.changeRaw);
-        outputAmountRaw = receivedToken.changeRaw;
+        console.log(`⚠️ [QuickNode] Cannot determine payment token pair - ignoring`);
+        return null;
       }
-
-      // 🔥🔥🔥 ДЕТАЛЬНАЯ ОТЛАДКА ДЛЯ АНАЛИЗА РЕЗУЛЬТАТА 🔥🔥🔥
-      console.log(`\n🔍 [QuickNode] FINAL SWAP ANALYSIS FOR: ${transaction.signature?.slice(0,12)}...`);
-      console.log(`💸 INPUT: ${this.tokenMetadataService.getTokenSymbol(inputMint)} (${inputMint.slice(0,8)}...) = ${inputAmountRaw}`);
-      console.log(`💰 OUTPUT: ${this.tokenMetadataService.getTokenSymbol(outputMint)} (${outputMint.slice(0,8)}...) = ${outputAmountRaw}`);
 
       // Фильтрация технических операций (деньги в деньги)
       const inputIsPayment = this.PAYMENT_TOKENS.has(inputMint);
       const outputIsPayment = this.PAYMENT_TOKENS.has(outputMint);
 
       if (inputIsPayment && outputIsPayment) {
-        return null;
-      }
-
-      // Также фильтруем операции между двумя неплатежными токенами
-      if (!inputIsPayment && !outputIsPayment) {
         return null;
       }
 
@@ -821,7 +793,6 @@ for (const [mint, change] of tokenChanges.entries()) {
     }
   }
 
-  // 🔥🔥🔥 ТОЛЬКО НОВЫЕ ТРАНЗАКЦИИ: Простая и надежная проверка времени (последние 10 минут)
   private isTransactionRecentAndValid(transaction: any): boolean {
     if (!transaction || !transaction.blockTime) return false;
     
@@ -830,7 +801,6 @@ for (const [mint, change] of tokenChanges.entries()) {
     const timeDifference = now - transactionTime;
     const maxAge = 10 * 60 * 1000; // 10 минут
     
-    // 🔥 ЕДИНСТВЕННАЯ НАДЕЖНАЯ ПРОВЕРКА: используем Math.abs() для защиты от рассинхронизации
     const absoluteTimeDifference = Math.abs(timeDifference);
     
     if (absoluteTimeDifference > maxAge) {
@@ -844,19 +814,12 @@ for (const [mint, change] of tokenChanges.entries()) {
     return true;
   }
 
-  // 🔥🔥🔥 ИСПРАВЛЕНО: Правильное извлечение адреса кошелька с правильным приоритетом
+  // 🔥🔥🔥 ИСПРАВЛЕНО: ТОЛЬКО feePayer - РЕАЛЬНЫЙ ПОЛЬЗОВАТЕЛЬ, НЕ ПУЛЫ! 🔥🔥🔥
   private extractWalletAddressFromTransaction(txData: any): string | null {
-    // 🔥 ПРАВИЛЬНЫЙ ПОРЯДОК ПРИОРИТЕТОВ:
-    // 1. feePayer (наиболее надежный - это всегда кошелек пользователя)
+    // 🔥 ТОЛЬКО feePayer (реальный пользователь) - никаких fallback на пулы!
     if (txData.feePayer) return txData.feePayer;
     
-    // 2. Из балансов - берем первого owner (это реальный кошелек пользователя)
-    if (txData.meta?.preTokenBalances?.[0]?.owner) return txData.meta.preTokenBalances[0].owner;
-    if (txData.meta?.postTokenBalances?.[0]?.owner) return txData.meta.postTokenBalances[0].owner;
-    
-    // 3. ТОЛЬКО В КРАЙНЕМ СЛУЧАЕ: первый accountKey (может быть программой!)
-    if (txData.transaction?.message?.accountKeys?.[0]) return txData.transaction.message.accountKeys[0];
-    
+    // НЕ БЕРЕМ owner из балансов - это может быть пул AMM!
     return null;
   }
 

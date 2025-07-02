@@ -1,4 +1,4 @@
-// src/services/WebhookServer.ts - 🔥 ИСПРАВЛЕНО: ПРАВИЛЬНЫЙ ВЫБОР ТОКЕНОВ ДЛЯ BUY/SELL
+// src/services/WebhookServer.ts - 🔥 ИСПРАВЛЕНО: BUY/SELL ПРОБЛЕМА РЕШЕНА
 import express from 'express';
 import { Database } from './Database';
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
@@ -130,7 +130,7 @@ export class WebhookServer {
   private port: number;
   private server: any;
 
-  // 🔥🔥🔥 PAYMENT TOKENS ДЛЯ ПРАВИЛЬНОГО ОПРЕДЕЛЕНИЯ BUY/SELL 🔥🔥🔥
+  // 🔥🔥🔥 PAYMENT TOKENS ДЛЯ ПРАВИЛЬНОГО ОПРЕДЕЛЕНИЯ BUY/SELL (СИНХРОНИЗИРОВАНО) 🔥🔥🔥
   private readonly PAYMENT_TOKENS = new Set([
     'So11111111111111111111111111111111111111112', // SOL
     'So11111111111111111111111111111111111111111', // WSOL
@@ -230,7 +230,7 @@ export class WebhookServer {
     this.setupMiddleware();
     this.setupRoutes();
     this.startCacheCleanup();
-    this.logger.info('🔥 WebhookServer initialized with improved buy/sell detection');
+    this.logger.info('🔥 WebhookServer initialized with FIXED buy/sell detection');
   }
 
   private setupMiddleware(): void {
@@ -342,7 +342,6 @@ export class WebhookServer {
     }
   }
 
-  // 🔥🔥🔥 ТОЛЬКО НОВЫЕ ТРАНЗАКЦИИ: Простая и надежная проверка времени (последние 10 минут)
   private isTransactionRecentAndValid(txData: SolanaWebhookPayload): boolean {
     if (!txData || !txData.timestamp) return false;
 
@@ -350,14 +349,12 @@ export class WebhookServer {
     const now = Date.now();
     const maxAge = 10 * 60 * 1000; // 10 минут
 
-    // 🔥 ЕДИНСТВЕННАЯ НАДЕЖНАЯ ПРОВЕРКА, как в QuickNodeWebhookManager
     const transactionAge = Math.abs(now - transactionTime);
 
     if (transactionAge > maxAge) {
         return false;
     }
     
-    // Также проверяем, есть ли ошибка в метаданных
     if (txData.meta?.err) {
         return false;
     }
@@ -367,9 +364,7 @@ export class WebhookServer {
 
   private async processWebhookTransaction(txData: SolanaWebhookPayload): Promise<void> {
     try {
-      // 🔥🔥🔥 ПОЛНОСТЬЮ ПЕРЕПИСАН - ТЕПЕРЬ РАБОТАЕМ С БАЛАНСАМИ, НЕ С EVENTS 🔥🔥🔥
-      
-      // Проверяем наличие балансов (это главный источник данных)
+      // 🔥🔥🔥 РАБОТАЕМ С БАЛАНСАМИ 🔥🔥🔥
       if (!txData.meta?.preTokenBalances || !txData.meta?.postTokenBalances) {
         this.processingStats.eventsIgnored++;
         
@@ -407,8 +402,8 @@ export class WebhookServer {
     }
   }
 
-  // 🔥🔥🔥 ИСПРАВЛЕНО: ПРАВИЛЬНЫЙ ВЫБОР ТОКЕНОВ ДЛЯ BUY/SELL 🔥🔥🔥
- private async extractSwapInfoFromBalances(txData: SolanaWebhookPayload): Promise<{
+  // 🔥🔥🔥 ИСПРАВЛЕНО: ПРАВИЛЬНЫЙ АНАЛИЗ БАЛАНСОВ ПОЛЬЗОВАТЕЛЯ (НЕ ПУЛА!) 🔥🔥🔥
+  private async extractSwapInfoFromBalances(txData: SolanaWebhookPayload): Promise<{
     walletAddress: string; inputMint: string; outputMint: string;
     inputAmountRaw: number; outputAmountRaw: number;
   } | null> {
@@ -419,17 +414,14 @@ export class WebhookServer {
 
       const preTokenBalances = transaction.meta.preTokenBalances || [];
       const postTokenBalances = transaction.meta.postTokenBalances || [];
+      
+      // 🔥 ИСПРАВЛЕНО: ТОЛЬКО РЕАЛЬНЫЙ ПОЛЬЗОВАТЕЛЬ (feePayer), НЕ ПУЛЫ!
       const walletAddress = this.extractWalletAddressFromTransaction(transaction);
-      console.log(`🔍 ANALYZING WALLET: ${walletAddress}`);
-console.log(`🔍 TRANSACTION feePayer: ${transaction.feePayer}`);
-console.log(`🔍 FIRST TOKEN OWNER: ${transaction.meta?.preTokenBalances?.[0]?.owner}`);
-
       if (!walletAddress) return null;
 
-      // 🔥 УНИФИЦИРОВАННАЯ СТРУКТУРА: используем changeRaw как в QuickNodeWebhookManager
       const tokenChanges = new Map<string, { changeUI: number, changeRaw: number, mint: string, decimals: number }>();
 
-      // Анализ существующих токен-аккаунтов
+      // Анализ существующих токен-аккаунтов ТОЛЬКО для пользователя
       for (const pre of preTokenBalances) {
         if (pre.owner !== walletAddress) continue;
         
@@ -437,11 +429,6 @@ console.log(`🔍 FIRST TOKEN OWNER: ${transaction.meta?.preTokenBalances?.[0]?.
         
         const preAmountUI = parseFloat(pre.uiTokenAmount.uiAmountString || pre.uiTokenAmount.uiAmount?.toString() || '0');
         const postAmountUI = post ? parseFloat(post.uiTokenAmount.uiAmountString || post.uiTokenAmount.uiAmount?.toString() || '0') : 0;
-        const tokenSymbol = this.tokenMetadataService.getTokenSymbol(pre.mint);
-  console.log(`🔍 TOKEN ${tokenSymbol} (${pre.mint.slice(0,8)}...):`);
-  console.log(`  PRE: ${preAmountUI}`);
-  console.log(`  POST: ${postAmountUI}`);
-  console.log(`  CHANGE WILL BE: ${postAmountUI - preAmountUI}`);
         const changeUI = postAmountUI - preAmountUI;
         
         const preAmountRaw = parseInt(pre.uiTokenAmount.amount || '0');
@@ -458,7 +445,7 @@ console.log(`🔍 FIRST TOKEN OWNER: ${transaction.meta?.preTokenBalances?.[0]?.
         }
       }
 
-      // Анализ НОВЫХ токен-аккаунтов
+      // Анализ НОВЫХ токен-аккаунтов ТОЛЬКО для пользователя
       for (const post of postTokenBalances) {
         if (post.owner !== walletAddress || tokenChanges.has(post.mint)) continue;
         
@@ -478,7 +465,7 @@ console.log(`🔍 FIRST TOKEN OWNER: ${transaction.meta?.preTokenBalances?.[0]?.
         }
       }
 
-      // Анализ изменений нативного SOL
+      // Анализ изменений нативного SOL для пользователя
       const accountKeys = transaction.transaction?.message?.accountKeys || [];
       const walletIndex = accountKeys.findIndex((key: any) => {
         const keyString = typeof key === 'string' ? key : key?.pubkey || key?.toString?.() || '';
@@ -500,30 +487,19 @@ console.log(`🔍 FIRST TOKEN OWNER: ${transaction.meta?.preTokenBalances?.[0]?.
           });
         }
       }
-      console.log(`\n🔍 ALL TOKEN CHANGES BEFORE FILTERING:`);
-      for (const [mint, change] of tokenChanges.entries()) {
-  const symbol = this.tokenMetadataService.getTokenSymbol(mint);
-  console.log(`${symbol} (${mint.slice(0,8)}...): ${change.changeUI > 0 ? '+' : ''}${change.changeUI} (raw: ${change.changeRaw})`);
-}
-      
 
-      // 🔥 УНИФИЦИРОВАННАЯ ЛОГИКА: используем changeUI для фильтрации, changeRaw для расчетов
       const spentTokens = Array.from(tokenChanges.values()).filter(c => c.changeUI < 0);
       const receivedTokens = Array.from(tokenChanges.values()).filter(c => c.changeUI > 0);
 
-      // 🔥🔥🔥 ПРАВИЛЬНАЯ ЛОГИКА: ИЩЕМ PAYMENT TOKEN ПАРУ 🔥🔥🔥
       if (spentTokens.length === 0 || receivedTokens.length === 0) {
         return null;
       }
 
-      // 🚀 НОВАЯ ЛОГИКА: Ищем правильную пару токенов
+      // 🔥🔥🔥 ПРАВИЛЬНАЯ ЛОГИКА: ИЩЕМ PAYMENT TOKEN ПАРУ 🔥🔥🔥
       let inputMint: string | null = null;
       let outputMint: string | null = null;
       let inputAmountRaw = 0;
       let outputAmountRaw = 0;
-      console.log(`🔍 SPENT TOKENS:`, spentTokens.map(t => this.tokenMetadataService.getTokenSymbol(t.mint)));
-      console.log(`🔍 RECEIVED TOKENS:`, receivedTokens.map(t => this.tokenMetadataService.getTokenSymbol(t.mint)));
-      console.log(`🔍 LOOKING FOR PAYMENT IN SPENT...`);
 
       // Ищем payment token в потраченных токенах
       const spentPaymentToken = spentTokens.find(token => this.PAYMENT_TOKENS.has(token.mint));
@@ -537,6 +513,8 @@ console.log(`🔍 FIRST TOKEN OWNER: ${transaction.meta?.preTokenBalances?.[0]?.
           outputMint = receivedNonPaymentToken.mint;
           inputAmountRaw = Math.abs(spentPaymentToken.changeRaw);
           outputAmountRaw = receivedNonPaymentToken.changeRaw;
+          
+          console.log(`✅ [WebhookServer] BUY detected: ${this.tokenMetadataService.getTokenSymbol(outputMint)} for ${this.tokenMetadataService.getTokenSymbol(inputMint)}`);
         }
       } else {
         // Ищем payment token в полученных токенах
@@ -551,35 +529,23 @@ console.log(`🔍 FIRST TOKEN OWNER: ${transaction.meta?.preTokenBalances?.[0]?.
             outputMint = receivedPaymentToken.mint;
             inputAmountRaw = Math.abs(spentNonPaymentToken.changeRaw);
             outputAmountRaw = receivedPaymentToken.changeRaw;
+            
+            console.log(`✅ [WebhookServer] SELL detected: ${this.tokenMetadataService.getTokenSymbol(inputMint)} for ${this.tokenMetadataService.getTokenSymbol(outputMint)}`);
           }
         }
       }
 
-      // Если не нашли правильную пару - используем fallback (первые операции)
+      // Если не нашли правильную пару - возвращаем null (НЕ ИСПОЛЬЗУЕМ FALLBACK!)
       if (!inputMint || !outputMint) {
-        const spentToken = spentTokens[0];
-        const receivedToken = receivedTokens[0];
-        inputMint = receivedToken.mint;
-        outputMint = spentToken.mint; 
-        inputAmountRaw = Math.abs(spentToken.changeRaw);
-        outputAmountRaw = receivedToken.changeRaw;
+        console.log(`⚠️ [WebhookServer] Cannot determine payment token pair - ignoring`);
+        return null;
       }
-
-      // 🔥🔥🔥 ДЕТАЛЬНАЯ ОТЛАДКА ДЛЯ АНАЛИЗА РЕЗУЛЬТАТА 🔥🔥🔥
-      console.log(`\n🔍 [WebhookServer] FINAL SWAP ANALYSIS FOR: ${transaction.signature?.slice(0,12)}...`);
-      console.log(`💸 INPUT: ${this.tokenMetadataService.getTokenSymbol(inputMint)} (${inputMint.slice(0,8)}...) = ${inputAmountRaw}`);
-      console.log(`💰 OUTPUT: ${this.tokenMetadataService.getTokenSymbol(outputMint)} (${outputMint.slice(0,8)}...) = ${outputAmountRaw}`);
 
       // Фильтрация технических операций (деньги в деньги)
       const inputIsPayment = this.PAYMENT_TOKENS.has(inputMint);
       const outputIsPayment = this.PAYMENT_TOKENS.has(outputMint);
 
       if (inputIsPayment && outputIsPayment) {
-        return null;
-      }
-
-      // Также фильтруем операции между двумя неплатежными токенами
-      if (!inputIsPayment && !outputIsPayment) {
         return null;
       }
 
@@ -591,19 +557,12 @@ console.log(`🔍 FIRST TOKEN OWNER: ${transaction.meta?.preTokenBalances?.[0]?.
     }
   }
 
-  // 🔥🔥🔥 ИСПРАВЛЕНО: Правильное извлечение адреса кошелька с правильным приоритетом
+  // 🔥🔥🔥 ИСПРАВЛЕНО: ТОЛЬКО feePayer - РЕАЛЬНЫЙ ПОЛЬЗОВАТЕЛЬ, НЕ ПУЛЫ! 🔥🔥🔥
   private extractWalletAddressFromTransaction(txData: any): string | null {
-    // 🔥 ПРАВИЛЬНЫЙ ПОРЯДОК ПРИОРИТЕТОВ:
-    // 1. feePayer (наиболее надежный - это всегда кошелек пользователя)
+    // 🔥 ТОЛЬКО feePayer (реальный пользователь) - никаких fallback на пулы!
     if (txData.feePayer) return txData.feePayer;
     
-    // 2. Из балансов - берем первого owner (это реальный кошелек пользователя)
-    if (txData.meta?.preTokenBalances?.[0]?.owner) return txData.meta.preTokenBalances[0].owner;
-    if (txData.meta?.postTokenBalances?.[0]?.owner) return txData.meta.postTokenBalances[0].owner;
-    
-    // 3. ТОЛЬКО В КРАЙНЕМ СЛУЧАЕ: первый accountKey (может быть программой!)
-    if (txData.transaction?.message?.accountKeys?.[0]) return txData.transaction.message.accountKeys[0];
-    
+    // НЕ БЕРЕМ owner из балансов - это может быть пул AMM!
     return null;
   }
 
@@ -650,7 +609,7 @@ console.log(`🔍 FIRST TOKEN OWNER: ${transaction.meta?.preTokenBalances?.[0]?.
       
       const tokenPrice = actualTokenAmount > 0 ? amountUSD / actualTokenAmount : 0;
 
-      // 🔥🔥🔥 ФОРМИРУЕМ ИДЕАЛЬНЫЙ ПАСПОРТ СДЕЛКИ С ПРОТОКОЛОМ "ЖЕЛЕЗНЫЙ ДОЛЛАР" 🔥🔥🔥
+      // 🔥🔥🔥 ФОРМИРУЕМ СМАРТ МАНИ СВАП 🔥🔥🔥
       const smartMoneySwap: SmartMoneySwap = {
         transactionId: txData.signature,
         walletAddress: smartWallet.address,
@@ -695,7 +654,6 @@ console.log(`🔍 FIRST TOKEN OWNER: ${transaction.meta?.preTokenBalances?.[0]?.
     }
   }
 
-  // 🔥🔥🔥 ДЕМОНТАЖ ИЗБЫТОЧНЫХ ФИЛЬТРОВ - ДОВЕРЯЕМ ОТОБРАННЫМ КОШЕЛЬКАМ! 🔥🔥🔥
   private shouldProcessSmartMoneySwap(swapInfo: SmartMoneySwap, smartWallet: SmartMoneyWallet): boolean {
     // 🔥 ЕДИНСТВЕННЫЙ ФИЛЬТР: Мы доверяем кошельку, поэтому проверяем только минимальную сумму сделки.
     return swapInfo.amountUSD >= 2000;
@@ -822,7 +780,6 @@ console.log(`🔍 FIRST TOKEN OWNER: ${transaction.meta?.preTokenBalances?.[0]?.
         name = metadata.name || name;
         decimals = metadata.decimals || decimals;
       } else {
-        // 🔥 ИСПОЛЬЗУЕМ ЕДИНЫЙ МЕТОД ИЗ TokenMetadataService (УСТРАНЯЕМ ДУБЛИРОВАНИЕ)
         symbol = this.tokenMetadataService.getTokenSymbol(tokenAddress);
         name = `Token ${tokenAddress.slice(0, 8)}...`;
         decimals = 9;
@@ -842,7 +799,6 @@ console.log(`🔍 FIRST TOKEN OWNER: ${transaction.meta?.preTokenBalances?.[0]?.
     } catch (error) {
       this.logger.error(`Error getting token info for ${tokenAddress}:`, error);
       
-      // 🔥 ИСПОЛЬЗУЕМ ЕДИНЫЙ МЕТОД ИЗ TokenMetadataService (УСТРАНЯЕМ ДУБЛИРОВАНИЕ)
       const fallbackSymbol = this.tokenMetadataService.getTokenSymbol(tokenAddress);
       const fallbackName = tokenAddress ? `Token ${tokenAddress.slice(0, 8)}...` : 'Unknown Token';
       const fallbackDecimals = 9;
