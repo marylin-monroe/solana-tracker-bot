@@ -69,7 +69,7 @@ export class QuickNodeWebhookManager {
   private readonly CONCURRENT_WALLET_PROCESSING = 5;
   private readonly DELAY_BETWEEN_WALLETS = 1000;
   private readonly DELAY_BETWEEN_TRANSACTIONS = 300;
-  private readonly SIGNATURES_LIMIT = 9; 
+  private readonly SIGNATURES_LIMIT = 9;
   
   private isPollingActive: boolean = false;
   private pollingInterval: NodeJS.Timeout | null = null;
@@ -794,9 +794,9 @@ export class QuickNodeWebhookManager {
       const data = await this.makeRpcRequest('getSignaturesForAddress', params);
       const signatures = data.result || [];
       
-      // 🔥 ИСПРАВЛЕНО: Увеличен временной фильтр до 24 часов
-      const twentyFourHoursAgo = Math.floor(Date.now() / 1000) - (24 * 60 * 60);
-      const recentSignatures = signatures.filter((sig: any) => sig.blockTime > twentyFourHoursAgo);
+      // 🔥 ТОЛЬКО НОВЫЕ ТРАНЗАКЦИИ: последние 10 минут
+      const tenMinutesAgo = Math.floor(Date.now() / 1000) - (10 * 60);
+      const recentSignatures = signatures.filter((sig: any) => sig.blockTime > tenMinutesAgo);
       
       return recentSignatures;
 
@@ -818,14 +818,14 @@ export class QuickNodeWebhookManager {
     }
   }
 
-  // 🔥🔥🔥 ИСПРАВЛЕНО: Простая и надежная проверка времени с Math.abs()
+  // 🔥🔥🔥 ТОЛЬКО НОВЫЕ ТРАНЗАКЦИИ: Простая и надежная проверка времени (последние 10 минут)
   private isTransactionRecentAndValid(transaction: any): boolean {
     if (!transaction || !transaction.blockTime) return false;
     
     const transactionTime = transaction.blockTime * 1000;
     const now = Date.now();
     const timeDifference = now - transactionTime;
-    const maxAge = 24 * 60 * 60 * 1000; // 24 часа
+    const maxAge = 10 * 60 * 1000; // 10 минут
     
     // 🔥 ЕДИНСТВЕННАЯ НАДЕЖНАЯ ПРОВЕРКА: используем Math.abs() для защиты от рассинхронизации
     const absoluteTimeDifference = Math.abs(timeDifference);

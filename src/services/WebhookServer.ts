@@ -315,7 +315,7 @@ export class WebhookServer {
     const startTime = Date.now();
     
     try {
-      // 🔥 ИСПРАВЛЕНО: Увеличен временной фильтр до 24 часов
+      // 🔥 ТОЛЬКО НОВЫЕ ТРАНЗАКЦИИ: последние 10 минут
       if (!this.isTransactionRecentAndValid(txData)) {
         this.processingStats.oldTransactionsFiltered++;
         return;
@@ -342,13 +342,13 @@ export class WebhookServer {
     }
   }
 
-  // 🔥🔥🔥 ФИНАЛЬНАЯ ВЕРСИЯ: Единая надежная проверка времени (как в QuickNodeWebhookManager)
+  // 🔥🔥🔥 ТОЛЬКО НОВЫЕ ТРАНЗАКЦИИ: Простая и надежная проверка времени (последние 10 минут)
   private isTransactionRecentAndValid(txData: SolanaWebhookPayload): boolean {
     if (!txData || !txData.timestamp) return false;
 
     const transactionTime = txData.timestamp * 1000;
     const now = Date.now();
-    const maxAge = 24 * 60 * 60 * 1000; // 24 часа
+    const maxAge = 10 * 60 * 1000; // 10 минут
 
     // 🔥 ЕДИНСТВЕННАЯ НАДЕЖНАЯ ПРОВЕРКА, как в QuickNodeWebhookManager
     const transactionAge = Math.abs(now - transactionTime);
