@@ -1,4 +1,4 @@
-// src/services/WebhookServer.ts - 🔥 ИСПРАВЛЕНО: BUY/SELL ПРОБЛЕМА РЕШЕНА
+// src/services/WebhookServer.ts - 🔥 ИСПРАВЛЕНО: ВСЁ ЧЕРЕЗ TokenMetadataService
 import express from 'express';
 import { Database } from './Database';
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
@@ -130,19 +130,6 @@ export class WebhookServer {
   private port: number;
   private server: any;
 
-  // 🔥🔥🔥 PAYMENT TOKENS ДЛЯ ПРАВИЛЬНОГО ОПРЕДЕЛЕНИЯ BUY/SELL (СИНХРОНИЗИРОВАНО) 🔥🔥🔥
-  private readonly PAYMENT_TOKENS = new Set([
-    'So11111111111111111111111111111111111111112', // SOL
-    'So11111111111111111111111111111111111111111', // WSOL
-    'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
-    'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
-    'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So', // mSOL
-    'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn', // JitoSOL
-    '7Q2afV64in6N6SeZsAAB81TJzwDoD6zpqmHkzi9Dcavn', // stSOL
-    'bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1', // bSOL
-    'he1iusmfkpAdwvxLNGV8Y1iSbj4rUy6yMhEA3fotn9A'  // hSOL
-  ]);
-
   private tokenInfoCache = new Map<string, { 
     symbol: string; 
     name: string; 
@@ -152,7 +139,7 @@ export class WebhookServer {
     timestamp: number; 
   }>();
 
-  private readonly PRICE_CACHE_TTL = 5 * 60 * 1000; // 5 минут
+  private readonly PRICE_CACHE_TTL = 45 * 60 * 1000; // 5 минут
 
   // 📈 ПОПУЛЯРНЫЕ CEX ТОКЕНЫ - РАСШИРЕННЫЙ СПИСОК
   private readonly CEX_TOKENS = new Set([
@@ -230,7 +217,7 @@ export class WebhookServer {
     this.setupMiddleware();
     this.setupRoutes();
     this.startCacheCleanup();
-    this.logger.info('🔥 WebhookServer initialized with FIXED buy/sell detection');
+    this.logger.info('🔥 WebhookServer initialized with TokenMetadataService ONLY');
   }
 
   private setupMiddleware(): void {
@@ -378,11 +365,11 @@ export class WebhookServer {
 
       this.processingStats.balancesExtracted++;
       
-      // 🔥🔥🔥 ИСПОЛЬЗУЕМ ИСПРАВЛЕННУЮ ФУНКЦИЮ ИЗВЛЕЧЕНИЯ СВАПОВ 🔥🔥🔥
-      const swapInfo = await this.extractSwapInfoFromBalances(txData);
+      // 🔥🔥🔥 НОВАЯ ЛОГИКА: СОБИРАЕМ ВСЕ ИЗМЕНЕНИЯ И ПРОБУЕМ ВСЕ ПАРЫ 🔥🔥🔥
+      const swapInfo = await this.findBestSwapThroughTokenMetadata(txData);
       if (!swapInfo) return;
 
-      console.log(`🔍 [WebhookServer] Analyzing swap: ${this.tokenMetadataService.getTokenSymbol(swapInfo.inputMint)} → ${this.tokenMetadataService.getTokenSymbol(swapInfo.outputMint)} for wallet ${swapInfo.walletAddress.slice(0,8)}...`);
+      console.log(`🔍 [WebhookServer] Found valid swap: ${swapInfo.swapType.toUpperCase()} ${this.tokenMetadataService.getTokenSymbol(swapInfo.tokenAddress)} - ${swapInfo.amountUSD.toFixed(0)} for wallet ${swapInfo.walletAddress.slice(0,8)}...`);
 
       // Проверяем, является ли это Smart Money кошельком
       const smartWallet = await this.smDatabase.getSmartWallet(swapInfo.walletAddress);
@@ -407,166 +394,142 @@ export class WebhookServer {
     }
   }
 
-  // 🔥🔥🔥 ИСПРАВЛЕНО: ПРАВИЛЬНЫЙ АНАЛИЗ БАЛАНСОВ ПОЛЬЗОВАТЕЛЯ (НЕ ПУЛА!) 🔥🔥🔥
-  private async extractSwapInfoFromBalances(txData: SolanaWebhookPayload): Promise<{
-    walletAddress: string; inputMint: string; outputMint: string;
-    inputAmountRaw: number; outputAmountRaw: number;
+  // 🔥🔥🔥 НОВАЯ ЛОГИКА: СОБИРАЕМ ВСЕ ИЗМЕНЕНИЯ И ПРОБУЕМ ВСЕ ПАРЫ 🔥🔥🔥
+  private async findBestSwapThroughTokenMetadata(txData: SolanaWebhookPayload): Promise<{
+    walletAddress: string; 
+    tokenAddress: string;
+    swapType: 'buy' | 'sell';
+    amountUSD: number;
+    paymentToken: string;
+    paymentTokenAmount: number;
+    paymentTokenPrice: number;
+    inputMint: string;
+    outputMint: string;
+    inputAmountRaw: number;
+    outputAmountRaw: number;
   } | null> {
     try {
       const transaction = Array.isArray(txData) ? txData[0] : txData;
-      
       if (!transaction?.meta) return null;
 
-      const preTokenBalances = transaction.meta.preTokenBalances || [];
-      const postTokenBalances = transaction.meta.postTokenBalances || [];
-      
-      // 🔥 ИСПРАВЛЕНО: ТОЛЬКО РЕАЛЬНЫЙ ПОЛЬЗОВАТЕЛЬ (feePayer), НЕ ПУЛЫ!
       const walletAddress = this.extractWalletAddressFromTransaction(transaction);
       if (!walletAddress) return null;
 
-      const tokenChanges = new Map<string, { changeUI: number, changeRaw: number, mint: string, decimals: number }>();
+      // 🔥 СОБИРАЕМ ВСЕ ИЗМЕНЕНИЯ ТОКЕНОВ ДЛЯ ПОЛЬЗОВАТЕЛЯ
+      const tokenChanges = await this.getAllTokenChangesForWallet(transaction, walletAddress);
+      if (tokenChanges.length < 2) return null;
 
-      // Анализ существующих токен-аккаунтов ТОЛЬКО для пользователя
-      for (const pre of preTokenBalances) {
-        if (pre.owner !== walletAddress) continue;
-        
-        const post = postTokenBalances.find(p => p.accountIndex === pre.accountIndex);
-        
-        const preAmountUI = parseFloat(pre.uiTokenAmount.uiAmountString || pre.uiTokenAmount.uiAmount?.toString() || '0');
-        const postAmountUI = post ? parseFloat(post.uiTokenAmount.uiAmountString || post.uiTokenAmount.uiAmount?.toString() || '0') : 0;
-        const changeUI = postAmountUI - preAmountUI;
-        
-        const preAmountRaw = parseInt(pre.uiTokenAmount.amount || '0');
-        const postAmountRaw = post ? parseInt(post.uiTokenAmount.amount || '0') : 0;
-        const changeRaw = postAmountRaw - preAmountRaw;
-        
-        if (Math.abs(changeUI) > 1e-9) {
-          tokenChanges.set(pre.mint, { 
-            changeUI, 
-            changeRaw,
-            mint: pre.mint, 
-            decimals: pre.uiTokenAmount.decimals 
-          });
-        }
-      }
+      const spentTokens = tokenChanges.filter(c => c.changeRaw < 0);
+      const receivedTokens = tokenChanges.filter(c => c.changeRaw > 0);
 
-      // Анализ НОВЫХ токен-аккаунтов ТОЛЬКО для пользователя
-      for (const post of postTokenBalances) {
-        if (post.owner !== walletAddress || tokenChanges.has(post.mint)) continue;
-        
-        const isNewAccount = !preTokenBalances.find(p => p.accountIndex === post.accountIndex);
-        if (isNewAccount) {
-          const changeUI = parseFloat(post.uiTokenAmount.uiAmountString || post.uiTokenAmount.uiAmount?.toString() || '0');
-          const changeRaw = parseInt(post.uiTokenAmount.amount || '0');
-          
-          if (changeUI > 1e-9) {
-            tokenChanges.set(post.mint, { 
-              changeUI, 
-              changeRaw,
-              mint: post.mint, 
-              decimals: post.uiTokenAmount.decimals 
-            });
+      if (spentTokens.length === 0 || receivedTokens.length === 0) return null;
+
+      // 🔥 ПРОБУЕМ ВСЕ ВОЗМОЖНЫЕ ПАРЫ ЧЕРЕЗ TokenMetadataService
+      for (const spentToken of spentTokens) {
+        for (const receivedToken of receivedTokens) {
+          const inputMint = spentToken.mint;
+          const outputMint = receivedToken.mint;
+          const inputAmountRaw = Math.abs(spentToken.changeRaw);
+          const outputAmountRaw = receivedToken.changeRaw;
+
+          // Вызываем TokenMetadataService для этой пары
+          const valueCalculation = await this.tokenMetadataService.calculateSwapUSDValue(
+            inputMint, inputAmountRaw, outputMint, outputAmountRaw
+          );
+
+          if (valueCalculation && valueCalculation.amountUSD >= 700) {
+            // Нашли валидную пару!
+            return {
+              walletAddress,
+              tokenAddress: valueCalculation.tokenAddress,
+              swapType: valueCalculation.swapType,
+              amountUSD: valueCalculation.amountUSD,
+              paymentToken: valueCalculation.paymentToken,
+              paymentTokenAmount: valueCalculation.paymentTokenAmount,
+              paymentTokenPrice: valueCalculation.paymentTokenPrice,
+              inputMint,
+              outputMint,
+              inputAmountRaw,
+              outputAmountRaw
+            };
           }
         }
       }
 
-      // Анализ изменений нативного SOL для пользователя
-      const accountKeys = transaction.transaction?.message?.accountKeys || [];
-      const walletIndex = accountKeys.findIndex((key: any) => {
-        const keyString = typeof key === 'string' ? key : key?.pubkey || key?.toString?.() || '';
-        return keyString === walletAddress;
-      });
-      
-      if (walletIndex !== -1 && transaction.meta?.preBalances && transaction.meta?.postBalances) {
-        const preSolBalance = transaction.meta.preBalances[walletIndex] || 0;
-        const postSolBalance = transaction.meta.postBalances[walletIndex] || 0;
-        const solChangeRaw = postSolBalance - preSolBalance;
-        const solChangeUI = solChangeRaw / 1e9;
-        
-        if (Math.abs(solChangeUI) > 0.01) {
-          tokenChanges.set('So11111111111111111111111111111111111111112', {
-            changeUI: solChangeUI,
-            changeRaw: solChangeRaw,
-            mint: 'So11111111111111111111111111111111111111112',
-            decimals: 9
-          });
-        }
-      }
-
-      const spentTokens = Array.from(tokenChanges.values()).filter(c => c.changeUI < 0);
-      const receivedTokens = Array.from(tokenChanges.values()).filter(c => c.changeUI > 0);
-
-      if (spentTokens.length === 0 || receivedTokens.length === 0) {
-        return null;
-      }
-
-      // 🔥🔥🔥 ПРАВИЛЬНАЯ ЛОГИКА: ИЩЕМ PAYMENT TOKEN ПАРУ 🔥🔥🔥
-      let inputMint: string | null = null;
-      let outputMint: string | null = null;
-      let inputAmountRaw = 0;
-      let outputAmountRaw = 0;
-
-      // Ищем payment token в потраченных токенах
-      const spentPaymentToken = spentTokens.find(token => this.PAYMENT_TOKENS.has(token.mint));
-      
-      if (spentPaymentToken) {
-        // BUY: Тратим payment token -> получаем обычный токен
-        const receivedNonPaymentToken = receivedTokens.find(token => !this.PAYMENT_TOKENS.has(token.mint));
-        
-        if (receivedNonPaymentToken) {
-          inputMint = spentPaymentToken.mint;
-          outputMint = receivedNonPaymentToken.mint;
-          inputAmountRaw = Math.abs(spentPaymentToken.changeRaw);
-          outputAmountRaw = receivedNonPaymentToken.changeRaw;
-        }
-      } else {
-        // Ищем payment token в полученных токенах
-        const receivedPaymentToken = receivedTokens.find(token => this.PAYMENT_TOKENS.has(token.mint));
-        
-        if (receivedPaymentToken) {
-          // SELL: Тратим обычный токен -> получаем payment token
-          const spentNonPaymentToken = spentTokens.find(token => !this.PAYMENT_TOKENS.has(token.mint));
-          
-          if (spentNonPaymentToken) {
-            inputMint = spentNonPaymentToken.mint;
-            outputMint = receivedPaymentToken.mint;
-            inputAmountRaw = Math.abs(spentNonPaymentToken.changeRaw);
-            outputAmountRaw = receivedPaymentToken.changeRaw;
-          }
-        }
-      }
-
-      // Если не нашли правильную пару - используем УМНЫЙ fallback
-      if (!inputMint || !outputMint) {
-        // Берем первые операции, но с правильным направлением
-        const spentToken = spentTokens[0];
-        const receivedToken = receivedTokens[0];
-        
-        inputMint = spentToken.mint;
-        outputMint = receivedToken.mint;
-        inputAmountRaw = Math.abs(spentToken.changeRaw);
-        outputAmountRaw = receivedToken.changeRaw;
-        
-        console.log(`⚠️ [WebhookServer] Using fallback pair: ${this.tokenMetadataService.getTokenSymbol(inputMint)} → ${this.tokenMetadataService.getTokenSymbol(outputMint)}`);
-      }
-
-      // Фильтрация технических операций (деньги в деньги)
-      const inputIsPayment = this.PAYMENT_TOKENS.has(inputMint);
-      const outputIsPayment = this.PAYMENT_TOKENS.has(outputMint);
-
-      if (inputIsPayment && outputIsPayment) {
-        return null;
-      }
-
-      return { walletAddress, inputMint, outputMint, inputAmountRaw, outputAmountRaw };
+      return null;
 
     } catch (error) {
-      this.logger.error('[extractSwapInfoFromBalances] Error:', error);
+      this.logger.error('[findBestSwapThroughTokenMetadata] Error:', error);
       return null;
     }
   }
 
-  // 🔥🔥🔥 ПРИОРИТЕТ feePayer, НО С FALLBACK НА ВСЯКИЙ СЛУЧАЙ 🔥🔥🔥
+  // 🔥 СОБИРАЕМ ВСЕ ИЗМЕНЕНИЯ ТОКЕНОВ ДЛЯ КОШЕЛЬКА
+  private async getAllTokenChangesForWallet(transaction: any, walletAddress: string): Promise<Array<{ mint: string; changeRaw: number; decimals: number; }>> {
+    const tokenChanges: Array<{ mint: string; changeRaw: number; decimals: number; }> = [];
+    
+    const preTokenBalances = transaction.meta.preTokenBalances || [];
+    const postTokenBalances = transaction.meta.postTokenBalances || [];
+
+    // Анализ существующих токен-аккаунтов ТОЛЬКО для пользователя
+    for (const pre of preTokenBalances) {
+      if (pre.owner !== walletAddress) continue;
+      
+      const post = postTokenBalances.find(p => p.accountIndex === pre.accountIndex);
+      const preAmountRaw = parseInt(pre.uiTokenAmount.amount || '0');
+      const postAmountRaw = post ? parseInt(post.uiTokenAmount.amount || '0') : 0;
+      const changeRaw = postAmountRaw - preAmountRaw;
+      
+      if (Math.abs(changeRaw) > 0) {
+        tokenChanges.push({ 
+          mint: pre.mint, 
+          changeRaw: changeRaw,
+          decimals: pre.uiTokenAmount.decimals 
+        });
+      }
+    }
+
+    // Анализ НОВЫХ токен-аккаунтов ТОЛЬКО для пользователя
+    for (const post of postTokenBalances) {
+      if (post.owner !== walletAddress) continue;
+      const isNewAccount = !preTokenBalances.find(p => p.accountIndex === post.accountIndex);
+      if (isNewAccount) {
+        const changeRaw = parseInt(post.uiTokenAmount.amount || '0');
+        if (changeRaw > 0) {
+          tokenChanges.push({ 
+            mint: post.mint, 
+            changeRaw: changeRaw,
+            decimals: post.uiTokenAmount.decimals 
+          });
+        }
+      }
+    }
+
+    // Анализ изменений нативного SOL для пользователя
+    const accountKeys = transaction.transaction?.message?.accountKeys || [];
+    const walletIndex = accountKeys.findIndex((key: any) => {
+      const keyString = typeof key === 'string' ? key : key?.pubkey || key?.toString?.() || '';
+      return keyString === walletAddress;
+    });
+    
+    if (walletIndex !== -1 && transaction.meta?.preBalances && transaction.meta?.postBalances) {
+      const preSolBalance = transaction.meta.preBalances[walletIndex] || 0;
+      const postSolBalance = transaction.meta.postBalances[walletIndex] || 0;
+      const solChangeRaw = postSolBalance - preSolBalance;
+      
+      if (Math.abs(solChangeRaw) > 10000000) { // > 0.01 SOL
+        tokenChanges.push({
+          mint: 'So11111111111111111111111111111111111111112',
+          changeRaw: solChangeRaw,
+          decimals: 9
+        });
+      }
+    }
+
+    return tokenChanges;
+  }
+
+  // 🔥🔥🔥 ИСПРАВЛЕНО: ПРАВИЛЬНАЯ ОБРАБОТКА accountKeys[0] КАК ОБЪЕКТА 🔥🔥🔥
   private extractWalletAddressFromTransaction(txData: any): string | null {
     // 🔥 ПРИОРИТЕТ: feePayer (реальный пользователь)
     if (txData.feePayer) return txData.feePayer;
@@ -574,70 +537,55 @@ export class WebhookServer {
     // Fallback на всякий случай (хотя feePayer должен быть всегда)
     if (txData.meta?.preTokenBalances?.[0]?.owner) return txData.meta.preTokenBalances[0].owner;
     if (txData.meta?.postTokenBalances?.[0]?.owner) return txData.meta.postTokenBalances[0].owner;
+    
+    // 🔥 ИСПРАВЛЕНО: ПРАВИЛЬНАЯ обработка accountKeys[0] как ОБЪЕКТА!
     if (txData.transaction?.message?.accountKeys?.[0]) {
-  const key = txData.transaction.message.accountKeys[0];
-  return typeof key === 'string' ? key : key?.pubkey || key?.toString?.() || null;
-}
+      const key = txData.transaction.message.accountKeys[0];
+      return typeof key === 'string' ? key : key?.pubkey || key?.toString?.() || null;
+    }
     
     return null;
   }
 
   // Обработка Smart Money свапа
   private async processSmartMoneySwap(
-    balanceInfo: { walletAddress: string; inputMint: string; outputMint: string; inputAmountRaw: number; outputAmountRaw: number; },
+    swapInfo: { walletAddress: string; tokenAddress: string; swapType: 'buy' | 'sell'; amountUSD: number; paymentToken: string; paymentTokenAmount: number; paymentTokenPrice: number; inputMint: string; outputMint: string; inputAmountRaw: number; outputAmountRaw: number; },
     smartWallet: SmartMoneyWallet,
     txData: SolanaWebhookPayload
   ): Promise<void> {
     try {
-      // 🔥🔥🔥 ВЫЗЫВАЕМ ЕДИНЫЙ РАСЧЕТНЫЙ ЦЕНТР 🔥🔥🔥
-      const valueCalculation = await this.tokenMetadataService.calculateSwapUSDValue(
-        balanceInfo.inputMint,
-        balanceInfo.inputAmountRaw,
-        balanceInfo.outputMint,
-        balanceInfo.outputAmountRaw
-      );
-      
-      if (!valueCalculation) {
-        this.logger.debug(`[processSmartMoneySwap] ⏭️ IGNORED by Unified Calculator`);
-        this.processingStats.unifiedCalculatorIgnored++;
-        return;
-      }
-      
-      // 🔥 ПОЛУЧАЕМ ВСЕ ГОТОВЫЕ ДАННЫЕ ИЗ ЕДИНОГО РАСЧЕТНОГО ЦЕНТРА
-      const { amountUSD, swapType, tokenAddress, paymentToken, paymentTokenAmount, paymentTokenPrice } = valueCalculation;
-
       // Первичный фильтр по минимальной сумме
-      if (amountUSD < 700) {
-        console.log(`📉 [WebhookServer] Small transaction: ${amountUSD.toFixed(0)} - below threshold`);
+      if (swapInfo.amountUSD < 3000) {
+        console.log(`📉 [WebhookServer] Small transaction: ${swapInfo.amountUSD.toFixed(0)} - below threshold`);
         this.processingStats.filteredTransactions++;
         return;
       }
 
-      console.log(`💰 [WebhookServer] Large ${swapType.toUpperCase()}: ${this.tokenMetadataService.getTokenSymbol(tokenAddress)} - ${amountUSD.toFixed(0)} - processing...`);
+      console.log(`💰 [WebhookServer] Large ${swapInfo.swapType.toUpperCase()}: ${this.tokenMetadataService.getTokenSymbol(swapInfo.tokenAddress)} - ${swapInfo.amountUSD.toFixed(0)} - processing...`);
 
       this.processingStats.usdCalculationStats.correctCalculations++;
 
       // Получаем метаданные токенов
-      const tokenInfo = await this.getTokenInfo(tokenAddress);
-      const paymentTokenInfo = await this.getTokenInfo(paymentToken);
+      const tokenInfo = await this.getTokenInfo(swapInfo.tokenAddress);
+      const paymentTokenInfo = await this.getTokenInfo(swapInfo.paymentToken);
       
       // Рассчитываем количество основного токена
-      const actualTokenAmount = swapType === 'buy' ? 
-        balanceInfo.outputAmountRaw / Math.pow(10, tokenInfo.decimals) :
-        balanceInfo.inputAmountRaw / Math.pow(10, tokenInfo.decimals);
+      const actualTokenAmount = swapInfo.swapType === 'buy' ? 
+        swapInfo.outputAmountRaw / Math.pow(10, tokenInfo.decimals) :
+        swapInfo.inputAmountRaw / Math.pow(10, tokenInfo.decimals);
       
-      const tokenPrice = actualTokenAmount > 0 ? amountUSD / actualTokenAmount : 0;
+      const tokenPrice = actualTokenAmount > 0 ? swapInfo.amountUSD / actualTokenAmount : 0;
 
       // 🔥🔥🔥 ФОРМИРУЕМ СМАРТ МАНИ СВАП 🔥🔥🔥
       const smartMoneySwap: SmartMoneySwap = {
         transactionId: txData.signature,
         walletAddress: smartWallet.address,
-        tokenAddress: tokenAddress,
+        tokenAddress: swapInfo.tokenAddress,
         tokenSymbol: tokenInfo.symbol,
         tokenName: tokenInfo.name,
         tokenAmount: actualTokenAmount,
-        amountUSD: amountUSD,
-        swapType: swapType,
+        amountUSD: swapInfo.amountUSD,
+        swapType: swapInfo.swapType,
         timestamp: new Date(txData.timestamp * 1000),
         category: smartWallet.category,
         usdProfit7d: smartWallet.usdProfit7d,
@@ -647,10 +595,10 @@ export class WebhookServer {
         // 🔥🔥🔥 ПРОТОКОЛ "ЖЕЛЕЗНЫЙ ДОЛЛАР" - КЛЮЧЕВЫЕ ПОЛЯ 🔥🔥🔥
         tokenPrice: tokenPrice,
         paymentTokenSymbol: paymentTokenInfo.symbol,
-        paymentTokenAmount: paymentTokenAmount,
-        paymentTokenPrice: paymentTokenPrice,
+        paymentTokenAmount: swapInfo.paymentTokenAmount,
+        paymentTokenPrice: swapInfo.paymentTokenPrice,
         
-        isCexListed: this.CEX_TOKENS.has(tokenAddress),
+        isCexListed: this.CEX_TOKENS.has(swapInfo.tokenAddress),
         isFamilyMember: false as const,
       };
 
@@ -675,44 +623,7 @@ export class WebhookServer {
   }
 
   private shouldProcessSmartMoneySwap(swapInfo: SmartMoneySwap, smartWallet: SmartMoneyWallet): boolean {
-    // 🔥 ЕДИНСТВЕННЫЙ ФИЛЬТР: Мы доверяем кошельку, поэтому проверяем только минимальную сумму сделки.
     return swapInfo.amountUSD >= 2000;
-  }
-
-  private async validateSmartMoneyTransaction(
-    walletAddress: string,
-    tokenAddress: string,
-    amountUSD: number,
-    swapType: 'buy' | 'sell'
-  ): Promise<{ isValid: boolean; reason?: string; riskScore: number; suspiciousFactors: string[] }> {
-    
-    const suspiciousFactors: string[] = [];
-    let riskScore = 0;
-
-    try {
-      if (amountUSD > 500000) {
-        suspiciousFactors.push('Extremely large trade');
-        riskScore += 15;
-      }
-
-      const isValid = riskScore < 70;
-      const reason = isValid ? undefined : `Risk score too high (${riskScore}/100)`;
-
-      return {
-        isValid,
-        reason,
-        riskScore,
-        suspiciousFactors
-      };
-
-    } catch (error) {
-      this.logger.error('Error in Smart Money validation:', error);
-      return {
-        isValid: true,
-        riskScore: 0,
-        suspiciousFactors: ['Validation error']
-      };
-    }
   }
 
   private async saveSmartMoneyTransaction(swapInfo: SmartMoneySwap): Promise<void> {
@@ -733,7 +644,7 @@ export class WebhookServer {
         winrate7d: swapInfo.winrate7d,
         usdProfit7d: swapInfo.usdProfit7d,
         buy7d: swapInfo.buy7d,
-        dex: 'QuickNode-Webhook-Balances'
+        dex: 'TokenMetadataService-Only'
       });
 
       const tokenSwap: TokenSwap = {
@@ -751,13 +662,12 @@ export class WebhookServer {
         isNewWallet: false,
         isReactivatedWallet: false,
         daysSinceLastActivity: 0,
-        // 🔥🔥🔥 ПРОТОКОЛ "ЖЕЛЕЗНЫЙ ДОЛЛАР" - ДОБАВЛЯЕМ НОВЫЕ ПОЛЯ В TokenSwap 🔥🔥🔥
         paymentTokenSymbol: swapInfo.paymentTokenSymbol,
         paymentTokenAmount: swapInfo.paymentTokenAmount,
         paymentTokenPrice: swapInfo.paymentTokenPrice,
         decimals: (await this.tokenMetadataService.getDecimals(swapInfo.tokenAddress)) || 9,
         actualTokenAmount: swapInfo.tokenAmount,
-        rawTokenAmount: Math.floor(swapInfo.tokenAmount * Math.pow(10, 9)) // Примерный расчет
+        rawTokenAmount: Math.floor(swapInfo.tokenAmount * Math.pow(10, 9))
       };
 
       await this.database.saveTransaction(tokenSwap);
