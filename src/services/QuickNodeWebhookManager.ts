@@ -69,7 +69,7 @@ export class QuickNodeWebhookManager {
   private readonly CONCURRENT_WALLET_PROCESSING = 5;
   private readonly DELAY_BETWEEN_WALLETS = 1000;
   private readonly DELAY_BETWEEN_TRANSACTIONS = 300;
-  private readonly SIGNATURES_LIMIT = 8; // 8
+  private readonly SIGNATURES_LIMIT = 8; // 8 з 2 минуты
   
   private isPollingActive: boolean = false;
   private pollingInterval: NodeJS.Timeout | null = null;
