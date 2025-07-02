@@ -614,6 +614,9 @@ export class QuickNodeWebhookManager {
       const preTokenBalances = transaction.meta.preTokenBalances || [];
       const postTokenBalances = transaction.meta.postTokenBalances || [];
       const walletAddress = this.extractWalletAddressFromTransaction(transaction);
+      console.log(`🔍 ANALYZING WALLET: ${walletAddress}`);
+console.log(`🔍 TRANSACTION feePayer: ${transaction.feePayer}`);
+console.log(`🔍 FIRST TOKEN OWNER: ${transaction.meta?.preTokenBalances?.[0]?.owner}`);
 
       if (!walletAddress) return null;
 
