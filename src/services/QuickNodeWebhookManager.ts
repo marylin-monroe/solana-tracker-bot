@@ -69,7 +69,7 @@ export class QuickNodeWebhookManager {
   private readonly CONCURRENT_WALLET_PROCESSING = 5;
   private readonly DELAY_BETWEEN_WALLETS = 1000;
   private readonly DELAY_BETWEEN_TRANSACTIONS = 300;
-  private readonly SIGNATURES_LIMIT = 8; // 8 з 2 минуты
+  private readonly SIGNATURES_LIMIT = 9; 
   
   private isPollingActive: boolean = false;
   private pollingInterval: NodeJS.Timeout | null = null;
@@ -127,7 +127,7 @@ export class QuickNodeWebhookManager {
     this.initializeProviders();
     this.startLimitResetTimer();
     this.startCacheCleanup();
-    this.logger.info('🔥 QuickNodeWebhookManager: ИСПРАВЛЕНА логика buy/sell + SIGNATURES_LIMIT = 20');
+    this.logger.info('🔥 QuickNodeWebhookManager initialized with improved buy/sell detection');
   }
 
   setTelegramNotifier(telegramNotifier: TelegramNotifier): void {
@@ -311,14 +311,6 @@ export class QuickNodeWebhookManager {
 
   async createSmartMoneyWebhook(webhookUrl: string): Promise<string> {
     try {
-      // 🔥🔥🔥 ПРИНУДИТЕЛЬНЫЙ POLLING ДЛЯ БЕСПЛАТНЫХ ТАРИФОВ 🔥🔥🔥
-      const forcePolling = process.env.FORCE_POLLING_MODE === 'true';
-      if (forcePolling) {
-        this.logger.info('🔄 FORCE_POLLING_MODE enabled - skipping webhook creation');
-        const smartWallets = await this.smDatabase.getAllActiveSmartWallets();
-        return await this.startPollingMode(smartWallets);
-      }
-
       if (!this.canMakeRequest()) {
         this.logger.warn('API limit reached, switching to polling mode');
         const smartWallets = await this.smDatabase.getAllActiveSmartWallets();
@@ -354,9 +346,6 @@ export class QuickNodeWebhookManager {
 
       const responseData = await response.json();
       const streamResponse: QuickNodeStreamResponse = responseData as QuickNodeStreamResponse;
-      
-      // 🔥 ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: если это бесплатный тариф - лучше polling
-      this.logger.warn('⚠️ Webhook created but may be unstable on free tier - consider using FORCE_POLLING_MODE=true');
       
       return streamResponse.id;
 
@@ -573,12 +562,6 @@ export class QuickNodeWebhookManager {
 
       const { amountUSD, swapType, tokenAddress, paymentToken, paymentTokenAmount, paymentTokenPrice } = valueCalculation;
 
-      // 🔥🔥🔥 ОТЛАДКА РЕЗУЛЬТАТА ЕДИНОГО РАСЧЕТНОГО ЦЕНТРА 🔥🔥🔥
-      console.log(`🔥 [QuickNode] ЕДИНЫЙ ЦЕНТР RESULT: ${swapType.toUpperCase()} ${amountUSD.toFixed(2)}`);
-      console.log(`💳 Payment: ${this.tokenMetadataService.getTokenSymbol(paymentToken)} (${paymentToken.slice(0,8)}...)`);
-      console.log(`🎯 Target: ${this.tokenMetadataService.getTokenSymbol(tokenAddress)} (${tokenAddress.slice(0,8)}...)`);
-      console.log(`📊 Payment Amount: ${paymentTokenAmount} @ ${paymentTokenPrice}\n`);
-
       if (amountUSD >= 2000) {
         const tokenInfo = await this.getTokenInfoCached(tokenAddress);
         const paymentTokenInfo = await this.getTokenInfoCached(paymentToken);
@@ -708,14 +691,8 @@ export class QuickNodeWebhookManager {
       const spentTokens = Array.from(tokenChanges.values()).filter(c => c.changeUI < 0);
       const receivedTokens = Array.from(tokenChanges.values()).filter(c => c.changeUI > 0);
 
-      // 🔍🔍🔍 ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ДЛЯ ОТЛАДКИ 🔍🔍🔍
-      console.log(`\n🔍 [QuickNode] ALL TOKEN CHANGES:`, Array.from(tokenChanges.entries()));
-      console.log(`💸 SPENT TOKENS:`, spentTokens.map(t => `${this.tokenMetadataService.getTokenSymbol(t.mint)}(${t.mint.slice(0,8)}): ${t.changeUI}`));
-      console.log(`💰 RECEIVED TOKENS:`, receivedTokens.map(t => `${this.tokenMetadataService.getTokenSymbol(t.mint)}(${t.mint.slice(0,8)}): ${t.changeUI}`));
-
       // 🔥🔥🔥 ПРАВИЛЬНАЯ ЛОГИКА: ИЩЕМ PAYMENT TOKEN ПАРУ 🔥🔥🔥
       if (spentTokens.length === 0 || receivedTokens.length === 0) {
-        console.log(`⚠️ [QuickNode] No valid operations: spent=${spentTokens.length}, received=${receivedTokens.length}`);
         return null;
       }
 
@@ -727,74 +704,59 @@ export class QuickNodeWebhookManager {
 
       // Ищем payment token в потраченных токенах
       const spentPaymentToken = spentTokens.find(token => this.PAYMENT_TOKENS.has(token.mint));
-      console.log(`🔍 SPENT PAYMENT TOKEN:`, spentPaymentToken ? `${this.tokenMetadataService.getTokenSymbol(spentPaymentToken.mint)}(${spentPaymentToken.mint.slice(0,8)})` : 'NONE');
       
       if (spentPaymentToken) {
         // BUY: Тратим payment token -> получаем обычный токен
         const receivedNonPaymentToken = receivedTokens.find(token => !this.PAYMENT_TOKENS.has(token.mint));
-        console.log(`🔍 RECEIVED NON-PAYMENT TOKEN:`, receivedNonPaymentToken ? `${this.tokenMetadataService.getTokenSymbol(receivedNonPaymentToken.mint)}(${receivedNonPaymentToken.mint.slice(0,8)})` : 'NONE');
         
         if (receivedNonPaymentToken) {
           inputMint = spentPaymentToken.mint;
           outputMint = receivedNonPaymentToken.mint;
           inputAmountRaw = Math.abs(spentPaymentToken.changeRaw);
           outputAmountRaw = receivedNonPaymentToken.changeRaw;
-          
-          console.log(`🟢 [QuickNode] BUY DETECTED: ${this.tokenMetadataService.getTokenSymbol(inputMint)} → ${this.tokenMetadataService.getTokenSymbol(outputMint)}`);
         }
       } else {
         // Ищем payment token в полученных токенах
         const receivedPaymentToken = receivedTokens.find(token => this.PAYMENT_TOKENS.has(token.mint));
-        console.log(`🔍 RECEIVED PAYMENT TOKEN:`, receivedPaymentToken ? `${this.tokenMetadataService.getTokenSymbol(receivedPaymentToken.mint)}(${receivedPaymentToken.mint.slice(0,8)})` : 'NONE');
         
         if (receivedPaymentToken) {
           // SELL: Тратим обычный токен -> получаем payment token
           const spentNonPaymentToken = spentTokens.find(token => !this.PAYMENT_TOKENS.has(token.mint));
-          console.log(`🔍 SPENT NON-PAYMENT TOKEN:`, spentNonPaymentToken ? `${this.tokenMetadataService.getTokenSymbol(spentNonPaymentToken.mint)}(${spentNonPaymentToken.mint.slice(0,8)})` : 'NONE');
           
           if (spentNonPaymentToken) {
             inputMint = spentNonPaymentToken.mint;
             outputMint = receivedPaymentToken.mint;
             inputAmountRaw = Math.abs(spentNonPaymentToken.changeRaw);
             outputAmountRaw = receivedPaymentToken.changeRaw;
-            
-            console.log(`🔴 [QuickNode] SELL DETECTED: ${this.tokenMetadataService.getTokenSymbol(inputMint)} → ${this.tokenMetadataService.getTokenSymbol(outputMint)}`);
           }
         }
       }
 
       // Если не нашли правильную пару - используем fallback (первые операции)
       if (!inputMint || !outputMint) {
-        console.log(`⚠️ [QuickNode] FALLBACK: Using first tokens (no proper payment pair found)`);
         const spentToken = spentTokens[0];
         const receivedToken = receivedTokens[0];
         inputMint = spentToken.mint;
         outputMint = receivedToken.mint;
         inputAmountRaw = Math.abs(spentToken.changeRaw);
         outputAmountRaw = receivedToken.changeRaw;
-        console.log(`⚠️ [QuickNode] FALLBACK PAIR: ${this.tokenMetadataService.getTokenSymbol(inputMint)} → ${this.tokenMetadataService.getTokenSymbol(outputMint)}`);
       }
 
       // 🔥🔥🔥 ДЕТАЛЬНАЯ ОТЛАДКА ДЛЯ АНАЛИЗА РЕЗУЛЬТАТА 🔥🔥🔥
       console.log(`\n🔍 [QuickNode] FINAL SWAP ANALYSIS FOR: ${transaction.signature?.slice(0,12)}...`);
       console.log(`💸 INPUT: ${this.tokenMetadataService.getTokenSymbol(inputMint)} (${inputMint.slice(0,8)}...) = ${inputAmountRaw}`);
       console.log(`💰 OUTPUT: ${this.tokenMetadataService.getTokenSymbol(outputMint)} (${outputMint.slice(0,8)}...) = ${outputAmountRaw}`);
-      console.log(`📋 DIRECTION: ${this.tokenMetadataService.getTokenSymbol(inputMint)} → ${this.tokenMetadataService.getTokenSymbol(outputMint)}`);
-      
-      // Предварительная проверка - какой токен считается платежным
+
+      // Фильтрация технических операций (деньги в деньги)
       const inputIsPayment = this.PAYMENT_TOKENS.has(inputMint);
       const outputIsPayment = this.PAYMENT_TOKENS.has(outputMint);
-      console.log(`🔍 INPUT is payment: ${inputIsPayment}, OUTPUT is payment: ${outputIsPayment}`);
 
-      // 🔥🔥🔥 ФИЛЬТРАЦИЯ ТЕХНИЧЕСКИХ ОПЕРАЦИЙ (деньги в деньги) 🔥🔥🔳
       if (inputIsPayment && outputIsPayment) {
-        console.log(`🚫 [QuickNode] FILTERED: Technical operation (payment to payment)`);
         return null;
       }
 
-      // Также фильтруем операции между двумя неплатежными токенами (маловероятно, но возможно)
+      // Также фильтруем операции между двумя неплатежными токенами
       if (!inputIsPayment && !outputIsPayment) {
-        console.log(`🚫 [QuickNode] FILTERED: Altcoin to altcoin swap`);
         return null;
       }
 
