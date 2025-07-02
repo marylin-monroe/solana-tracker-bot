@@ -1,4 +1,4 @@
-// src/services/QuickNodeWebhookManager.ts - 🔥 ИСПРАВЛЕНО: ВЫБОР САМЫХ БОЛЬШИХ ОПЕРАЦИЙ ПО USD
+// src/services/QuickNodeWebhookManager.ts - 🔥 ИСПРАВЛЕНО: ПРАВИЛЬНЫЙ ВЫБОР ТОКЕНОВ ДЛЯ BUY/SELL
 import { Logger } from '../utils/Logger';
 import { SmartMoneyDatabase } from './SmartMoneyDatabase';
 import { TelegramNotifier } from './TelegramNotifier';
@@ -69,7 +69,7 @@ export class QuickNodeWebhookManager {
   private readonly CONCURRENT_WALLET_PROCESSING = 5;
   private readonly DELAY_BETWEEN_WALLETS = 1000;
   private readonly DELAY_BETWEEN_TRANSACTIONS = 300;
-  private readonly SIGNATURES_LIMIT = 5;
+  private readonly SIGNATURES_LIMIT = 9; 
   
   private isPollingActive: boolean = false;
   private pollingInterval: NodeJS.Timeout | null = null;
@@ -79,6 +79,19 @@ export class QuickNodeWebhookManager {
   private recentSignatures = new Set<string>();
   private lastCleanupTime = Date.now();
   private botStartTime = Date.now();
+  
+  // 🔥🔥🔥 PAYMENT TOKENS ДЛЯ ПРАВИЛЬНОГО ОПРЕДЕЛЕНИЯ BUY/SELL 🔥🔥🔥
+  private readonly PAYMENT_TOKENS = new Set([
+    'So11111111111111111111111111111111111111112', // SOL
+    'So11111111111111111111111111111111111111111', // WSOL
+    'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', // USDC
+    'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', // USDT
+    'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So', // mSOL
+    'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn', // JitoSOL
+    '7Q2afV64in6N6SeZsAAB81TJzwDoD6zpqmHkzi9Dcavn', // stSOL
+    'bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1', // bSOL
+    'he1iusmfkpAdwvxLNGV8Y1iSbj4rUy6yMhEA3fotn9A'  // hSOL
+  ]);
   
   private errorStats = {
     walletProcessingErrors: 0,
@@ -114,6 +127,7 @@ export class QuickNodeWebhookManager {
     this.initializeProviders();
     this.startLimitResetTimer();
     this.startCacheCleanup();
+    this.logger.info('🔥 QuickNodeWebhookManager: ИСПРАВЛЕНА логика buy/sell + SIGNATURES_LIMIT = 20');
   }
 
   setTelegramNotifier(telegramNotifier: TelegramNotifier): void {
@@ -594,7 +608,7 @@ export class QuickNodeWebhookManager {
     }
   }
 
-  // 🔥🔥🔥 ИСПРАВЛЕНО: ВЫБОР САМЫХ БОЛЬШИХ ОПЕРАЦИЙ ПО USD ВМЕСТО ФИЛЬТРАЦИИ 🔥🔥🔥
+  // 🔥🔥🔥 ИСПРАВЛЕНО: ПРАВИЛЬНЫЙ ВЫБОР ТОКЕНОВ ДЛЯ BUY/SELL 🔥🔥🔥
   private async extractSwapInfoFromBalances(txData: any): Promise<{
     walletAddress: string; inputMint: string; outputMint: string;
     inputAmountRaw: number; outputAmountRaw: number;
@@ -683,47 +697,86 @@ export class QuickNodeWebhookManager {
       const spentTokens = Array.from(tokenChanges.values()).filter(c => c.changeUI < 0);
       const receivedTokens = Array.from(tokenChanges.values()).filter(c => c.changeUI > 0);
 
-      // 🔥🔥🔥 ПРОСТАЯ ЛОГИКА: БЕРЕМ ЛЮБЫЕ ОПЕРАЦИИ, calculateSwapUSDValue() ОПРЕДЕЛИТ BUY/SELL 🔥🔥🔥
+      // 🔥🔥🔥 ПРАВИЛЬНАЯ ЛОГИКА: ИЩЕМ PAYMENT TOKEN ПАРУ 🔥🔥🔥
       if (spentTokens.length === 0 || receivedTokens.length === 0) {
         console.log(`⚠️ [QuickNode] No valid operations: spent=${spentTokens.length}, received=${receivedTokens.length}`);
         return null;
       }
 
-      // Берем первые операции (calculateSwapUSDValue определит buy/sell по payment токенам)
-      const spentToken = spentTokens[0];
-      const receivedToken = receivedTokens[0];
+      // 🚀 НОВАЯ ЛОГИКА: Ищем правильную пару токенов
+      let inputMint: string | null = null;
+      let outputMint: string | null = null;
+      let inputAmountRaw = 0;
+      let outputAmountRaw = 0;
 
-      const inputMint = spentToken.mint;
-      const outputMint = receivedToken.mint;
-      const inputAmountRaw = Math.abs(spentToken.changeRaw);
-      const outputAmountRaw = receivedToken.changeRaw;
+      // Ищем payment token в потраченных токенах
+      const spentPaymentToken = spentTokens.find(token => this.PAYMENT_TOKENS.has(token.mint));
+      if (spentPaymentToken) {
+        // BUY: Тратим payment token -> получаем обычный токен
+        const receivedNonPaymentToken = receivedTokens.find(token => !this.PAYMENT_TOKENS.has(token.mint));
+        if (receivedNonPaymentToken) {
+          inputMint = spentPaymentToken.mint;
+          outputMint = receivedNonPaymentToken.mint;
+          inputAmountRaw = Math.abs(spentPaymentToken.changeRaw);
+          outputAmountRaw = receivedNonPaymentToken.changeRaw;
+          
+          console.log(`🟢 [QuickNode] BUY DETECTED: ${this.tokenMetadataService.getTokenSymbol(inputMint)} → ${this.tokenMetadataService.getTokenSymbol(outputMint)}`);
+        }
+      } else {
+        // Ищем payment token в полученных токенах
+        const receivedPaymentToken = receivedTokens.find(token => this.PAYMENT_TOKENS.has(token.mint));
+        if (receivedPaymentToken) {
+          // SELL: Тратим обычный токен -> получаем payment token
+          const spentNonPaymentToken = spentTokens.find(token => !this.PAYMENT_TOKENS.has(token.mint));
+          if (spentNonPaymentToken) {
+            inputMint = spentNonPaymentToken.mint;
+            outputMint = receivedPaymentToken.mint;
+            inputAmountRaw = Math.abs(spentNonPaymentToken.changeRaw);
+            outputAmountRaw = receivedPaymentToken.changeRaw;
+            
+            console.log(`🔴 [QuickNode] SELL DETECTED: ${this.tokenMetadataService.getTokenSymbol(inputMint)} → ${this.tokenMetadataService.getTokenSymbol(outputMint)}`);
+          }
+        }
+      }
+
+      // Если не нашли правильную пару - используем fallback (первые операции)
+      if (!inputMint || !outputMint) {
+        console.log(`⚠️ [QuickNode] FALLBACK: Using first tokens`);
+        const spentToken = spentTokens[0];
+        const receivedToken = receivedTokens[0];
+        inputMint = spentToken.mint;
+        outputMint = receivedToken.mint;
+        inputAmountRaw = Math.abs(spentToken.changeRaw);
+        outputAmountRaw = receivedToken.changeRaw;
+      }
 
       // 🔥🔥🔥 ДЕТАЛЬНАЯ ОТЛАДКА ДЛЯ АНАЛИЗА РЕЗУЛЬТАТА 🔥🔥🔥
-      console.log(`\n🔍 [QuickNode] SWAP ANALYSIS FOR: ${transaction.signature?.slice(0,12)}...`);
-      console.log(`💸 SPENT: ${this.tokenMetadataService.getTokenSymbol(spentToken.mint)} (${spentToken.mint.slice(0,8)}...) = ${spentToken.changeUI} (raw: ${spentToken.changeRaw})`);
-      console.log(`💰 RECEIVED: ${this.tokenMetadataService.getTokenSymbol(receivedToken.mint)} (${receivedToken.mint.slice(0,8)}...) = ${receivedToken.changeUI} (raw: ${receivedToken.changeRaw})`);
+      console.log(`\n🔍 [QuickNode] FINAL SWAP ANALYSIS FOR: ${transaction.signature?.slice(0,12)}...`);
+      console.log(`💸 INPUT: ${this.tokenMetadataService.getTokenSymbol(inputMint)} (${inputMint.slice(0,8)}...) = ${inputAmountRaw}`);
+      console.log(`💰 OUTPUT: ${this.tokenMetadataService.getTokenSymbol(outputMint)} (${outputMint.slice(0,8)}...) = ${outputAmountRaw}`);
       console.log(`📋 DIRECTION: ${this.tokenMetadataService.getTokenSymbol(inputMint)} → ${this.tokenMetadataService.getTokenSymbol(outputMint)}`);
-      console.log(`📊 AMOUNTS: input=${inputAmountRaw}, output=${outputAmountRaw}`);
       
       // Предварительная проверка - какой токен считается платежным
-      const inputSymbol = this.tokenMetadataService.getTokenSymbol(inputMint);
-      const outputSymbol = this.tokenMetadataService.getTokenSymbol(outputMint);
-      console.log(`🔍 EXPECTED: ${inputSymbol} is payment? ${['SOL','USDC','USDT','WSOL'].includes(inputSymbol)}`);
-      console.log(`🔍 EXPECTED: ${outputSymbol} is payment? ${['SOL','USDC','USDT','WSOL'].includes(outputSymbol)}`);
+      const inputIsPayment = this.PAYMENT_TOKENS.has(inputMint);
+      const outputIsPayment = this.PAYMENT_TOKENS.has(outputMint);
+      console.log(`🔍 INPUT is payment: ${inputIsPayment}, OUTPUT is payment: ${outputIsPayment}`);
 
-      // 🔥🔥🔥 ФИЛЬТРАЦИЯ ТЕХНИЧЕСКИХ ОПЕРАЦИЙ (деньги в деньги) 🔥🔥🔥
-      const isBoringSwap = 
-        (['SOL','WSOL','USDC','USDT'].includes(inputSymbol) && 
-         ['SOL','WSOL','USDC','USDT'].includes(outputSymbol));
+      // 🔥🔥🔥 ФИЛЬТРАЦИЯ ТЕХНИЧЕСКИХ ОПЕРАЦИЙ (деньги в деньги) 🔥🔥🔳
+      if (inputIsPayment && outputIsPayment) {
+        console.log(`🚫 [QuickNode] FILTERED: Technical operation (payment to payment)`);
+        return null;
+      }
 
-      if (isBoringSwap) {
-        console.log(`🚫 [QuickNode] FILTERED: Technical operation ${inputSymbol} → ${outputSymbol} (money to money)`);
+      // Также фильтруем операции между двумя неплатежными токенами (маловероятно, но возможно)
+      if (!inputIsPayment && !outputIsPayment) {
+        console.log(`🚫 [QuickNode] FILTERED: Altcoin to altcoin swap`);
         return null;
       }
 
       return { walletAddress, inputMint, outputMint, inputAmountRaw, outputAmountRaw };
 
     } catch (error) {
+      console.error(`❌ [QuickNode] extractSwapInfoFromBalances error:`, error);
       return null;
     }
   }

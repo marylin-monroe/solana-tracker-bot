@@ -1,4 +1,4 @@
-// src/services/TelegramNotifier.ts - 🔥 ПРОТОКОЛ "АЛЬФА-ИНФОРМЕР": Уведомления по дизайну
+// src/services/TelegramNotifier.ts - 🔥 ИСПРАВЛЕНО: КЛИКАБЕЛЬНЫЙ АДРЕС ТОКЕНА ВМЕСТО SIGNATURE
 import TelegramBot from 'node-telegram-bot-api';
 import { SmartMoneyFlow, HotNewToken, SmartMoneySwap } from '../types';
 import { Logger } from '../utils/Logger';
@@ -107,7 +107,7 @@ export class TelegramNotifier {
     this.setupBaseHandlers();
     this.startMessageQueueProcessor();
     this.startSimpleCleanup();
-    this.logger.info('📱 TelegramNotifier: ПРОТОКОЛ "АЛЬФА-ИНФОРМЕР" активирован - дизайн 1в1!');
+    this.logger.info('📱 TelegramNotifier: ИСПРАВЛЕНО - кликабельный адрес токена вместо signature!');
   }
 
   private setupBaseHandlers(): void {
@@ -318,64 +318,65 @@ export class TelegramNotifier {
     }
   }
 
-  // 🔥🔥🔥 ИСПРАВЛЕНИЕ В TelegramNotifier.ts - метод sendSmartMoneySwapAlert 🔥🔥🔥
+  // 🔥🔥🔥 ГЛАВНОЕ ИСПРАВЛЕНИЕ: КЛИКАБЕЛЬНЫЙ АДРЕС ТОКЕНА ВМЕСТО SIGNATURE 🔥🔥🔥
+  async sendSmartMoneySwapAlert(swap: SmartMoneySwap): Promise<void> {
+    try {
+      if (this.isSimpleDuplicate(swap.transactionId)) return;
 
-async sendSmartMoneySwapAlert(swap: SmartMoneySwap): Promise<void> {
-  try {
-    if (this.isSimpleDuplicate(swap.transactionId)) return;
+      const categoryEmoji = this.getCategoryEmoji(swap.category);
+      const swapTypeEmoji = swap.swapType === 'buy' ? '🟢' : '🔴';
+      
+      // 🔥 ИСПОЛЬЗУЕМ ТОЛЬКО ГОТОВЫЕ ДАННЫЕ ИЗ SWAP ОБЪЕКТА
+      const firstLine = `${categoryEmoji} ${this.formatUSD(swap.amountUSD)} ${swapTypeEmoji}`;
+      
+      // Показываем количество и символ токена (УЖЕ ГОТОВЫЕ ДАННЫЕ)
+      const tokenInfo = `${this.formatTokenAmount(swap.tokenAmount)} #${this.getDisplayTokenSymbol(swap.tokenSymbol, swap.tokenAddress)}`;
+      
+      // Цена токена если есть
+      let priceInfo = '';
+      if (swap.tokenPrice && swap.tokenPrice > 0) {
+        priceInfo = ` (${this.formatPrice(swap.tokenPrice)})`;
+      }
+      
+      // Платежный токен если есть
+      let paymentInfo = '';
+      if (swap.paymentTokenSymbol) {
+        paymentInfo = ` ${swap.swapType === 'buy' ? 'from' : 'to'} #${swap.paymentTokenSymbol}`;
+      }
+      
+      // Wallet hash (first 7 chars как на скрине)
+      const walletTag = `#${swap.walletAddress.slice(0, 7)}`;
+      
+      // 🔥 ТОЛЬКО НАШИ МЕТРИКИ ЗА 7 ДНЕЙ
+      const wr7dTag = `WR7d: ${(swap.winrate7d || 0).toFixed(1)}%`;
+      const pnl7dTag = `PnL7d: ${this.formatUSD(Math.abs(swap.usdProfit7d || 0))}`;
+      const buys7dTag = `Buys7d: ${swap.buy7d || 0}`;
+      
+      // 🔥🔥🔥 КЛИКАБЕЛЬНЫЕ ССЫЛКИ 🔥🔥🔥
+      const walletLink = `<a href="https://solscan.io/account/${swap.walletAddress}">Wallet</a>`;
+      const txnLink = `<a href="https://solscan.io/tx/${swap.transactionId}">TXN</a>`;
+      
+      // 🚀🚀🚀 ГЛАВНОЕ ИСПРАВЛЕНИЕ: КЛИКАБЕЛЬНЫЙ АДРЕС ТОКЕНА ВМЕСТО SIGNATURE 🚀🚀🚀
+      const copyableTokenAddress = `<code>${swap.tokenAddress}</code>`;
+      
+      // Объединяем все в одну строку как на скрине
+      const message = 
+        `${firstLine} ${tokenInfo}${priceInfo}${paymentInfo} ${walletTag} ${wr7dTag} ${pnl7dTag} ${buys7dTag} BS DS\n` +
+        `${walletLink} ${txnLink} #SmartSwap${swap.swapType === 'buy' ? 'Buy' : 'Sell'}\n` +
+        `${copyableTokenAddress}`;
 
-    const categoryEmoji = this.getCategoryEmoji(swap.category);
-    const swapTypeEmoji = swap.swapType === 'buy' ? '🟢' : '🔴';
-    
-    // 🔥 ИСПОЛЬЗУЕМ ТОЛЬКО ГОТОВЫЕ ДАННЫЕ ИЗ SWAP ОБЪЕКТА
-    const firstLine = `${categoryEmoji} ${this.formatUSD(swap.amountUSD)} ${swapTypeEmoji}`;
-    
-    // Показываем количество и символ токена (УЖЕ ГОТОВЫЕ ДАННЫЕ)
-    const tokenInfo = `${this.formatTokenAmount(swap.tokenAmount)} #${this.getDisplayTokenSymbol(swap.tokenSymbol, swap.tokenAddress)}`;
-    
-    // Цена токена если есть
-    let priceInfo = '';
-    if (swap.tokenPrice && swap.tokenPrice > 0) {
-      priceInfo = ` (${this.formatPrice(swap.tokenPrice)})`;
+      await this.sendCycleLog(message, 10);
+      
+      this.stats.smartMoneySwaps++;
+      this.stats.profitableSignals++;
+      
+      this.logger.info(`${categoryEmoji} SWAP ALERT: ${swap.tokenSymbol} for ${swap.amountUSD.toFixed(0)} - Token: ${swap.tokenAddress.slice(0,8)}...`);
+
+    } catch (error) {
+      this.logger.error('Error sending smart money swap alert:', error);
+      this.stats.errorsSent++;
     }
-    
-    // Платежный токен если есть
-    let paymentInfo = '';
-    if (swap.paymentTokenSymbol) {
-      paymentInfo = ` ${swap.swapType === 'buy' ? 'from' : 'to'} #${swap.paymentTokenSymbol}`;
-    }
-    
-    // Wallet hash (first 7 chars как на скрине)
-    const walletTag = `#${swap.walletAddress.slice(0, 7)}`;
-    
-    // 🔥 ТОЛЬКО НАШИ МЕТРИКИ ЗА 7 ДНЕЙ
-    const wr7dTag = `WR7d: ${(swap.winrate7d || 0).toFixed(1)}%`;
-    const pnl7dTag = `PnL7d: ${this.formatUSD(Math.abs(swap.usdProfit7d || 0))}`;
-    const buys7dTag = `Buys7d: ${swap.buy7d || 0}`;
-    
-    // 🔥🔥🔥 ГЛАВНОЕ ИСПРАВЛЕНИЕ: КЛИКАБЕЛЬНЫЕ ССЫЛКИ 🔥🔥🔥
-    const walletLink = `<a href="https://solscan.io/account/${swap.walletAddress}">Wallet</a>`;
-    const txnLink = `<a href="https://solscan.io/tx/${swap.transactionId}">TXN</a>`;
-    const shortTxId = `${swap.transactionId.slice(0, 8)}...${swap.transactionId.slice(-8)}`;
-    
-    // Объединяем все в одну строку как на скрине
-    const message = 
-      `${firstLine} ${tokenInfo}${priceInfo}${paymentInfo} ${walletTag} ${wr7dTag} ${pnl7dTag} ${buys7dTag} BS DS\n` +
-      `${walletLink} ${txnLink} #SmartSwap${swap.swapType === 'buy' ? 'Buy' : 'Sell'}\n` +
-      `${shortTxId}`;
-
-    await this.sendCycleLog(message, 10);
-    
-    this.stats.smartMoneySwaps++;
-    this.stats.profitableSignals++;
-    
-    this.logger.info(`${categoryEmoji} SWAP ALERT: ${swap.tokenSymbol} for ${swap.amountUSD.toFixed(0)}`);
-
-  } catch (error) {
-    this.logger.error('Error sending smart money swap alert:', error);
-    this.stats.errorsSent++;
   }
-}
 
   // 🔥🔥🔥 HOT NEW TOKEN ALERT (HNT) - ДИЗАЙН КАК В ЗАДАНИИ 🔥🔥🔥
   async sendHotNewTokenAlert(token: HotNewToken): Promise<void> {
