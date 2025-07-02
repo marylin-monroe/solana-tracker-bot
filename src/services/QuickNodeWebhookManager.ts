@@ -69,7 +69,7 @@ export class QuickNodeWebhookManager {
   private readonly CONCURRENT_WALLET_PROCESSING = 5;
   private readonly DELAY_BETWEEN_WALLETS = 1000;
   private readonly DELAY_BETWEEN_TRANSACTIONS = 300;
-  private readonly SIGNATURES_LIMIT = 9; 
+  private readonly SIGNATURES_LIMIT = 8; // 8
   
   private isPollingActive: boolean = false;
   private pollingInterval: NodeJS.Timeout | null = null;
@@ -311,6 +311,14 @@ export class QuickNodeWebhookManager {
 
   async createSmartMoneyWebhook(webhookUrl: string): Promise<string> {
     try {
+      // 🔥🔥🔥 ПРИНУДИТЕЛЬНЫЙ POLLING ДЛЯ БЕСПЛАТНЫХ ТАРИФОВ 🔥🔥🔥
+      const forcePolling = process.env.FORCE_POLLING_MODE === 'true';
+      if (forcePolling) {
+        this.logger.info('🔄 FORCE_POLLING_MODE enabled - skipping webhook creation');
+        const smartWallets = await this.smDatabase.getAllActiveSmartWallets();
+        return await this.startPollingMode(smartWallets);
+      }
+
       if (!this.canMakeRequest()) {
         this.logger.warn('API limit reached, switching to polling mode');
         const smartWallets = await this.smDatabase.getAllActiveSmartWallets();
@@ -346,6 +354,9 @@ export class QuickNodeWebhookManager {
 
       const responseData = await response.json();
       const streamResponse: QuickNodeStreamResponse = responseData as QuickNodeStreamResponse;
+      
+      // 🔥 ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: если это бесплатный тариф - лучше polling
+      this.logger.warn('⚠️ Webhook created but may be unstable on free tier - consider using FORCE_POLLING_MODE=true');
       
       return streamResponse.id;
 
