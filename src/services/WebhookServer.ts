@@ -552,6 +552,10 @@ export class WebhookServer {
     const preTokenBalances = transaction.meta.preTokenBalances || [];
     const postTokenBalances = transaction.meta.postTokenBalances || [];
 
+    console.log(`🔍 [DEBUG] Analyzing wallet: ${walletAddress}`);
+    console.log(`🔍 [DEBUG] preTokenBalances count: ${preTokenBalances.length}`);
+    console.log(`🔍 [DEBUG] postTokenBalances count: ${postTokenBalances.length}`);
+
     // Анализ существующих токен-аккаунтов ТОЛЬКО для пользователя
     for (const pre of preTokenBalances) {
       if (pre.owner !== walletAddress) continue;
@@ -560,6 +564,9 @@ export class WebhookServer {
       const preAmountRaw = parseInt(pre.uiTokenAmount.amount || '0');
       const postAmountRaw = post ? parseInt(post.uiTokenAmount.amount || '0') : 0;
       const changeRaw = postAmountRaw - preAmountRaw;
+      
+      console.log(`🔍 [DEBUG] Token ${this.tokenMetadataService.getTokenSymbol(pre.mint)}: pre=${preAmountRaw}, post=${postAmountRaw}, change=${changeRaw}`);
+      console.log(`🔍 [DEBUG] Account index: ${pre.accountIndex}, owner: ${pre.owner}`);
       
       if (Math.abs(changeRaw) > 0) {
         tokenChanges.push({ 
@@ -576,6 +583,7 @@ export class WebhookServer {
       const isNewAccount = !preTokenBalances.find(p => p.accountIndex === post.accountIndex);
       if (isNewAccount) {
         const changeRaw = parseInt(post.uiTokenAmount.amount || '0');
+        console.log(`🔍 [DEBUG] NEW account for ${this.tokenMetadataService.getTokenSymbol(post.mint)}: changeRaw=${changeRaw}, owner: ${post.owner}`);
         if (changeRaw > 0) {
           tokenChanges.push({ 
             mint: post.mint, 
@@ -593,10 +601,14 @@ export class WebhookServer {
       return keyString === walletAddress;
     });
     
+    console.log(`🔍 [DEBUG] SOL analysis: walletIndex=${walletIndex}, accountKeys.length=${accountKeys.length}`);
+    
     if (walletIndex !== -1 && transaction.meta?.preBalances && transaction.meta?.postBalances) {
       const preSolBalance = transaction.meta.preBalances[walletIndex] || 0;
       const postSolBalance = transaction.meta.postBalances[walletIndex] || 0;
       const solChangeRaw = postSolBalance - preSolBalance;
+      
+      console.log(`🔍 [DEBUG] SOL balance: pre=${preSolBalance}, post=${postSolBalance}, change=${solChangeRaw}`);
       
       if (Math.abs(solChangeRaw) > 10000000) { // > 0.01 SOL
         tokenChanges.push({
@@ -607,6 +619,7 @@ export class WebhookServer {
       }
     }
 
+    console.log(`🔍 [DEBUG] Final token changes:`, tokenChanges.map(t => `${this.tokenMetadataService.getTokenSymbol(t.mint)}: ${t.changeRaw}`));
     return tokenChanges;
   }
 
