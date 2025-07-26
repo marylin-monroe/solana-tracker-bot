@@ -8,7 +8,7 @@ import { TokenMetadataService } from './services/TokenMetadataService';
 import { WebhookServer } from './services/WebhookServer';
 import { QuickNodeWebhookManager } from './services/QuickNodeWebhookManager';
 import { DragonResultsParser } from './services/DragonResultsParser';
-import { SolanaMonitor } from './services/SolanaMonitor'; // 🔥 ДОБАВЛЕН SolanaMonitor
+import { SolanaMonitor } from './services/SolanaMonitor'; 
 
 import { LargeTransactionMonitor } from './services/LargeTransactionMonitor';
 import { MultiProviderService } from './services/MultiProviderService';
